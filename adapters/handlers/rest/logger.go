@@ -12,12 +12,16 @@
 package rest
 
 import (
+	"bytes"
 	"errors"
 	"strings"
 
 	"github.com/sirupsen/logrus"
 	"github.com/weaviate/weaviate/usecases/build"
 )
+
+// bannerAction marks the multi-line startup banner entry.
+const bannerAction = "banner"
 
 type WeaviateJSONFormatter struct {
 	*logrus.JSONFormatter
@@ -62,7 +66,20 @@ func (wf *WeaviateTextFormatter) Format(e *logrus.Entry) ([]byte, error) {
 	e.Data["build_image_tag"] = wf.imageTag
 	e.Data["build_wv_version"] = wf.serverVersion
 	e.Data["build_go_version"] = wf.goVersion
-	return wf.TextFormatter.Format(e)
+	if e.Data["action"] != bannerAction {
+		return wf.TextFormatter.Format(e)
+	}
+	// TextFormatter quotes messages containing newlines, which flattens the
+	// banner. Format the fields without the message and append it verbatim.
+	msg := e.Message
+	e.Message = ""
+	out, err := wf.TextFormatter.Format(e)
+	e.Message = msg
+	if err != nil {
+		return nil, err
+	}
+	out = bytes.TrimRight(out, "\n")
+	return append(append(out, '\n'), msg...), nil
 }
 
 var errlogLevelNotRecognized = errors.New("log level not recognized")

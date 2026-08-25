@@ -1,0 +1,114 @@
+//                           _       _
+// __      _____  __ ___   ___  __ _| |_ ___
+// \ \ /\ / / _ \/ _` \ \ / / |/ _` | __/ _ \
+//  \ V  V /  __/ (_| |\ V /| | (_| | ||  __/
+//   \_/\_/ \___|\__,_| \_/ |_|\__,_|\__\___|
+//
+//  Copyright © 2016 - 2026 Weaviate B.V. All rights reserved.
+//
+//  CONTACT: hello@weaviate.io
+//
+
+package rest
+
+import (
+	"fmt"
+	"net"
+	"os"
+	"strconv"
+	"strings"
+
+	flags "github.com/jessevdk/go-flags"
+	"github.com/sirupsen/logrus"
+
+	entcfg "github.com/weaviate/weaviate/entities/config"
+	enterrors "github.com/weaviate/weaviate/entities/errors"
+	"github.com/weaviate/weaviate/usecases/build"
+)
+
+const bannerArt = `
+  ██▁▁▁▁▁██▁███████▁▁█████▁▁██▁▁▁▁██▁██▁▁█████▁▁████████▁███████
+  ██▁▁▁▁▁██▁██▁▁▁▁▁▁██▁▁▁██▁██▁▁▁▁██▁██▁██▁▁▁██▁▁▁▁██▁▁▁▁██▁▁▁▁▁
+  ██▁▁█▁▁██▁█████▁▁▁███████▁██▁▁▁▁██▁██▁███████▁▁▁▁██▁▁▁▁█████▁▁
+  ██▁███▁██▁██▁▁▁▁▁▁██▁▁▁██▁▁██▁▁██▁▁██▁██▁▁▁██▁▁▁▁██▁▁▁▁██▁▁▁▁▁
+  ▁███▁███▁▁███████▁██▁▁▁██▁▁▁████▁▁▁██▁██▁▁▁██▁▁▁▁██▁▁▁▁███████
+`
+
+const bannerDocsURL = "https://docs.weaviate.io/weaviate"
+
+// startupBanner is a multi-line message. The JSON formatter encodes the
+// newlines as \n, which JSON log viewers render back as line breaks.
+func startupBanner(restURL string) string {
+	// The URL comes from operator flags and is written verbatim in text mode,
+	// so control characters are dropped: a newline would forge a log line.
+	restURL = strings.Map(func(r rune) rune {
+		if r < ' ' || r == 0x7f {
+			return -1
+		}
+		return r
+	}, restURL)
+
+	var b strings.Builder
+	b.WriteString(bannerArt)
+	fmt.Fprintf(&b, "\n  ► Version: %s\n", build.Version)
+	fmt.Fprintf(&b, "  ► Docs:    %s\n", bannerDocsURL)
+	fmt.Fprintf(&b, "  ► Cluster: %s/v1/meta\n", restURL)
+	fmt.Fprintf(&b, "  ► Status:  Starting up...\n")
+	return b.String()
+}
+
+// logStartupBanner runs before the config is loaded, so the switch is read
+// straight from the environment like LOG_FORMAT and LOG_LEVEL.
+// listenFlags mirrors the generated server's listener flags, tags included, so
+// the banner can know the REST address before the generated code parses them.
+type listenFlags struct {
+	Schemes []string `long:"scheme"`
+	Host    string   `long:"host" default:"localhost" env:"HOST"`
+	Port    int      `long:"port" env:"PORT"`
+	TLSHost string   `long:"tls-host" env:"TLS_HOST"`
+	TLSPort int      `long:"tls-port" env:"TLS_PORT"`
+}
+
+// restURLFromArgs derives the REST listener's URL from the command line the
+// generated server will parse, ignoring every flag that is not a listener flag.
+func restURLFromArgs(args []string) string {
+	var f listenFlags
+	parser := flags.NewParser(&f, flags.IgnoreUnknown)
+	if _, err := parser.ParseArgs(args); err != nil {
+		f = listenFlags{Host: "localhost"}
+	}
+	if len(f.Schemes) == 0 {
+		f.Schemes = []string{"https"} // the generated server's default scheme
+	}
+	for _, s := range f.Schemes {
+		if s == "http" {
+			return "http://" + net.JoinHostPort(displayHost(f.Host), strconv.Itoa(f.Port))
+		}
+	}
+	if f.TLSHost == "" {
+		f.TLSHost = f.Host
+	}
+	return "https://" + net.JoinHostPort(displayHost(f.TLSHost), strconv.Itoa(f.TLSPort))
+}
+
+// displayHost turns a bind address into one a user can open: an unspecified
+// host (0.0.0.0, ::) or none at all is shown as localhost.
+func displayHost(host string) string {
+	if host == "" {
+		return "localhost"
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		return "localhost"
+	}
+	return host
+}
+
+func logStartupBanner(logger logrus.FieldLogger, restURL string) {
+	if entcfg.Enabled(os.Getenv("DISABLE_STARTUP_BANNER")) {
+		return
+	}
+	logger.WithFields(logrus.Fields{
+		"action":                bannerAction,
+		enterrors.DocsLinkField: bannerDocsURL,
+	}).Info(startupBanner(restURL))
+}

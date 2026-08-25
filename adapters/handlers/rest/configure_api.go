@@ -201,14 +201,14 @@ type vectorRepo interface {
 	Shutdown(ctx context.Context) error
 }
 
-func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandLineOptionsGroup) *state.State {
+func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandLineOptionsGroup, restURL string) *state.State {
 	build.Version = ParseVersionFromSwaggerSpec() // Version is always static and loaded from swagger spec.
 
 	// config.ServerVersion is deprecated: It's there to be backward compatible
 	// use build.Version instead.
 	config.ServerVersion = build.Version
 
-	appState := startupRoutine(ctx, serverShutdownCtx, options)
+	appState := startupRoutine(ctx, serverShutdownCtx, options, restURL)
 
 	// Initialize OpenTelemetry tracing
 	if err := opentelemetry.Init(appState.Logger); err != nil {
@@ -1403,7 +1403,7 @@ func configureAPI(api *operations.WeaviateAPI) http.Handler {
 	defer cancel()
 
 	serverShutdownCtx, serverShutdownCancel := context.WithCancelCause(context.Background())
-	appState := MakeAppState(ctx, serverShutdownCtx, connectorOptionGroup)
+	appState := MakeAppState(ctx, serverShutdownCtx, connectorOptionGroup, restURLFromArgs(os.Args[1:]))
 
 	appState.Logger.WithFields(logrus.Fields{
 		"server_version": config.ServerVersion,
@@ -1693,11 +1693,12 @@ func startExportScheduler(appState *state.State) *exportusecase.Scheduler {
 }
 
 // TODO: Split up and don't write into global variables. Instead return an appState
-func startupRoutine(ctx, serverShutdownCtx context.Context, options *swag.CommandLineOptionsGroup) *state.State {
+func startupRoutine(ctx, serverShutdownCtx context.Context, options *swag.CommandLineOptionsGroup, restURL string) *state.State {
 	appState := &state.State{}
 
 	logger := logger()
 	appState.Logger = logger
+	logStartupBanner(logger, restURL)
 
 	logger.WithField("action", "startup").WithField("startup_time_left", timeTillDeadline(ctx)).
 		Debug("created startup context, nothing done so far")
