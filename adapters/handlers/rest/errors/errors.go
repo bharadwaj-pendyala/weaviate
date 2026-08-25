@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http"
 
+	enterrors "github.com/weaviate/weaviate/entities/errors"
 	"github.com/weaviate/weaviate/entities/models"
 	"github.com/weaviate/weaviate/usecases/namespaces"
 	"github.com/weaviate/weaviate/usecases/schema/namespacing"
@@ -63,7 +64,7 @@ func NamespaceErrRendersUnprocessable(err error) bool {
 // not crash the handler.
 func ErrPayloadFromSingleErr(principal *models.Principal, err error) *models.ErrorResponse {
 	return &models.ErrorResponse{Error: []*models.ErrorResponseErrorItems0{{
-		Message: namespacing.StripErrorMessage(principal, fmt.Sprintf("%v", err)),
+		Message: namespacing.StripErrorMessage(principal, enterrors.MessageWithDocsLink(err)),
 	}}}
 }
 

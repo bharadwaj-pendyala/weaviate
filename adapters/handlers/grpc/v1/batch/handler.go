@@ -21,6 +21,7 @@ import (
 	restCtx "github.com/weaviate/weaviate/adapters/handlers/rest/context"
 	"github.com/weaviate/weaviate/entities/additional"
 	"github.com/weaviate/weaviate/entities/classcache"
+	enterrors "github.com/weaviate/weaviate/entities/errors"
 	"github.com/weaviate/weaviate/entities/models"
 	"github.com/weaviate/weaviate/entities/versioned"
 	pb "github.com/weaviate/weaviate/grpc/generated/protocol/v1"
@@ -105,7 +106,7 @@ func (h *Handler) BatchObjects(ctx context.Context, req *pb.BatchObjectsRequest)
 
 	var objErrors []*pb.BatchObjectsReply_BatchError
 	for i, err := range objectParsingErrors {
-		objErrors = append(objErrors, &pb.BatchObjectsReply_BatchError{Index: int32(i), Error: namespacing.StripErrorMessage(principal, err.Error())})
+		objErrors = append(objErrors, &pb.BatchObjectsReply_BatchError{Index: int32(i), Error: namespacing.StripErrorMessage(principal, enterrors.MessageWithDocsLink(err))})
 	}
 
 	// If every object failed to parse, return early with the errors
@@ -126,7 +127,7 @@ func (h *Handler) BatchObjects(ctx context.Context, req *pb.BatchObjectsRequest)
 
 	for i, obj := range response {
 		if obj.Err != nil {
-			objErrors = append(objErrors, &pb.BatchObjectsReply_BatchError{Index: int32(objOriginalIndex[i]), Error: namespacing.StripErrorMessage(principal, obj.Err.Error())})
+			objErrors = append(objErrors, &pb.BatchObjectsReply_BatchError{Index: int32(objOriginalIndex[i]), Error: namespacing.StripErrorMessage(principal, enterrors.MessageWithDocsLink(obj.Err))})
 		}
 	}
 
@@ -155,7 +156,7 @@ func (h *Handler) BatchReferences(ctx context.Context, req *pb.BatchReferencesRe
 	var refErrors []*pb.BatchReferencesReply_BatchError
 	for i, ref := range response {
 		if ref.Err != nil {
-			refErrors = append(refErrors, &pb.BatchReferencesReply_BatchError{Index: int32(i), Error: namespacing.StripErrorMessage(principal, ref.Err.Error())})
+			refErrors = append(refErrors, &pb.BatchReferencesReply_BatchError{Index: int32(i), Error: namespacing.StripErrorMessage(principal, enterrors.MessageWithDocsLink(ref.Err))})
 		}
 	}
 
