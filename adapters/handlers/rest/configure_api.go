@@ -161,6 +161,7 @@ import (
 	"github.com/weaviate/weaviate/usecases/auth/authorization/conv"
 	"github.com/weaviate/weaviate/usecases/auth/authorization/rbac"
 	"github.com/weaviate/weaviate/usecases/backup"
+	"github.com/weaviate/weaviate/usecases/banner"
 	"github.com/weaviate/weaviate/usecases/build"
 	"github.com/weaviate/weaviate/usecases/classification"
 	"github.com/weaviate/weaviate/usecases/cluster"
@@ -1403,7 +1404,8 @@ func configureAPI(api *operations.WeaviateAPI) http.Handler {
 	defer cancel()
 
 	serverShutdownCtx, serverShutdownCancel := context.WithCancelCause(context.Background())
-	appState := MakeAppState(ctx, serverShutdownCtx, connectorOptionGroup, restURLFromArgs(os.Args[1:]))
+	restURL := restURLFromArgs(os.Args[1:])
+	appState := MakeAppState(ctx, serverShutdownCtx, connectorOptionGroup, restURL)
 
 	appState.Logger.WithFields(logrus.Fields{
 		"server_version": config.ServerVersion,
@@ -1473,6 +1475,10 @@ func configureAPI(api *operations.WeaviateAPI) http.Handler {
 	setupNodesHandlers(api, appState.SchemaManager, appState.DB, appState)
 	setupDistributedTasksHandlers(api, appState.Authorizer, appState.ClusterService.Raft)
 
+	// Docs links carry the cluster id from here on; the startup banner logged
+	// before this point could not, raft had not committed one yet.
+	enterrors.SetClusterIDSource(appState.ClusterService.ClusterID)
+
 	telemeter := telemetry.New(
 		appState.DB,
 		appState.SchemaManager,
@@ -1513,6 +1519,14 @@ func configureAPI(api *operations.WeaviateAPI) http.Handler {
 			}
 		}, appState.Logger)
 		setupTelemetryDebugHandlers(telemeter)
+
+		// The repeat banner fetches its art from weaviate.io, so it rides the
+		// telemetry switch: no telemetry, no phone-home of any kind.
+		if !startupBannerDisabled() {
+			repeater := banner.NewRepeater(appState.Logger, restURL,
+				appState.ServerConfig.Config.BannerInterval, nil)
+			enterrors.GoWrapper(func() { repeater.Run(serverShutdownCtx) }, appState.Logger)
+		}
 	}
 	if entconfig.Enabled(os.Getenv("ENABLE_CLEANUP_UNFINISHED_BACKUPS")) {
 		enterrors.GoWrapper(

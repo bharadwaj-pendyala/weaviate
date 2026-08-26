@@ -12,53 +12,25 @@
 package rest
 
 import (
-	"fmt"
 	"net"
 	"os"
 	"strconv"
-	"strings"
 
 	flags "github.com/jessevdk/go-flags"
 	"github.com/sirupsen/logrus"
 
 	entcfg "github.com/weaviate/weaviate/entities/config"
 	enterrors "github.com/weaviate/weaviate/entities/errors"
-	"github.com/weaviate/weaviate/usecases/build"
+	"github.com/weaviate/weaviate/usecases/banner"
 )
 
-const bannerArt = `
-  ██▁▁▁▁▁██▁███████▁▁█████▁▁██▁▁▁▁██▁██▁▁█████▁▁████████▁███████
-  ██▁▁▁▁▁██▁██▁▁▁▁▁▁██▁▁▁██▁██▁▁▁▁██▁██▁██▁▁▁██▁▁▁▁██▁▁▁▁██▁▁▁▁▁
-  ██▁▁█▁▁██▁█████▁▁▁███████▁██▁▁▁▁██▁██▁███████▁▁▁▁██▁▁▁▁█████▁▁
-  ██▁███▁██▁██▁▁▁▁▁▁██▁▁▁██▁▁██▁▁██▁▁██▁██▁▁▁██▁▁▁▁██▁▁▁▁██▁▁▁▁▁
-  ▁███▁███▁▁███████▁██▁▁▁██▁▁▁████▁▁▁██▁██▁▁▁██▁▁▁▁██▁▁▁▁███████
-`
-
-const bannerDocsURL = "https://docs.weaviate.io/weaviate"
-
-// startupBanner is a multi-line message. The JSON formatter encodes the
-// newlines as \n, which JSON log viewers render back as line breaks.
+// startupBanner is the message logged as the first entry: the embedded art,
+// since nothing has been fetched yet, and a link without a cluster id, since
+// raft has not committed one yet.
 func startupBanner(restURL string) string {
-	// The URL comes from operator flags and is written verbatim in text mode,
-	// so control characters are dropped: a newline would forge a log line.
-	restURL = strings.Map(func(r rune) rune {
-		if r < ' ' || r == 0x7f {
-			return -1
-		}
-		return r
-	}, restURL)
-
-	var b strings.Builder
-	b.WriteString(bannerArt)
-	fmt.Fprintf(&b, "\n  ► Version: %s\n", build.Version)
-	fmt.Fprintf(&b, "  ► Docs:    %s\n", bannerDocsURL)
-	fmt.Fprintf(&b, "  ► Cluster: %s/v1/meta\n", restURL)
-	fmt.Fprintf(&b, "  ► Status:  Starting up...\n")
-	return b.String()
+	return banner.Render(banner.EmbeddedArt, restURL, banner.LandingURL, "Starting up...")
 }
 
-// logStartupBanner runs before the config is loaded, so the switch is read
-// straight from the environment like LOG_FORMAT and LOG_LEVEL.
 // listenFlags mirrors the generated server's listener flags, tags included, so
 // the banner can know the REST address before the generated code parses them.
 type listenFlags struct {
@@ -103,12 +75,19 @@ func displayHost(host string) string {
 	return host
 }
 
+// startupBannerDisabled runs before the config is loaded, so the switch is
+// read straight from the environment like LOG_FORMAT and LOG_LEVEL. It turns
+// the repeat banner off as well.
+func startupBannerDisabled() bool {
+	return entcfg.Enabled(os.Getenv("DISABLE_STARTUP_BANNER"))
+}
+
 func logStartupBanner(logger logrus.FieldLogger, restURL string) {
-	if entcfg.Enabled(os.Getenv("DISABLE_STARTUP_BANNER")) {
+	if startupBannerDisabled() {
 		return
 	}
 	logger.WithFields(logrus.Fields{
 		"action":                bannerAction,
-		enterrors.DocsLinkField: bannerDocsURL,
+		enterrors.DocsLinkField: banner.LandingURL,
 	}).Info(startupBanner(restURL))
 }

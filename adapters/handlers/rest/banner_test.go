@@ -21,19 +21,17 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-)
 
-func TestBannerLogoHasNoBackslashes(t *testing.T) {
-	// Grafana's "Escape newlines" turns \n into line breaks but leaves \\
-	// doubled, so a backslash in the logo renders garbled there.
-	assert.NotContains(t, bannerArt, `\`)
-}
+	"github.com/weaviate/weaviate/usecases/banner"
+)
 
 func TestStartupBanner(t *testing.T) {
 	got := startupBanner("http://localhost:8080")
 
-	assert.Contains(t, got, bannerArt)
-	assert.Contains(t, got, "► Docs:    "+bannerDocsURL)
+	for _, line := range banner.EmbeddedArt {
+		assert.Contains(t, got, line+"\n")
+	}
+	assert.Contains(t, got, "► Docs:    "+banner.LandingURL)
 	assert.Contains(t, got, "► Cluster: http://localhost:8080/v1/meta")
 	assert.True(t, strings.HasSuffix(got, "\n"), "banner ends with a newline so the next entry starts on its own line")
 }
@@ -81,7 +79,7 @@ func TestLogStartupBanner(t *testing.T) {
 			var entry map[string]any
 			require.NoError(t, json.Unmarshal([]byte(lines[0]), &entry))
 			assert.Equal(t, bannerAction, entry["action"])
-			assert.Equal(t, bannerDocsURL, entry["docs_url"])
+			assert.Equal(t, banner.LandingURL, entry["docs_url"])
 			assert.Equal(t, startupBanner("http://localhost:8080"), entry["msg"])
 		})
 	}

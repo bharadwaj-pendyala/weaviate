@@ -14,6 +14,8 @@ package errors
 import (
 	stderrors "errors"
 	"fmt"
+	"net/url"
+	"sync/atomic"
 
 	"github.com/sirupsen/logrus"
 )
@@ -37,9 +39,38 @@ const (
 	DocsIDNotEnoughMappings DocsID = "core-mem001"
 )
 
-// DocsLink is the URL of the page that documents id.
+// clusterIDSource reports the cluster's id, or "" before raft has committed
+// one; a cluster with telemetry off never has one. Set once at startup.
+var clusterIDSource atomic.Pointer[func() string]
+
+// SetClusterIDSource makes every docs link carry the cluster id as
+// ?clusterid=<id>, so the docs page can tell which cluster the reader came
+// from. nil removes it.
+func SetClusterIDSource(fn func() string) {
+	if fn == nil {
+		clusterIDSource.Store(nil)
+		return
+	}
+	clusterIDSource.Store(&fn)
+}
+
+// WithClusterID appends ?clusterid=<id> to u when the cluster has an id.
+func WithClusterID(u string) string {
+	p := clusterIDSource.Load()
+	if p == nil {
+		return u
+	}
+	id := (*p)()
+	if id == "" {
+		return u
+	}
+	return u + "?clusterid=" + url.QueryEscape(id)
+}
+
+// DocsLink is the URL of the page that documents id, carrying the cluster id
+// when one is known.
 func DocsLink(id DocsID) string {
-	return docsLinkBase + string(id)
+	return WithClusterID(docsLinkBase + string(id))
 }
 
 // DocsLinkFieldsFor returns the log fields pointing at the page for id, for a

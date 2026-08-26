@@ -174,3 +174,35 @@ func TestErrGraphQLUserUnwrapsForDocsLinks(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotEnoughMappings)
 	assert.Equal(t, mappingsFields, DocsLinkFields(err))
 }
+
+func TestDocsLinkCarriesClusterID(t *testing.T) {
+	t.Cleanup(func() { SetClusterIDSource(nil) })
+
+	tests := []struct {
+		name   string
+		source func() string
+		want   string
+	}{
+		{name: "no source", source: nil, want: "https://docs.weaviate.io/e/core-mem001"},
+		{name: "id not committed yet", source: func() string { return "" }, want: "https://docs.weaviate.io/e/core-mem001"},
+		{
+			name:   "id known",
+			source: func() string { return "0198c0de-dead-beef-8000-000000000001" },
+			want:   "https://docs.weaviate.io/e/core-mem001?clusterid=0198c0de-dead-beef-8000-000000000001",
+		},
+		{
+			name:   "id is query-escaped, never trusted",
+			source: func() string { return "a b&c" },
+			want:   "https://docs.weaviate.io/e/core-mem001?clusterid=a+b%26c",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			SetClusterIDSource(tt.source)
+			assert.Equal(t, tt.want, DocsLink(DocsIDNotEnoughMappings))
+			assert.Equal(t, tt.want, DocsLinkFields(ErrNotEnoughMappings)["docs_url"])
+			assert.Equal(t, "not enough memory mappings (see "+tt.want+")", MessageWithDocsLink(ErrNotEnoughMappings))
+		})
+	}
+}
