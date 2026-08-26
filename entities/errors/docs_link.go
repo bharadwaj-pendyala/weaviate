@@ -15,6 +15,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync/atomic"
 
 	"github.com/sirupsen/logrus"
@@ -26,10 +27,35 @@ const (
 	// appended there breaks their rules.
 	DocsLinkField = "docs_url"
 
-	// docsLinkBase resolves an id through a redirect kept in the docs repo, so
-	// a docs restructure cannot rot a URL already compiled into a release.
-	docsLinkBase = "https://docs.weaviate.io/e/"
+	// DefaultDocsBaseURL is where every docs link points unless DOCS_BASE_URL
+	// says otherwise (a docs mirror, or a preview while the docs are in review).
+	DefaultDocsBaseURL = "https://docs.weaviate.io"
 )
+
+var docsBaseURL atomic.Pointer[string]
+
+// SetDocsBaseURL points every docs link at another host. Only http and https
+// are accepted, and a trailing slash is dropped.
+func SetDocsBaseURL(raw string) error {
+	u, err := url.Parse(strings.TrimSuffix(strings.TrimSpace(raw), "/"))
+	if err != nil {
+		return err
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("docs base URL must be http(s)://host, got %q", raw)
+	}
+	base := u.String()
+	docsBaseURL.Store(&base)
+	return nil
+}
+
+// DocsBaseURL is the host docs links point at, without a trailing slash.
+func DocsBaseURL() string {
+	if p := docsBaseURL.Load(); p != nil {
+		return *p
+	}
+	return DefaultDocsBaseURL
+}
 
 // DocsID names a documented log message. The docs repo redirects /e/<id> to
 // the page for it, so an id is a contract with that repo and never changes.
@@ -67,10 +93,11 @@ func WithClusterID(u string) string {
 	return u + "?clusterid=" + url.QueryEscape(id)
 }
 
-// DocsLink is the URL of the page that documents id, carrying the cluster id
-// when one is known.
+// DocsLink is the URL of the page that documents id: the /e/<id> redirect kept
+// in the docs repo, so a docs restructure cannot rot a URL compiled into a
+// release. It carries the cluster id when one is known.
 func DocsLink(id DocsID) string {
-	return WithClusterID(docsLinkBase + string(id))
+	return WithClusterID(DocsBaseURL() + "/e/" + string(id))
 }
 
 // DocsLinkFieldsFor returns the log fields pointing at the page for id, for a

@@ -21,15 +21,7 @@ import (
 
 	entcfg "github.com/weaviate/weaviate/entities/config"
 	enterrors "github.com/weaviate/weaviate/entities/errors"
-	"github.com/weaviate/weaviate/usecases/banner"
 )
-
-// startupBanner is the message logged as the first entry: the embedded art,
-// since nothing has been fetched yet, and a link without a cluster id, since
-// raft has not committed one yet.
-func startupBanner(restURL string) string {
-	return banner.Render(banner.EmbeddedArt, restURL, banner.LandingURL, "Starting up...")
-}
 
 // listenFlags mirrors the generated server's listener flags, tags included, so
 // the banner can know the REST address before the generated code parses them.
@@ -75,19 +67,21 @@ func displayHost(host string) string {
 	return host
 }
 
-// startupBannerDisabled runs before the config is loaded, so the switch is
-// read straight from the environment like LOG_FORMAT and LOG_LEVEL. It turns
-// the repeat banner off as well.
-func startupBannerDisabled() bool {
+// bannerDisabled is read straight from the environment like LOG_FORMAT and
+// LOG_LEVEL, before the config is parsed.
+func bannerDisabled() bool {
 	return entcfg.Enabled(os.Getenv("DISABLE_STARTUP_BANNER"))
 }
 
-func logStartupBanner(logger logrus.FieldLogger, restURL string) {
-	if startupBannerDisabled() {
+// applyDocsBaseURL reads DOCS_BASE_URL before the config is parsed, so that
+// every docs link built from here on points at the right host. An invalid
+// value is logged and the default kept.
+func applyDocsBaseURL(logger logrus.FieldLogger) {
+	raw := os.Getenv("DOCS_BASE_URL")
+	if raw == "" {
 		return
 	}
-	logger.WithFields(logrus.Fields{
-		"action":                bannerAction,
-		enterrors.DocsLinkField: banner.LandingURL,
-	}).Info(startupBanner(restURL))
+	if err := enterrors.SetDocsBaseURL(raw); err != nil {
+		logger.WithField("action", "startup").Warnf("ignoring DOCS_BASE_URL: %v", err)
+	}
 }

@@ -12,78 +12,12 @@
 package rest
 
 import (
-	"bytes"
-	"encoding/json"
 	"os"
-	"strings"
 	"testing"
 
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/weaviate/weaviate/usecases/banner"
 )
-
-func TestStartupBanner(t *testing.T) {
-	got := startupBanner("http://localhost:8080")
-
-	for _, line := range banner.EmbeddedArt {
-		assert.Contains(t, got, line+"\n")
-	}
-	assert.Contains(t, got, "► Docs:    "+banner.LandingURL)
-	assert.Contains(t, got, "► Cluster: http://localhost:8080/v1/meta")
-	assert.True(t, strings.HasSuffix(got, "\n"), "banner ends with a newline so the next entry starts on its own line")
-}
-
-func TestStartupBannerDropsControlCharacters(t *testing.T) {
-	got := startupBanner("http://h:1\nlevel=error msg=forged\r\x1b[31m")
-
-	assert.Contains(t, got, "► Cluster: http://h:1level=error msg=forged[31m/v1/meta\n")
-	assert.NotContains(t, got, "\nlevel=error")
-}
-
-func TestLogStartupBanner(t *testing.T) {
-	tests := []struct {
-		name      string
-		envValue  string
-		wantEntry bool
-	}{
-		{name: "unset", envValue: "", wantEntry: true},
-		{name: "false", envValue: "false", wantEntry: true},
-		{name: "off", envValue: "off", wantEntry: true},
-		{name: "true", envValue: "true", wantEntry: false},
-		{name: "1", envValue: "1", wantEntry: false},
-		{name: "enabled", envValue: "enabled", wantEntry: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("DISABLE_STARTUP_BANNER", tt.envValue)
-
-			var buf bytes.Buffer
-			logger := logrus.New()
-			logger.SetOutput(&buf)
-			logger.SetFormatter(NewWeaviateJSONFormatter())
-
-			logStartupBanner(logger, "http://localhost:8080")
-
-			if !tt.wantEntry {
-				assert.Empty(t, buf.String())
-				return
-			}
-
-			lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
-			require.Len(t, lines, 1, "the banner is a single JSON line")
-
-			var entry map[string]any
-			require.NoError(t, json.Unmarshal([]byte(lines[0]), &entry))
-			assert.Equal(t, bannerAction, entry["action"])
-			assert.Equal(t, banner.LandingURL, entry["docs_url"])
-			assert.Equal(t, startupBanner("http://localhost:8080"), entry["msg"])
-		})
-	}
-}
 
 func TestRestURLFromArgs(t *testing.T) {
 	tests := []struct {

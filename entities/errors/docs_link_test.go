@@ -20,6 +20,7 @@ import (
 	pkgerrors "github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/weaviate/weaviate/entities/storagestate"
 )
@@ -203,6 +204,38 @@ func TestDocsLinkCarriesClusterID(t *testing.T) {
 			assert.Equal(t, tt.want, DocsLink(DocsIDNotEnoughMappings))
 			assert.Equal(t, tt.want, DocsLinkFields(ErrNotEnoughMappings)["docs_url"])
 			assert.Equal(t, "not enough memory mappings (see "+tt.want+")", MessageWithDocsLink(ErrNotEnoughMappings))
+		})
+	}
+}
+
+func TestSetDocsBaseURL(t *testing.T) {
+	t.Cleanup(func() { docsBaseURL.Store(nil) })
+
+	tests := []struct {
+		name    string
+		raw     string
+		want    string
+		wantErr bool
+	}{
+		{name: "preview host", raw: "https://docs-preview.netlify.app", want: "https://docs-preview.netlify.app/e/core-mem001"},
+		{name: "trailing slash dropped", raw: "https://docs.internal/ ", want: "https://docs.internal/e/core-mem001"},
+		{name: "http mirror", raw: "http://docs-mirror:8080", want: "http://docs-mirror:8080/e/core-mem001"},
+		{name: "no scheme", raw: "docs.internal", wantErr: true},
+		{name: "not a web scheme", raw: "file:///docs", wantErr: true},
+		{name: "empty", raw: "", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			docsBaseURL.Store(nil)
+			err := SetDocsBaseURL(tt.raw)
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Equal(t, "https://docs.weaviate.io/e/core-mem001", DocsLink(DocsIDNotEnoughMappings), "an invalid value leaves the default")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, DocsLink(DocsIDNotEnoughMappings))
 		})
 	}
 }

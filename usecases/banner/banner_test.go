@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,16 +41,16 @@ func TestEmbeddedArtGlyphs(t *testing.T) {
 }
 
 func TestRender(t *testing.T) {
-	got := Render([]string{"  ██", "  ▁▁"}, "http://localhost:8080", LandingURL+"?clusterid=abc", "Running")
+	got := Render([]string{"  ██", "  ▁▁"}, "http://localhost:8080", LandingURL()+"?clusterid=abc", "Running")
 
 	assert.True(t, strings.HasPrefix(got, "\n  ██\n  ▁▁\n\n"), "art first, then a blank line: %q", got)
-	assert.Contains(t, got, "  ► Docs:    "+LandingURL+"?clusterid=abc\n")
+	assert.Contains(t, got, "  ► Docs:    "+LandingURL()+"?clusterid=abc\n")
 	assert.Contains(t, got, "  ► Cluster: http://localhost:8080/v1/meta\n")
 	assert.True(t, strings.HasSuffix(got, "  ► Status:  Running\n"))
 }
 
 func TestRenderDropsControlCharacters(t *testing.T) {
-	got := Render(nil, "http://h:1\nlevel=error msg=forged\r\x1b[31m", LandingURL, "up\ndown")
+	got := Render(nil, "http://h:1\nlevel=error msg=forged\r\x1b[31m", LandingURL(), "up\ndown")
 
 	assert.Contains(t, got, "► Cluster: http://h:1level=error msg=forged[31m/v1/meta\n")
 	assert.Contains(t, got, "► Status:  updown\n")
@@ -161,7 +162,15 @@ func TestFetchHonoursContextTimeout(t *testing.T) {
 
 func TestRepeater(t *testing.T) {
 	t.Cleanup(func() { enterrors.SetClusterIDSource(nil) })
-	enterrors.SetClusterIDSource(func() string { return "0198c0de-dead-beef-8000-000000000001" })
+	const id = "0198c0de-dead-beef-8000-000000000001"
+	var committed atomic.Bool
+	clusterID := func() string {
+		if committed.Load() {
+			return id
+		}
+		return ""
+	}
+	enterrors.SetClusterIDSource(clusterID)
 
 	logger, hook := test.NewNullLogger()
 	logger.SetLevel(logrus.DebugLevel)
@@ -176,12 +185,17 @@ func TestRepeater(t *testing.T) {
 		return fetched, nil
 	}
 
-	r := NewRepeater(logger, "http://localhost:8080", 5*time.Millisecond, fetch)
+	r := NewRepeater(logger, clusterID, "http://localhost:8080", 5*time.Millisecond, fetch)
 	assert.Equal(t, EmbeddedArt, r.Art(), "nothing fetched yet")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { r.Run(ctx); close(done) }()
+
+	// No id yet: nothing is logged, however long we wait.
+	time.Sleep(30 * time.Millisecond)
+	assert.Empty(t, hook.AllEntries(), "no banner before the cluster has an id")
+	committed.Store(true)
 
 	var banners []*logrus.Entry
 	require.Eventually(t, func() bool {
@@ -212,7 +226,7 @@ func TestRepeater(t *testing.T) {
 	assert.Equal(t, 1, failedFetch)
 
 	last := banners[len(banners)-1]
-	docsURL := LandingURL + "?clusterid=0198c0de-dead-beef-8000-000000000001"
+	docsURL := LandingURL() + "?clusterid=0198c0de-dead-beef-8000-000000000001"
 	assert.Equal(t, docsURL, last.Data[enterrors.DocsLinkField])
 	assert.Contains(t, last.Message, "  ██ remote\n", "the fetched art replaces the embedded art")
 	assert.Contains(t, last.Message, "► Docs:    "+docsURL)
@@ -220,8 +234,24 @@ func TestRepeater(t *testing.T) {
 	assert.Equal(t, fetched, r.Art())
 }
 
+func TestRepeaterStopsWhileWaitingForClusterID(t *testing.T) {
+	logger, hook := test.NewNullLogger()
+	r := NewRepeater(logger, func() string { return "" }, "http://localhost:8080", time.Millisecond, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.Run(ctx); close(done) }()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+	assert.Empty(t, hook.AllEntries())
+}
+
 func TestNewRepeaterDefaults(t *testing.T) {
-	r := NewRepeater(logrus.New(), "http://localhost:8080", 0, nil)
+	r := NewRepeater(logrus.New(), func() string { return "" }, "http://localhost:8080", 0, nil)
 	assert.Equal(t, DefaultInterval, r.interval)
 	assert.NotNil(t, r.fetch)
 }

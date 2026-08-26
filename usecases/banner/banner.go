@@ -17,14 +17,11 @@ import (
 	"strings"
 	"time"
 
+	enterrors "github.com/weaviate/weaviate/entities/errors"
 	"github.com/weaviate/weaviate/usecases/build"
 )
 
 const (
-	// LandingURL is printed on every start and compiled into every release, so
-	// the docs site keeps this path stable the way it keeps /e/<id> ids stable.
-	LandingURL = "https://docs.weaviate.io/improve-your-cluster"
-
 	// ArtURL serves the art the repeat banner draws. The file lives in the
 	// website repository under static/banner/; a new shape gets a new file.
 	ArtURL = "https://raw.githubusercontent.com/weaviate/weaviate-io/banner/startup-art/static/banner/v1.json" // DEV: weaviate/weaviate-io#3688 not deployed yet; revert to https://weaviate.io/banner/v1.json before merge
@@ -36,6 +33,12 @@ const (
 	MaxArtLines   = 10
 	MaxArtColumns = 100
 )
+
+// LandingURL is printed on every start and compiled into every release, so
+// the docs site keeps the path stable the way it keeps /e/<id> ids stable.
+func LandingURL() string {
+	return enterrors.DocsBaseURL() + "/improve-your-cluster"
+}
 
 // EmbeddedArt is drawn at startup and whenever the art cannot be fetched. It
 // uses only █ and ▁: the two Block Elements glyphs that keep a uniform width
@@ -70,7 +73,7 @@ func Render(art []string, restURL, docsURL, status string) string {
 // verbatim, so a stray newline in a flag value would forge a log line.
 func printable(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r < ' ' || r == 0x7f || r == ' ' || r == ' ' {
+		if r < ' ' || r == 0x7f || r == '\u2028' || r == '\u2029' {
 			return -1
 		}
 		return r

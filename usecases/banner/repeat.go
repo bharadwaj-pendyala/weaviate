@@ -27,21 +27,28 @@ const Action = "banner"
 // Fetcher returns the current art; Fetch is the production one.
 type Fetcher func(ctx context.Context) ([]string, error)
 
-// Repeater logs the banner again on an interval, drawing the art fetched from
-// the website when there is one and EmbeddedArt otherwise. It runs on its own
-// timer: the telemetry ticker never fires with telemetry off and not until
-// its first push succeeds, so nothing here depends on it.
+// clusterIDPoll is how often the repeater checks for the cluster id before
+// the first banner. The id is committed through raft once a leader exists.
+const clusterIDPoll = time.Second
+
+// Repeater logs the banner once the cluster has an id and again every
+// interval, drawing the art fetched from the website when there is one and
+// EmbeddedArt otherwise. It runs on its own timer: the telemetry ticker never
+// fires with telemetry off and not until its first push succeeds, so nothing
+// here depends on it.
 type Repeater struct {
-	logger   logrus.FieldLogger
-	restURL  string
-	interval time.Duration
-	fetch    Fetcher
-	art      atomic.Pointer[[]string]
+	logger    logrus.FieldLogger
+	clusterID func() string
+	restURL   string
+	interval  time.Duration
+	fetch     Fetcher
+	art       atomic.Pointer[[]string]
 }
 
-// NewRepeater builds a repeater; a non-positive interval means
-// DefaultInterval, and a nil fetcher means Fetch against ArtURL.
-func NewRepeater(logger logrus.FieldLogger, restURL string, interval time.Duration, fetch Fetcher) *Repeater {
+// NewRepeater builds a repeater. clusterID returns "" until raft has committed
+// an id; a non-positive interval means DefaultInterval, and a nil fetcher
+// means Fetch against ArtURL.
+func NewRepeater(logger logrus.FieldLogger, clusterID func() string, restURL string, interval time.Duration, fetch Fetcher) *Repeater {
 	if interval <= 0 {
 		interval = DefaultInterval
 	}
@@ -49,14 +56,18 @@ func NewRepeater(logger logrus.FieldLogger, restURL string, interval time.Durati
 		client := NewClient()
 		fetch = func(ctx context.Context) ([]string, error) { return Fetch(ctx, client, ArtURL) }
 	}
-	return &Repeater{logger: logger, restURL: restURL, interval: interval, fetch: fetch}
+	return &Repeater{logger: logger, clusterID: clusterID, restURL: restURL, interval: interval, fetch: fetch}
 }
 
-// Run fetches the art, then repeats the banner every interval until ctx is
-// done. The startup banner was already logged by the caller, so the first
-// emission is one interval in.
+// Run waits for the cluster id, logs the banner, and logs it again every
+// interval until ctx is done. A cluster that never gets an id never sees a
+// banner: the banner's link is only useful with the id on it.
 func (r *Repeater) Run(ctx context.Context) {
+	if !r.waitForClusterID(ctx) {
+		return
+	}
 	r.refresh(ctx)
+	r.emit()
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 	for {
@@ -66,6 +77,24 @@ func (r *Repeater) Run(ctx context.Context) {
 		case <-ticker.C:
 			r.refresh(ctx)
 			r.emit()
+		}
+	}
+}
+
+func (r *Repeater) waitForClusterID(ctx context.Context) bool {
+	if r.clusterID() != "" {
+		return true
+	}
+	ticker := time.NewTicker(clusterIDPoll)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+			if r.clusterID() != "" {
+				return true
+			}
 		}
 	}
 }
@@ -91,7 +120,7 @@ func (r *Repeater) Art() []string {
 }
 
 func (r *Repeater) emit() {
-	docsURL := enterrors.WithClusterID(LandingURL)
+	docsURL := enterrors.WithClusterID(LandingURL())
 	r.logger.WithFields(logrus.Fields{
 		"action":                Action,
 		enterrors.DocsLinkField: docsURL,

@@ -202,14 +202,14 @@ type vectorRepo interface {
 	Shutdown(ctx context.Context) error
 }
 
-func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandLineOptionsGroup, restURL string) *state.State {
+func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandLineOptionsGroup) *state.State {
 	build.Version = ParseVersionFromSwaggerSpec() // Version is always static and loaded from swagger spec.
 
 	// config.ServerVersion is deprecated: It's there to be backward compatible
 	// use build.Version instead.
 	config.ServerVersion = build.Version
 
-	appState := startupRoutine(ctx, serverShutdownCtx, options, restURL)
+	appState := startupRoutine(ctx, serverShutdownCtx, options)
 
 	// Initialize OpenTelemetry tracing
 	if err := opentelemetry.Init(appState.Logger); err != nil {
@@ -1404,8 +1404,7 @@ func configureAPI(api *operations.WeaviateAPI) http.Handler {
 	defer cancel()
 
 	serverShutdownCtx, serverShutdownCancel := context.WithCancelCause(context.Background())
-	restURL := restURLFromArgs(os.Args[1:])
-	appState := MakeAppState(ctx, serverShutdownCtx, connectorOptionGroup, restURL)
+	appState := MakeAppState(ctx, serverShutdownCtx, connectorOptionGroup)
 
 	appState.Logger.WithFields(logrus.Fields{
 		"server_version": config.ServerVersion,
@@ -1520,11 +1519,12 @@ func configureAPI(api *operations.WeaviateAPI) http.Handler {
 		}, appState.Logger)
 		setupTelemetryDebugHandlers(telemeter)
 
-		// The repeat banner fetches its art from weaviate.io, so it rides the
-		// telemetry switch: no telemetry, no phone-home of any kind.
-		if !startupBannerDisabled() {
-			repeater := banner.NewRepeater(appState.Logger, restURL,
-				appState.ServerConfig.Config.BannerInterval, nil)
+		// The banner waits for the cluster id and fetches its art from
+		// weaviate.io, so it rides the telemetry switch: no telemetry, no id and
+		// no phone-home of any kind.
+		if !bannerDisabled() {
+			repeater := banner.NewRepeater(appState.Logger, appState.ClusterService.ClusterID,
+				restURLFromArgs(os.Args[1:]), appState.ServerConfig.Config.BannerInterval, nil)
 			enterrors.GoWrapper(func() { repeater.Run(serverShutdownCtx) }, appState.Logger)
 		}
 	}
@@ -1707,12 +1707,12 @@ func startExportScheduler(appState *state.State) *exportusecase.Scheduler {
 }
 
 // TODO: Split up and don't write into global variables. Instead return an appState
-func startupRoutine(ctx, serverShutdownCtx context.Context, options *swag.CommandLineOptionsGroup, restURL string) *state.State {
+func startupRoutine(ctx, serverShutdownCtx context.Context, options *swag.CommandLineOptionsGroup) *state.State {
 	appState := &state.State{}
 
 	logger := logger()
 	appState.Logger = logger
-	logStartupBanner(logger, restURL)
+	applyDocsBaseURL(logger)
 
 	logger.WithField("action", "startup").WithField("startup_time_left", timeTillDeadline(ctx)).
 		Debug("created startup context, nothing done so far")
