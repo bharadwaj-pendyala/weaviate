@@ -27,7 +27,7 @@ const (
 
 	// ArtURL serves the art the repeat banner draws. The file lives in the
 	// website repository under static/banner/; a new shape gets a new file.
-	ArtURL = "https://weaviate.io/banner/v1.json"
+	ArtURL = "https://raw.githubusercontent.com/weaviate/weaviate-io/banner/startup-art/static/banner/v1.json" // DEV: weaviate/weaviate-io#3688 not deployed yet; revert to https://weaviate.io/banner/v1.json before merge
 
 	// DefaultInterval is how often the banner is repeated after startup.
 	DefaultInterval = 24 * time.Hour
