@@ -61,10 +61,12 @@ func NamespaceErrRendersUnprocessable(err error) bool {
 // callers to leave the message unchanged. A nil err is tolerated and yields
 // fmt's standard "<nil>" rendering rather than panicking, since this helper
 // sits on dozens of REST error paths and a missed err-guard upstream should
-// not crash the handler.
+// not crash the handler. The namespace is stripped before the docs link is
+// appended: a namespace named "https" must not cut the link's scheme.
 func ErrPayloadFromSingleErr(principal *models.Principal, err error) *models.ErrorResponse {
+	msg := namespacing.StripErrorMessage(principal, fmt.Sprintf("%v", err))
 	return &models.ErrorResponse{Error: []*models.ErrorResponseErrorItems0{{
-		Message: namespacing.StripErrorMessage(principal, enterrors.MessageWithDocsLink(err)),
+		Message: enterrors.AppendDocsLink(msg, err),
 	}}}
 }
 

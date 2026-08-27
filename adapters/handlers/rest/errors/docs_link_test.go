@@ -19,13 +19,15 @@ import (
 	"github.com/stretchr/testify/require"
 
 	enterrors "github.com/weaviate/weaviate/entities/errors"
+	"github.com/weaviate/weaviate/entities/models"
 )
 
 func TestErrPayloadFromSingleErrDocsLink(t *testing.T) {
 	tests := []struct {
-		name string
-		err  error
-		want string
+		name      string
+		principal *models.Principal
+		err       error
+		want      string
 	}{
 		{
 			name: "undocumented error is passed through",
@@ -37,11 +39,23 @@ func TestErrPayloadFromSingleErrDocsLink(t *testing.T) {
 			err:  fmt.Errorf("updating db: TYPE_UPDATE_TENANT: memory pressure: cannot init shard: %w", enterrors.ErrNotEnoughMappings),
 			want: "updating db: TYPE_UPDATE_TENANT: memory pressure: cannot init shard: not enough memory mappings (see https://docs.weaviate.io/e/core-mem001)",
 		},
+		{
+			name:      "own namespace is stripped and the link kept",
+			principal: &models.Principal{Username: "u", Namespace: "customer1"},
+			err:       fmt.Errorf("updating db: customer1:Articles: cannot init shard: %w", enterrors.ErrNotEnoughMappings),
+			want:      "updating db: Articles: cannot init shard: not enough memory mappings (see https://docs.weaviate.io/e/core-mem001)",
+		},
+		{
+			name:      "namespace named after the link's scheme leaves the link intact",
+			principal: &models.Principal{Username: "u", Namespace: "https"},
+			err:       fmt.Errorf("updating db: https:Articles: cannot init shard: %w", enterrors.ErrNotEnoughMappings),
+			want:      "updating db: Articles: cannot init shard: not enough memory mappings (see https://docs.weaviate.io/e/core-mem001)",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			payload := ErrPayloadFromSingleErr(nil, tt.err)
+			payload := ErrPayloadFromSingleErr(tt.principal, tt.err)
 			require.Len(t, payload.Error, 1)
 			assert.Equal(t, tt.want, payload.Error[0].Message)
 		})

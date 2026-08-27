@@ -132,7 +132,12 @@ func DocsLinkFields(err error) logrus.Fields {
 // error payloads always were, so nil reads "<nil>" and a broken Error method
 // cannot fail a request.
 func MessageWithDocsLink(err error) string {
-	msg := fmt.Sprintf("%v", err)
+	return AppendDocsLink(fmt.Sprintf("%v", err), err)
+}
+
+// AppendDocsLink adds the page for err to msg, a rendering of err the caller
+// has already adjusted, for example with its namespace prefix stripped.
+func AppendDocsLink(msg string, err error) string {
 	if id, ok := Documented(err); ok {
 		return msg + " (see " + DocsLink(id) + ")"
 	}

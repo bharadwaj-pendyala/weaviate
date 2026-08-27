@@ -169,6 +169,29 @@ func TestMessageWithDocsLink(t *testing.T) {
 	}
 }
 
+func TestAppendDocsLink(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  string
+		err  error
+		want string
+	}{
+		{name: "undocumented keeps the caller's rendering", msg: "Articles: boom", err: fmt.Errorf("ns:Articles: boom"), want: "Articles: boom"},
+		{
+			name: "documented appends the page to the caller's rendering",
+			msg:  "Articles: not enough memory mappings",
+			err:  fmt.Errorf("ns:Articles: %w", ErrNotEnoughMappings),
+			want: "Articles: not enough memory mappings (see https://docs.weaviate.io/e/core-mem001)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, AppendDocsLink(tt.msg, tt.err))
+		})
+	}
+}
+
 func TestErrGraphQLUserUnwrapsForDocsLinks(t *testing.T) {
 	err := NewErrGraphQLUser(fmt.Errorf("explorer: %w", ErrNotEnoughMappings), "Get", "Demo")
 
