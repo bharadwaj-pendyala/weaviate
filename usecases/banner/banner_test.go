@@ -41,19 +41,32 @@ func TestEmbeddedArtGlyphs(t *testing.T) {
 }
 
 func TestRender(t *testing.T) {
-	got := Render([]string{"  ██", "  ▁▁"}, "http://localhost:8080", LandingURL()+"?clusterid=abc", "Running")
+	got := Render([]string{"  ██", "  ▁▁"}, nil, "http://localhost:8080", LandingURL()+"?clusterid=abc", "Running")
 
 	assert.True(t, strings.HasPrefix(got, "\n  ██\n  ▁▁\n\n"), "art first, then a blank line: %q", got)
 	assert.Contains(t, got, "  ► Docs:    "+LandingURL()+"?clusterid=abc\n")
 	assert.Contains(t, got, "  ► Cluster: http://localhost:8080/v1/meta\n")
 	assert.True(t, strings.HasSuffix(got, "  ► Status:  Running\n"))
+	assert.NotContains(t, got, "News", "no news line without a message")
+}
+
+func TestRenderNews(t *testing.T) {
+	news := "Weaviate 1.39 is out: https://weaviate.io/blog/weaviate-1-39-release"
+	got := Render(nil, []string{news}, "http://localhost:8080", LandingURL(), "Running")
+	assert.True(t, strings.HasSuffix(got, "  ► Status:  Running\n  ► News:    "+news+"\n"), "got %q", got)
+
+	// A second line starts in the column the first line's text starts in.
+	got = Render(nil, []string{"first", "second"}, "http://localhost:8080", LandingURL(), "Running")
+	indent := strings.Repeat(" ", len("  ► News:    ")-len("►")+1)
+	assert.True(t, strings.HasSuffix(got, "  ► News:    first\n"+indent+"second\n"), "got %q", got)
 }
 
 func TestRenderDropsControlCharacters(t *testing.T) {
-	got := Render(nil, "http://h:1\nlevel=error msg=forged\r\x1b[31m", LandingURL(), "up\ndown")
+	got := Render(nil, []string{"new\nlevel=error msg=forged"}, "http://h:1\nlevel=error msg=forged\r\x1b[31m", LandingURL(), "up\ndown")
 
 	assert.Contains(t, got, "► Cluster: http://h:1level=error msg=forged[31m/v1/meta\n")
 	assert.Contains(t, got, "► Status:  updown\n")
+	assert.Contains(t, got, "► News:    newlevel=error msg=forged\n")
 	assert.NotContains(t, got, "\nlevel=error")
 }
 
@@ -81,7 +94,7 @@ func TestSanitize(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := Sanitize(tt.in)
+			got, err := Sanitize(tt.in, MaxArtLines)
 			if tt.wantErr {
 				assert.Error(t, err)
 				return
@@ -108,17 +121,27 @@ func TestFetch(t *testing.T) {
 		status      int
 		contentType string
 		body        string
-		want        []string
+		want        *Content
 		wantErr     string
 	}{
 		{
 			name: "art", status: 200, contentType: "application/json; charset=utf-8",
 			body: `{"schema_version":1,"art":["  ██","  ▁▁"],"_comment":"ignored"}`,
-			want: []string{"  ██", "  ▁▁"},
+			want: &Content{Art: []string{"  ██", "  ▁▁"}},
+		},
+		{
+			name: "art with news", status: 200, contentType: "application/json",
+			body: `{"schema_version":1,"art":["  ██"],"message":["Weaviate 1.39 is out: https://weaviate.io/blog/weaviate-1-39-release","","more","a fourth line is cut"]}`,
+			want: &Content{Art: []string{"  ██"}, Message: []string{"Weaviate 1.39 is out: https://weaviate.io/blog/weaviate-1-39-release", "", "more"}},
+		},
+		{
+			name: "blank news is dropped", status: 200, contentType: "application/json",
+			body: `{"schema_version":1,"art":["  ██"],"message":[""," ","\u0000"]}`,
+			want: &Content{Art: []string{"  ██"}},
 		},
 		{
 			name: "text/plain as raw file hosts serve it", status: 200, contentType: "text/plain; charset=utf-8",
-			body: `{"schema_version":1,"art":["  ██"]}`, want: []string{"  ██"},
+			body: `{"schema_version":1,"art":["  ██"]}`, want: &Content{Art: []string{"  ██"}},
 		},
 		{name: "not found", status: 404, contentType: "application/json", body: `{}`, wantErr: "unexpected status 404"},
 		{name: "html error page", status: 200, contentType: "text/html", body: `<html>`, wantErr: "unexpected content type"},
@@ -175,9 +198,9 @@ func TestRepeater(t *testing.T) {
 	logger, hook := test.NewNullLogger()
 	logger.SetLevel(logrus.DebugLevel)
 
-	fetched := []string{"  ██ remote"}
+	fetched := &Content{Art: []string{"  ██ remote"}, Message: []string{"Weaviate 1.39 is out: https://weaviate.io/blog/weaviate-1-39-release"}}
 	calls := 0
-	fetch := func(context.Context) ([]string, error) {
+	fetch := func(context.Context) (*Content, error) {
 		calls++
 		if calls == 1 {
 			return nil, errors.New("offline")
@@ -186,7 +209,7 @@ func TestRepeater(t *testing.T) {
 	}
 
 	r := NewRepeater(logger, clusterID, "http://localhost:8080", 5*time.Millisecond, fetch)
-	assert.Equal(t, EmbeddedArt, r.Art(), "nothing fetched yet")
+	assert.Equal(t, &Content{Art: EmbeddedArt}, r.Content(), "nothing fetched yet")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -231,7 +254,8 @@ func TestRepeater(t *testing.T) {
 	assert.Contains(t, last.Message, "  ██ remote\n", "the fetched art replaces the embedded art")
 	assert.Contains(t, last.Message, "► Docs:    "+docsURL)
 	assert.Contains(t, last.Message, "► Status:  Running")
-	assert.Equal(t, fetched, r.Art())
+	assert.Contains(t, last.Message, "► News:    Weaviate 1.39 is out: https://weaviate.io/blog/weaviate-1-39-release\n")
+	assert.Equal(t, fetched, r.Content())
 }
 
 func TestRepeaterStopsWhileWaitingForClusterID(t *testing.T) {

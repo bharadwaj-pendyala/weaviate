@@ -29,9 +29,11 @@ const (
 	// DefaultInterval is how often the banner is repeated after startup.
 	DefaultInterval = 24 * time.Hour
 
-	// MaxArtLines and MaxArtColumns bound what a log line and a terminal carry.
-	MaxArtLines   = 10
-	MaxArtColumns = 100
+	// MaxArtLines and MaxArtColumns bound what a log line and a terminal carry;
+	// MaxMessageLines bounds the news printed under the banner.
+	MaxArtLines     = 10
+	MaxArtColumns   = 100
+	MaxMessageLines = 3
 )
 
 // LandingURL is printed on every start and compiled into every release, so
@@ -53,9 +55,10 @@ var EmbeddedArt = []string{
 }
 
 // Render builds the banner message: the art, then the version, the docs
-// link, this node's /v1/meta URL and a status. Newlines stay in the message;
-// the JSON formatter escapes them and log viewers render them back.
-func Render(art []string, restURL, docsURL, status string) string {
+// link, this node's /v1/meta URL, a status, and a news line when the fetched
+// content carries one. Newlines stay in the message; the JSON formatter
+// escapes them and log viewers render them back.
+func Render(art, message []string, restURL, docsURL, status string) string {
 	var b strings.Builder
 	b.WriteString("\n")
 	for _, line := range art {
@@ -66,8 +69,18 @@ func Render(art []string, restURL, docsURL, status string) string {
 	fmt.Fprintf(&b, "  ► Docs:    %s\n", printable(docsURL))
 	fmt.Fprintf(&b, "  ► Cluster: %s/v1/meta\n", printable(restURL))
 	fmt.Fprintf(&b, "  ► Status:  %s\n", printable(status))
+	for i, line := range message {
+		if i == 0 {
+			fmt.Fprintf(&b, "  ► News:    %s\n", printable(line))
+			continue
+		}
+		fmt.Fprintf(&b, "%s%s\n", newsIndent, printable(line))
+	}
 	return b.String()
 }
+
+// newsIndent aligns the later news lines under the first one's text.
+const newsIndent = "             "
 
 // printable drops control characters: the text formatter writes the banner
 // verbatim, so a stray newline in a flag value would forge a log line.

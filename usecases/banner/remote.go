@@ -30,16 +30,25 @@ const (
 )
 
 // artDocument is the shape of ArtURL. Unknown fields are ignored; an unknown
-// schema_version is refused so a newer format is never half-read.
+// schema_version is refused so a newer format is never half-read. message is
+// optional: a release or feature announcement printed under the banner.
 type artDocument struct {
 	SchemaVersion int      `json:"schema_version"`
 	Art           []string `json:"art"`
+	Message       []string `json:"message"`
 }
 
-// Fetch downloads and sanitizes the banner art. Every failure is returned
+// Content is what ArtURL serves once sanitized: the art, and the news lines
+// shown under the banner when the file carries any.
+type Content struct {
+	Art     []string
+	Message []string
+}
+
+// Fetch downloads and sanitizes the banner content. Every failure is returned
 // rather than logged, so the caller can keep it at debug level: an air-gapped
 // node fails this on every repeat and must not see an error for it.
-func Fetch(ctx context.Context, client *http.Client, url string) ([]string, error) {
+func Fetch(ctx context.Context, client *http.Client, url string) (*Content, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -77,7 +86,16 @@ func Fetch(ctx context.Context, client *http.Client, url string) ([]string, erro
 	if doc.SchemaVersion != 1 {
 		return nil, fmt.Errorf("unsupported schema_version %d", doc.SchemaVersion)
 	}
-	return Sanitize(doc.Art)
+	art, err := Sanitize(doc.Art, MaxArtLines)
+	if err != nil {
+		return nil, err
+	}
+	content := &Content{Art: art}
+	// The news is optional, so a missing or blank message is not an error.
+	if message, err := Sanitize(doc.Message, MaxMessageLines); err == nil {
+		content.Message = message
+	}
+	return content, nil
 }
 
 // NewClient is the HTTP client the repeater fetches with: a short timeout, so
@@ -86,13 +104,13 @@ func NewClient() *http.Client {
 	return &http.Client{Timeout: fetchTimeout}
 }
 
-// Sanitize keeps remote art within what a log line can carry: control
-// characters are dropped, lines are cut to MaxArtColumns, at most MaxArtLines
-// are kept, and art with no visible content is refused.
-func Sanitize(lines []string) ([]string, error) {
-	out := make([]string, 0, MaxArtLines)
+// Sanitize keeps remote lines within what a log line can carry: control
+// characters are dropped, lines are cut to MaxArtColumns, at most maxLines
+// are kept, and input with no visible content is refused.
+func Sanitize(lines []string, maxLines int) ([]string, error) {
+	out := make([]string, 0, maxLines)
 	for _, line := range lines {
-		if len(out) == MaxArtLines {
+		if len(out) == maxLines {
 			break
 		}
 		clean := []rune(printable(line))
@@ -105,7 +123,7 @@ func Sanitize(lines []string) ([]string, error) {
 		out = out[:len(out)-1]
 	}
 	if len(out) == 0 {
-		return nil, errors.New("art has no visible lines")
+		return nil, errors.New("no visible lines")
 	}
 	return out, nil
 }
