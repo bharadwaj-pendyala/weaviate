@@ -109,10 +109,8 @@ func TestMultiNode_RestartInsideMergedBarrier_CommitsAndServes(t *testing.T) {
 	rollingRestartCluster(ctx, t, compose)
 	requireEveryReplicaServes(t, compose, className, paths[0], expectedPerPath, "after a second restart")
 
-	for nodeIdx := 1; nodeIdx <= 3; nodeIdx++ {
-		require.Equalf(t, "field", tryGetPropertyTokenization(restURIOf(compose, nodeIdx), className, "path"),
-			"node %d must report the migrated tokenization", nodeIdx)
-	}
+	// Each node's own schema, not the leader's answer three times over.
+	awaitTokenizationOnAllNodes(t, compose, className, "path", "field")
 }
 
 // requireEveryReplicaServes asks each node directly rather than the cluster,
