@@ -581,12 +581,12 @@ func (t *ShardReindexTaskGeneric) RunSwapOnShard(ctx context.Context, shard Shar
 // runtimeSwap path on the rehydrate flow from a class of state-divergence
 // races between in-memory bucket state and on-disk reindex state:
 //
-//   - A previous in-process runtimeSwap was interrupted mid-flight
-//     by ctx.Canceled (graceful shutdown) at Step 1 or Step 2. The
-//     interrupted ShutdownBucket may have removed the reindex bucket
-//     from the store's bucket map without advancing the record, and
-//     the cancellation can leave compaction callbacks
-//     unregistered partway through the unhook sequence.
+//   - A previous in-process runtimePrepare was interrupted mid-flight
+//     by ctx.Canceled (graceful shutdown). The interrupted
+//     ShutdownBucket may have removed the reindex bucket from the
+//     store's bucket map without advancing the record, and the
+//     cancellation can leave compaction callbacks unregistered
+//     partway through the unhook sequence.
 //   - On restart, the shard-registered recovery task's OnAfterLsmInit
 //     (see [shardReindexerV3RecoveryOnly]) is the only re-load hook.
 //     If for any reason the bucket name lookup in
@@ -1131,7 +1131,7 @@ func (t *ShardReindexTaskGeneric) OnAfterLsmInitAsync(ctx context.Context, shard
 		// Durability barrier: flush every per-property reindex bucket's
 		// memtable to a segment BEFORE recording the rebuild complete.
 		// Without this, a SIGKILL between that record write and the
-		// eventual [runtimeSwap] Step 1 (FlushAndSwitch) loses any
+		// eventual [runtimePrepare]'s FlushAndSwitch loses any
 		// in-memtable writes — the record would claim a complete rebuild
 		// while the re-tokenized rows are still in volatile memory. On
 		// restart the resume skips re-iterating, the swap prepends a
@@ -1239,12 +1239,13 @@ func (t *ShardReindexTaskGeneric) OnAfterLsmInitAsync(ctx context.Context, shard
 // load via reconciliation, because renaming a
 // dir whose mmaps are open would corrupt the segment registry.
 //
-// Disable double-write callbacks via a defer at the top of the
-// function so callbacks stop on every exit path. Same-process
-// retry of runtimeSwap is not supported (the in-memory bucket
-// state is partially mutated); recovery after a mid-swap crash
-// happens after the next node restart, through reconciliation at shard
-// init and RunSwapOnShard's record dispatch.
+// The double-write mirror survives every error exit, because a mid-loop
+// teardown would route writes for a not-yet-flipped property into the
+// directory restart promotion then deletes. It is disarmed only once the
+// swap completes. Same-process retry of runtimeSwap is not supported (the
+// in-memory bucket state is partially mutated); recovery after a mid-swap
+// crash happens after the next node restart, through reconciliation at
+// shard init and RunSwapOnShard's record dispatch.
 // runtimePrepare runs the Phase 1 (background-safe) preparation work
 // that used to be inlined into runtimeSwap.
 //
