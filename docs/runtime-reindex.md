@@ -25,11 +25,12 @@ godoc wins — and that's a bug in this doc.
 > derived backup name. `inverted_reindex_record.go` and
 > `inverted_reindex_reconcile.go` are the source of truth.
 >
-> Sections 4 onwards have not caught up. Read every mention below of a
+> The sections below have not caught up. Read every mention below of a
 > marker file (`started.mig`, `reindexed.mig`, `prepended.mig`, `merged.mig`,
 > `swapped.mig`, `tidied.mig`, `properties.mig`), of
-> `FinalizeCompletedMigrations`, of a rename-to-backup, or of a "tidied"
-> state as a description of the retired representation. The API, the strategy
+> `FinalizeCompletedMigrations`, of `completedMigrationGens`, of a
+> rename-to-backup, or of a "tidied" state as a description of the retired
+> representation. The API, the strategy
 > catalogue, the concurrency model, multi-tenancy and the tokenization
 > overlay are unaffected and still accurate.
 

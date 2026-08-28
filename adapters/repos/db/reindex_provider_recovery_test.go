@@ -360,8 +360,9 @@ func TestBuildRecoveryTasksStampsTheIdentity(t *testing.T) {
 
 // TestLocalCallbacksDoneReadsEachShardsRecordsOnce pins that the bootstrap
 // probe reads a shard's records once, not once per (property, index type)
-// tuple the payload names. The unreadable-shard row is what can actually
-// catch a per-tuple regression: the walk ends on the spot either way.
+// tuple the payload names. The clean row is the one that catches a per-tuple
+// regression: the unreadable one returns on its first read, so it can never
+// see a second.
 func TestLocalCallbacksDoneReadsEachShardsRecordsOnce(t *testing.T) {
 	const (
 		prop   = "title"

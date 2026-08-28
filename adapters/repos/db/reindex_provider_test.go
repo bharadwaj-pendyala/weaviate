@@ -693,45 +693,43 @@ func TestSealedUnitRefusesLateEntrants(t *testing.T) {
 	}
 }
 
-// TestUnitRegistriesWorkOnAZeroValueProvider pins that all three registries
-// build themselves lazily: sealing runs on a terminal-cleanup path any
-// provider reaches, and a nil map would panic on first write rather than
-// failing a decision.
-func TestUnitRegistriesWorkOnAZeroValueProvider(t *testing.T) {
+// A drop that fires a second time is not idle: it decrements whatever claim
+// holds the slot now, and after a re-claim that is a different worker's. The
+// teardown then reads the unit as free and removes directories under a worker
+// still writing into them.
+func TestADropNeverUndoesAClaimItDoesNotHold(t *testing.T) {
 	desc := distributedtask.TaskDescriptor{ID: "Books:enable-rangeable:price:ab12", Version: 7}
+	const unit = "shard-1__node-0"
 
-	tests := []struct {
+	for _, tt := range []struct {
 		name string
-		take func(p *ReindexProvider) (func(), bool)
-		// held reports the registry the claim is recorded in, which must be
-		// non-empty while it is held and empty once it is dropped.
-		held func(p *ReindexProvider) int
+		// sibling, when set, keeps the task's entry alive across the first
+		// drop, so the two rows differ in whether the map was rebuilt.
+		sibling string
 	}{
-		{
-			name: "a worker claims a unit",
-			take: func(p *ReindexProvider) (func(), bool) { return p.enterLocalUnit(desc, "shard-1__node-0") },
-			held: func(p *ReindexProvider) int { return len(p.liveUnits) },
-		},
-		{
-			name: "a teardown seals one unit",
-			take: func(p *ReindexProvider) (func(), bool) { return p.SealLocalUnit(desc, "shard-1__node-0") },
-			held: func(p *ReindexProvider) int { return len(p.sealedUnits) },
-		},
-		{
-			name: "a teardown seals the whole task",
-			take: func(p *ReindexProvider) (func(), bool) { return p.sealLocalTask(desc) },
-			held: func(p *ReindexProvider) int { return len(p.sealedTasks) },
-		},
-	}
-
-	for _, tt := range tests {
+		{name: "the unit was the last one claimed"},
+		{name: "another unit of the same task is still claimed", sibling: "shard-2__node-0"},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
 			p := &ReindexProvider{}
-			release, ok := tt.take(p)
+			if tt.sibling != "" {
+				releaseSibling, ok := p.enterLocalUnit(desc, tt.sibling)
+				require.True(t, ok)
+				defer releaseSibling()
+			}
+
+			releaseFirst, ok := p.enterLocalUnit(desc, unit)
 			require.True(t, ok)
-			require.Equal(t, 1, tt.held(p), "the claim is recorded while it is held")
-			release()
-			require.Zero(t, tt.held(p), "and gone once it is dropped")
+			releaseFirst()
+			releaseSecond, ok := p.enterLocalUnit(desc, unit)
+			require.True(t, ok)
+			defer releaseSecond()
+
+			releaseFirst()
+
+			require.Equal(t, 1, p.liveUnits[desc][unit], "the worker holding it now still does")
+			_, sealed := p.SealLocalUnit(desc, unit)
+			require.False(t, sealed, "a teardown must not take the unit out from under it")
 		})
 	}
 }

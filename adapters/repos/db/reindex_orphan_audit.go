@@ -602,11 +602,10 @@ func migrationCompletionMarker(trackerPath string) (marker string, found, unread
 // migrationDirPredatesThisProcess reports whether a tracker directory that no
 // record names was already on disk when this process started.
 //
-// The audit's own quarantine sentinel bumps the directory's modification
-// time, so a directory carrying one answers from the sentinel's presence
-// instead: quarantining is itself proof an earlier sweep found no record for
-// it. Without this, the first quarantine would make every legacy directory
-// look fresh forever.
+// A directory carrying a quarantine sentinel answers from the sentinel's
+// presence instead: an earlier sweep already found no record for it, and a
+// restore can bring a matured sentinel in under a directory mtime the restore
+// itself wrote.
 func migrationDirPredatesThisProcess(trackerPath string) (bool, time.Time, error) {
 	info, err := os.Stat(trackerPath)
 	if err != nil {
@@ -675,11 +674,32 @@ func partitionOrphansByQuarantine(lsmPath string, orphans []orphanReindexTracker
 	return confirmed
 }
 
+// preserveTrackerDirMtime returns the restore for trackerPath's own
+// modification time. A tracker no record names is classified by that mtime and
+// the audit is its only reclaimer, so a sweep that moves it strands the tracker
+// for the rest of the process. Best effort: a crash before the restore leaves
+// the directory looking fresh, which is where it was without this.
+func preserveTrackerDirMtime(trackerPath string) func() {
+	info, err := os.Stat(trackerPath)
+	if err != nil {
+		return func() {}
+	}
+	return func() { _ = os.Chtimes(trackerPath, time.Now(), info.ModTime()) }
+}
+
+// removeQuarantineSentinel clears the sentinel without moving the directory
+// mtime the audit classifies by.
+func removeQuarantineSentinel(trackerPath string) error {
+	defer preserveTrackerDirMtime(trackerPath)()
+	return os.Remove(filepath.Join(trackerPath, reindexAuditQuarantineFile))
+}
+
 // writeQuarantineSentinel creates audit_quarantined.mig in trackerPath
 // with the current time as mtime. The file's mtime is the
 // authoritative timestamp the next audit compares against
 // reindexAuditQuarantineWindow.
 func writeQuarantineSentinel(trackerPath string) error {
+	defer preserveTrackerDirMtime(trackerPath)()
 	sentinelPath := filepath.Join(trackerPath, reindexAuditQuarantineFile)
 	f, err := os.OpenFile(sentinelPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -722,13 +742,12 @@ func clearStaleQuarantineSentinels(lsmPath string, knownTask KnownReindexTaskLoo
 	records, someRecordsUnreadable, recordSetUnreadable := migrationRecordsAt(lsmPath, logger)
 	for _, dirName := range quarantined {
 		trackerPath := filepath.Join(migsDir, dirName)
-		sentinelPath := filepath.Join(trackerPath, reindexAuditQuarantineFile)
 		if someRecordsUnreadable || recordSetUnreadable {
 			// A matured sentinel is stored destructive intent. Leaving it on a
 			// shard nothing can classify means the first sweep after the
 			// records read again deletes with no fresh grace period, so clear
 			// it and let that sweep start the window over.
-			if rmErr := os.Remove(sentinelPath); rmErr != nil && !os.IsNotExist(rmErr) {
+			if rmErr := removeQuarantineSentinel(trackerPath); rmErr != nil && !os.IsNotExist(rmErr) {
 				logger.WithField("tracker", dirName).
 					Warnf("reindex orphan audit: failed to clear quarantine sentinel on a shard whose records could not be read: %v", rmErr)
 			}
@@ -755,7 +774,7 @@ func clearStaleQuarantineSentinels(lsmPath string, knownTask KnownReindexTaskLoo
 			// load-bearing for a future orphan sweep, so leave it alone.
 			continue
 		}
-		if rmErr := os.Remove(sentinelPath); rmErr != nil && !os.IsNotExist(rmErr) {
+		if rmErr := removeQuarantineSentinel(trackerPath); rmErr != nil && !os.IsNotExist(rmErr) {
 			logger.WithField("tracker", dirName).
 				Warnf("reindex orphan audit: failed to clear stale quarantine sentinel after task flipped back to known-live: %v", rmErr)
 		}
@@ -922,9 +941,9 @@ func sidecarDirsForOrphan(o *orphanReindexTracker) []string {
 // the tracker's own dir name rather than matched by string prefix. A new
 // strategy is therefore picked up automatically.
 //
-// The displaced <main><backupSuffix>_<gen> is deliberately not among them: it
-// holds the pre-swap main bucket, and no reader here can tell a migration that
-// still needs it from one that does not.
+// The displaced <main><legacyBackupSuffix>_<gen> is deliberately not among
+// them: it holds the pre-swap main bucket, and no reader here can tell a
+// migration that still needs it from one that does not.
 //
 // Preservation asks [migrationPreservedSidecarDirsFor] instead. The two
 // polarities are not one list: a name this one leaves out is a directory the

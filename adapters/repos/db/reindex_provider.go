@@ -371,14 +371,16 @@ func (p *ReindexProvider) enterLocalUnit(desc distributedtask.TaskDescriptor, un
 }
 
 // unitClaims is one of the two per-unit registries: the live-worker counts and
-// the teardown seals. Both count rather than flag, and both are built lazily so
-// a provider works however it was constructed.
+// the teardown seals. Both count rather than flag, and both are built lazily
+// because NewReindexProvider does not build them.
 type unitClaims map[distributedtask.TaskDescriptor]map[string]int
 
 // take records a claim and returns the drop, which undoes exactly that one
-// claim and must be called exactly once. Neither takes a lock: the caller
-// holds [ReindexProvider.mu] for the take, and hands the drop to
-// [ReindexProvider.releaseOf] so whoever finishes the span does not have to.
+// claim and nothing else: a stale copy firing after the unit was re-claimed
+// would zero a live worker's claim, and a teardown would then remove
+// directories under it. Neither take nor drop locks — the caller and
+// [ReindexProvider.releaseOf] hold [ReindexProvider.mu] — which is also what
+// lets the single-shot flag go unsynchronized.
 func (c *unitClaims) take(desc distributedtask.TaskDescriptor, unitID string) func() {
 	if *c == nil {
 		*c = unitClaims{}
@@ -388,7 +390,12 @@ func (c *unitClaims) take(desc distributedtask.TaskDescriptor, unitID string) fu
 	}
 	(*c)[desc][unitID]++
 
+	dropped := false
 	return func() {
+		if dropped {
+			return
+		}
+		dropped = true
 		if (*c)[desc][unitID]--; (*c)[desc][unitID] <= 0 {
 			delete((*c)[desc], unitID)
 		}
@@ -400,7 +407,7 @@ func (c *unitClaims) take(desc distributedtask.TaskDescriptor, unitID string) fu
 
 // releaseOf puts a drop under [ReindexProvider.mu] so whichever goroutine
 // finishes the span can call it — never guaranteed to be the one that took
-// the claim. Not repeatable: a second call decrements a claim it doesn't hold.
+// the claim.
 func (p *ReindexProvider) releaseOf(drop func()) func() {
 	return func() {
 		p.mu.Lock()
@@ -1277,11 +1284,9 @@ func (p *ReindexProvider) resolveUnitForPhase(
 		}
 	}
 
-	if cached := p.cachedReindexTasks(task.TaskDescriptor, unitID); len(cached) > 0 {
-		return phaseUnitResolution{Shard: resolvedShard, UnitTasks: cached}
-	}
-
-	// Cache miss — instantiate from disk.
+	// Ahead of the cache check: the caller claims the unit on what this
+	// returns, and a load runs reconciliation, which seals this unit to promote
+	// it. Claiming first refuses that seal and serves an empty bucket.
 	concreteShard, unwrapErr := unwrapShard(ctx, resolvedShard)
 	if unwrapErr != nil {
 		logger.WithField("unit", unitID).
@@ -1290,6 +1295,9 @@ func (p *ReindexProvider) resolveUnitForPhase(
 			Errs:      []string{fmt.Sprintf("unit %s unwrap shard: %v", unitID, unwrapErr)},
 			Transient: errors.Is(unwrapErr, context.Canceled),
 		}
+	}
+	if cached := p.cachedReindexTasks(task.TaskDescriptor, unitID); len(cached) > 0 {
+		return phaseUnitResolution{Shard: resolvedShard, UnitTasks: cached}
 	}
 	fresh, err := p.createReindexTasks(task.TaskDescriptor, unitID, payload, concreteShard.pathLSM(), true)
 	if err != nil {

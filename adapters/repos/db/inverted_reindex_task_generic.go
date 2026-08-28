@@ -958,10 +958,6 @@ func (t *ShardReindexTaskGeneric) OnAfterLsmInitAsync(ctx context.Context, shard
 		return zerotime, false, nil
 	}
 
-	if !hasRecord {
-		err = fmt.Errorf("missing migration record")
-		return zerotime, false, err
-	}
 	iterating, ok := rec.(MigrationRecordIterating)
 	if !ok {
 		logger.Debug("rebuild already complete. nothing to do")
@@ -1166,10 +1162,11 @@ func (t *ShardReindexTaskGeneric) OnAfterLsmInitAsync(ctx context.Context, shard
 // disk I/O; setting the overlay first would open the very gap the overlay
 // exists to close. Callers check that the record is not yet committed.
 //
-// Crash safety gap: the record commits Merged before removeReindexBucketsDirs
-// runs, and nothing reloads the live bucket on a crash in between — the shard
-// can report the migration done while still serving pre-migration data.
-// Tracked as weaviate/etienne-claude-issues#390.
+// Crash safe across the record write: a Merged record decides no flip, so the
+// canonical bucket still holds every write and keeps serving it until a load
+// promotes the staged directory. Reindex directories a crash leaves behind
+// cost disk only — the load hook skips them at a committed record, and the
+// record's closure sweep reclaims them.
 func (t *ShardReindexTaskGeneric) runtimePrepare(ctx context.Context,
 	logger logrus.FieldLogger, shard ShardLike, props []string,
 ) error {

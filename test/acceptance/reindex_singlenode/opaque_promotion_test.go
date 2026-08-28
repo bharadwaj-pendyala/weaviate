@@ -94,7 +94,7 @@ func plantSwappedRecordAcrossRestart(t *testing.T, compose *docker.DockerCompose
 	t.Helper()
 	ctx := context.Background()
 
-	subject := opaqueMigrationSubject(4711, "opaque-promotion", "opaque_promotion_tracker", staged)
+	subject := opaqueMigrationSubject(staged)
 	recordName, record := reindexrecords.Encode(t, db.NewMigrationRecordSwapped(
 		subject, []string{"score"}, map[string]string{"score": "property_score"}))
 
@@ -120,20 +120,20 @@ func plantSwappedRecordAcrossRestart(t *testing.T, compose *docker.DockerCompose
 	require.NoError(t, compose.StartAt(ctx, 0), "restart after planting must succeed")
 }
 
-// opaqueMigrationSubject is the one-property repair-filterable both planters
-// record, differing only in which migration it is and where its data sits.
-func opaqueMigrationSubject(taskVersion uint64, taskID, trackerDir, staged string) db.MigrationSubject {
+// opaqueMigrationSubject is the one-property repair-filterable the planter
+// records; staged is where its data currently sits.
+func opaqueMigrationSubject(staged string) db.MigrationSubject {
 	return db.MigrationSubject{
 		Key: db.MigrationRecordKey{
-			TaskVersion:  taskVersion,
+			TaskVersion:  4711,
 			StrategyCode: db.StrategyCodeFilterableRoaringsetRefresh,
 			UnitID:       "u0",
 		},
-		TaskID:          taskID,
+		TaskID:          "opaque-promotion",
 		MigrationType:   db.ReindexTypeRepairFilterable,
 		Properties:      []string{"score"},
 		IterationCutoff: time.Now().UTC(),
-		TrackerDir:      trackerDir,
+		TrackerDir:      "opaque_promotion_tracker",
 		StagedDirs:      map[string]string{"score": staged},
 		CanonicalDirs:   map[string]string{"score": "property_score"},
 	}

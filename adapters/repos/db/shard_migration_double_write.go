@@ -119,6 +119,10 @@ type propValueIndexState struct {
 	// overlay is not every mirror's answer. Checked once per mirrored write,
 	// so the normal path stays at one analysis.
 	overlaysDiverge bool
+	// analyses is folded in at publication because the snapshot is immutable
+	// after it: deriving it per write allocates once per mirrored object for
+	// the whole lifetime of a migration.
+	analyses []doubleWriteAnalysis
 }
 
 // emptyPropValueIndexState is returned by loadPropValueIndexState before any
@@ -148,6 +152,7 @@ func (s *Shard) mutatePropValueIndexState(fn func(cur propValueIndexState) propV
 		cur = *v.(*propValueIndexState)
 	}
 	next := fn(cur)
+	next.analyses = next.buildDoubleWriteAnalyses()
 	s.propValueIndexState.Store(&next)
 }
 
@@ -236,8 +241,8 @@ func replaceDeleteCallback(cur []deleteCallbackEntry, id uint64, cb onDeleteFrom
 
 // fireAddToPropertyValueIndex invokes the callbacks it is given, bypassing the
 // inline write path's scope suppression (the migration pass needs them fired).
-// The caller picks the set, so a pass over one migration's properties never
-// mirrors into another's.
+// Callbacks from every armed migration are in this set; each declines a
+// property its own mirror is not armed for, which is what keeps them apart.
 func (s *Shard) fireAddToPropertyValueIndex(callbacks []addCallbackEntry, docID uint64, property *inverted.Property) error {
 	ec := errorcompounder.New()
 	for _, cb := range callbacks {
@@ -270,6 +275,12 @@ type doubleWriteAnalysis struct {
 // must receive are not the terms the newer one's must, and the derived scope
 // carries only the most recent arm's answer.
 func (st *propValueIndexState) doubleWriteAnalyses() []doubleWriteAnalysis {
+	return st.analyses
+}
+
+// buildDoubleWriteAnalyses derives them. [Shard.mutatePropValueIndexState] is
+// its only caller, so a mirrored write reads the folded field instead.
+func (st *propValueIndexState) buildDoubleWriteAnalyses() []doubleWriteAnalysis {
 	if len(st.scope.props) == 0 {
 		// Nothing is armed, so an analysis would be filtered down to nothing.
 		return nil

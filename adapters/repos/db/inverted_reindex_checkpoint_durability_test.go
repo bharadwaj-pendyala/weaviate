@@ -40,8 +40,12 @@ func TestCheckpointNeverOutrunsThePostingsItVouchesFor(t *testing.T) {
 	const propName = filterableToRangeablePropName
 
 	tests := []struct {
-		name        string
-		buffered    bool
+		name     string
+		buffered bool
+		// poisonStore freezes every write to the record store, so the
+		// checkpoint fails while the flush behind it has already run. That is
+		// what tells the order apart: asserting both happened does not.
+		poisonStore bool
 		wantDurable bool
 	}{
 		{
@@ -53,6 +57,12 @@ func TestCheckpointNeverOutrunsThePostingsItVouchesFor(t *testing.T) {
 			// The barrier must not turn an empty slice into an error: a
 			// checkpoint with nothing behind it is the ordinary resume case.
 			name: "a checkpoint with nothing buffered is still recorded",
+		},
+		{
+			name:        "the postings are on disk even when recording the checkpoint fails",
+			buffered:    true,
+			poisonStore: true,
+			wantDurable: true,
 		},
 	}
 
@@ -81,13 +91,28 @@ func TestCheckpointNeverOutrunsThePostingsItVouchesFor(t *testing.T) {
 					"the posting has to start out buffered, or this proves nothing")
 			}
 
+			if tt.poisonStore {
+				// Records of two units on one shard — a restore or a shard
+				// copy — is the fault that freezes the store.
+				foreign := subject
+				foreign.Key.UnitID = "shard-9__node-9"
+				require.NoError(t, shard.migrationRecords.Put(
+					NewMigrationRecordIterating(foreign, MigrationCheckpoint{})))
+				require.NoError(t, shard.migrationRecords.Load())
+			}
+
 			key := task.keyParser.FromBytes([]byte("the-last-processed-key"))
-			require.NoError(t, task.recordCheckpoint(shard, subject, key, 1, 1))
+			err := task.recordCheckpoint(shard, subject, key, 1, 1)
 
 			if tt.wantDurable {
 				require.NotZero(t, segmentsOnDisk(t, bucket.GetDir()),
 					"a checkpoint must never be more durable than the postings it vouches for")
 			}
+			if tt.poisonStore {
+				require.Error(t, err, "a frozen store has to refuse the checkpoint")
+				return
+			}
+			require.NoError(t, err)
 
 			stored, ok := task.migrationRecord(shard)
 			require.True(t, ok)

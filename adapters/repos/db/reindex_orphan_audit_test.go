@@ -666,8 +666,8 @@ func TestAuditOrphanReindexTrackersReclaimsTrackersNoRecordNames(t *testing.T) {
 		wantOrphans     int
 		wantDir         bool
 		// wantSentinel is only meaningful where the row leaves a tracker dir.
-		// A sentinel that survives a sweep which decided the tracker is not an
-		// orphan is stored destructive intent with no grace window left.
+		// It survives where the sweep could not classify the tracker at all,
+		// so the window it stands for is still owed.
 		wantSentinel bool
 	}{
 		{
@@ -842,6 +842,82 @@ func TestAuditOrphanReindexTrackersHonorsUnreadableRecords(t *testing.T) {
 			assert.Equal(t, tt.wantSentinel,
 				fileExists(filepath.Join(trackerPath, reindexAuditQuarantineFile)),
 				"quarantine sentinel")
+		})
+	}
+}
+
+// Every audit mutation of a tracker directory has to leave the directory's own
+// mtime alone: a tracker no record names is classified by that mtime, and the
+// audit is its only reclaimer. A sweep that moves it strands the tracker for
+// the rest of the process, and every later sweep tells the operator a directory
+// hours old was created after startup.
+func TestAuditKeepsRecordlessTrackerClassifiableAfterSentinelClear(t *testing.T) {
+	const (
+		trackerName = "searchable_retokenize_legacy_1"
+		liveTask    = "Books:change-tokenization:title:ab12"
+	)
+
+	for _, tt := range []struct {
+		name string
+		// restored plants the sentinel directly, as a backup brings one in;
+		// otherwise the first sweep writes it.
+		restored bool
+		// unreadableRecords sends the clearing sweep down the arm that clears
+		// on a shard it cannot classify at all.
+		unreadableRecords bool
+	}{
+		{name: "the audit wrote the sentinel it later clears"},
+		{name: "a restored backup brought the sentinel in", restored: true},
+		{name: "the records were unreadable when it cleared", restored: true, unreadableRecords: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := testCtx()
+			shd, idx := testShard(t, ctx, "AuditSentinelClear")
+			lsmPath := shd.(*Shard).pathLSM()
+			dir := filepath.Join(lsmPath, ".migrations", trackerName)
+			require.NoError(t, os.MkdirAll(dir, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, reindexRecoveryPayloadFile),
+				[]byte(fmt.Sprintf(
+					`{"taskID":%q,"taskVersion":7,"unitID":"u-1","payload":{"collection":"Books"}}`,
+					liveTask)), 0o600))
+			sentinel := filepath.Join(dir, reindexAuditQuarantineFile)
+			aged := processStartTime.Add(-time.Hour)
+
+			logger, _ := test.NewNullLogger()
+			db := &DB{
+				indices: map[string]*Index{indexID(idx.Config.ClassName): idx},
+				config:  Config{RootPath: idx.Config.RootPath},
+			}
+			sweep := func(live bool) AuditOutcome {
+				out, err := db.AuditOrphanReindexTrackers(ctx,
+					func(string, uint64) bool { return live }, logger)
+				require.NoError(t, err)
+				return out
+			}
+
+			if tt.restored {
+				writePreAgedQuarantineSentinel(t, dir)
+			}
+			require.NoError(t, os.Chtimes(dir, aged, aged))
+			if !tt.restored {
+				require.Equal(t, 1, sweep(false).OrphansFound, "the first sweep quarantines it")
+			}
+			require.FileExists(t, sentinel)
+
+			badRecord := filepath.Join(NewMigrationRecordStore(lsmPath, logger).Dir(),
+				"99_enable_searchable.json")
+			if tt.unreadableRecords {
+				require.NoError(t, os.MkdirAll(filepath.Dir(badRecord), 0o755))
+				require.NoError(t, os.WriteFile(badRecord, []byte("{"), 0o600))
+			}
+			sweep(!tt.unreadableRecords)
+			require.NoFileExists(t, sentinel, "the clearing sweep is the one under test")
+			if tt.unreadableRecords {
+				require.NoError(t, os.Remove(badRecord))
+			}
+
+			require.Equal(t, 1, sweep(false).OrphansFound,
+				"a cleared sentinel must not cost the tracker its only age signal")
 		})
 	}
 }

@@ -44,6 +44,9 @@ func TestMirrorAnalyzesPerArmedMigration(t *testing.T) {
 		wantNewer   []string
 		wantOlderIx func(inverted.Property) bool
 		wantNewerIx func(inverted.Property) bool
+		// schemaSearchable leaves the property's own searchable index on, so a
+		// row where neither arm overlays anything still has terms to observe.
+		schemaSearchable bool
 	}{
 		{
 			name:      "the two agree, so one analysis is every mirror's answer",
@@ -95,7 +98,10 @@ func TestMirrorAnalyzesPerArmedMigration(t *testing.T) {
 		{
 			// Both ask for the schema's own analysis, which is agreement, not
 			// divergence: one analysis still serves them both.
-			name: "neither arm carries an overlay",
+			name:             "neither arm carries an overlay",
+			schemaSearchable: true,
+			wantOlder:        []string{"alpha", "beta"},
+			wantNewer:        []string{"alpha", "beta"},
 		},
 	}
 
@@ -104,11 +110,11 @@ func TestMirrorAnalyzesPerArmedMigration(t *testing.T) {
 			ctx := testCtx()
 			className := "OverlayDivergence_" + uuid.NewString()[:8]
 			class := newTestClassWithProps(className, []string{propName})
-			// Neither index is on in the schema, so every posting the mirrors
-			// see comes from an overlay rather than from the live property.
+			// Off unless the row asks otherwise, so a posting the mirrors see
+			// comes from an overlay rather than from the live property.
 			for _, prop := range class.Properties {
 				prop.IndexFilterable = boolPtr(false)
-				prop.IndexSearchable = boolPtr(false)
+				prop.IndexSearchable = boolPtr(tc.schemaSearchable)
 			}
 			shd, _ := testShardWithSettings(t, ctx, class, enthnsw.UserConfig{Skip: true},
 				false, false, false)

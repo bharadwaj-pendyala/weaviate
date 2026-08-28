@@ -40,10 +40,16 @@ func TestRecoveryWindowSpansAnUnpromotedFlip(t *testing.T) {
 		rec  func(MigrationSubject) MigrationRecord
 		// oversizedPayload pads payload.mig past the parse bound.
 		oversizedPayload bool
+		// pastWalkBound grows payload.mig past the walk's own memory bound.
+		pastWalkBound bool
 		// rawPayload replaces the well-formed payload this tracker carries.
 		rawPayload string
 		wantIn     bool
-		because    string
+		// wantWarn is the line an operator has to see. Refusal and a failed
+		// parse both leave the mirror unarmed, so only the line tells them
+		// apart.
+		wantWarn string
+		because  string
 	}{
 		{
 			name:    "iterating",
@@ -87,6 +93,16 @@ func TestRecoveryWindowSpansAnUnpromotedFlip(t *testing.T) {
 			because:          "an ordinary large multi-tenant migration still has to recover its mirror",
 		},
 		{
+			// The walk runs off any RAFT apply, so its bound is memory, not
+			// latency: a corrupt or hostile file read whole at boot is an OOM
+			// in a loop nothing recovers from.
+			name:          "merged, with a payload past the walk's own memory bound",
+			rec:           func(s MigrationSubject) MigrationRecord { return NewMigrationRecordMerged(s) },
+			pastWalkBound: true,
+			wantWarn:      "beyond any size a migration can produce",
+			because:       "a payload no migration can write is not one to read into memory at boot",
+		},
+		{
 			// These names are composed into bucket and sidecar directory
 			// names, which the strategies then create and remove. A record's
 			// names passed the decoder's check on the way in; a payload's
@@ -112,7 +128,7 @@ func TestRecoveryWindowSpansAnUnpromotedFlip(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			logger, _ := test.NewNullLogger()
+			logger, hook := test.NewNullLogger()
 			migDir := filepath.Join(t.TempDir(), trackerDir)
 			require.NoError(t, os.MkdirAll(migDir, 0o777))
 			payload := []byte(`{"taskID":"t","taskVersion":42,"unitID":"shard-1__node-0","payload":{"collection":"Books","properties":["title"]}}`)
@@ -122,13 +138,21 @@ func TestRecoveryWindowSpansAnUnpromotedFlip(t *testing.T) {
 			if tt.oversizedPayload {
 				payload = append(payload, bytes.Repeat([]byte(" "), maxRecoveryPayloadBytes)...)
 			}
-			require.NoError(t, os.WriteFile(filepath.Join(migDir, reindexRecoveryPayloadFile), payload, 0o600))
+			payloadPath := filepath.Join(migDir, reindexRecoveryPayloadFile)
+			require.NoError(t, os.WriteFile(payloadPath, payload, 0o600))
+			if tt.pastWalkBound {
+				// Sparse, so the file is over the bound without the bytes.
+				require.NoError(t, os.Truncate(payloadPath, maxRecoveryWalkPayloadBytes+1))
+			}
 
 			subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 			subject.TrackerDir = trackerDir
 
 			_, ok := loadReindexRecoveryRecord(migDir, []MigrationRecord{tt.rec(subject)}, logger)
 			require.Equal(t, tt.wantIn, ok, tt.because)
+			if tt.wantWarn != "" {
+				require.Contains(t, hook.LastEntry().Message, tt.wantWarn, tt.because)
+			}
 		})
 	}
 }

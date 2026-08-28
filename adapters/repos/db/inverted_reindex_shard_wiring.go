@@ -281,9 +281,8 @@ func (s *Shard) warnAboutLegacyMarkerMigrations() {
 			WithField("marker", legacy.marker).
 			WithField("properties", props).
 			Warn("a completed migration that no record names holds these properties' only copy under its " +
-				"staged directory; the load-time finalize did not promote it, so they serve empty until it does. " +
-				"Check the finalize log for this tracker: a failed sentinel write or a failed tracker removal " +
-				"is what leaves it behind")
+				"staged directory; no path in this build promotes it, so they serve empty until the staged " +
+				"directory is restored onto the canonical name by hand or the property is rebuilt")
 	}
 }
 
