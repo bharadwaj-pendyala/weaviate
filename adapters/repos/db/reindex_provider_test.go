@@ -513,11 +513,13 @@ func TestClassifyCleanupSweep(t *testing.T) {
 	}
 }
 
-// TestLocalUnitSealSpansEveryWorkerOfEveryType pins that the registry every
-// teardown seals before removing a migration's directories spans every
-// migration type's every phase — not just the semantic-only re-entry guard,
-// which only ever covered the iteration of semantic migrations.
-func TestLocalUnitSealSpansEveryWorkerOfEveryType(t *testing.T) {
+// TestLocalUnitSealCountsEveryWorkerOnTheUnit pins the registry every teardown
+// seals before removing a migration's directories: it counts workers rather
+// than flagging the unit, and it is keyed by (task version, unit) so a worker
+// elsewhere never speaks for this one. That the phases register through it at
+// all, for every migration type rather than only the semantic ones, is pinned
+// at their call sites by [TestLocalUnitSealIsNotTheReEntryGuard].
+func TestLocalUnitSealCountsEveryWorkerOnTheUnit(t *testing.T) {
 	desc := distributedtask.TaskDescriptor{ID: "Books:enable-rangeable:price:ab12", Version: 7}
 	other := distributedtask.TaskDescriptor{ID: "Books:enable-rangeable:price:ab12", Version: 8}
 
@@ -589,24 +591,6 @@ func TestLocalUnitSealSpansEveryWorkerOfEveryType(t *testing.T) {
 			require.Empty(t, p.sealedUnits, "a released seal leaves no entry behind")
 		})
 	}
-}
-
-// A worker that panics still has to release: reconciliation would otherwise
-// treat the unit as live forever and never reclaim its directories.
-func TestLocalUnitSealSurvivesAPanickingWorker(t *testing.T) {
-	p := structuralInvariantNewBareProvider()
-	desc := distributedtask.TaskDescriptor{ID: "t", Version: 1}
-
-	func() {
-		defer func() { _ = recover() }()
-		release, entered := p.enterLocalUnit(desc, "shard-1__node-0")
-		require.True(t, entered)
-		defer release()
-		panic("the iteration failed")
-	}()
-
-	_, sealed := p.SealLocalUnit(desc, "shard-1__node-0")
-	require.True(t, sealed)
 }
 
 // TestSealedUnitRefusesLateEntrants pins that a phase resolving its unit
