@@ -26,7 +26,7 @@ import (
 // narrowMatchByName is [migrationDirScope.matchByName] with the
 // underscore-free gate [isProvablySingleProperty] replaced, so every fixture
 // below can be put through both and the answers compared. The widened gate is
-// what production runs; this is the conservative predicate it replaced.
+// what production runs.
 func narrowMatchByName(s migrationDirScope, name string) (matched, decided bool) {
 	base := migrationDirBase(name)
 	if !s.hasStrategyPrefix(base) {
@@ -202,15 +202,14 @@ func writeDiffPayload(t *testing.T, lsm string, d diffDir, mode string) {
 }
 
 // divergence is one (scope, dir) where the widened predicate answers
-// differently from the one it replaced.
+// differently from [narrowMatchByName].
 type divergence struct {
 	propName, indexType, dir string
 	narrow, widened          bool
 }
 
-// Pins the widened name shortcut against the conservative gate it replaced,
-// so a dir the shortcut moves is a dir the sweep would delete or spare
-// differently. Coverage gap: every record here uses one strategy/index-type
+// Pins the widened name shortcut against [narrowMatchByName], so a dir the
+// shortcut moves is a dir the sweep would delete or spare differently. Coverage gap: every record here uses one strategy/index-type
 // combination and only Iterating/Swapped states, so migrationPreservedStateAt's
 // promoted-tracker arm is never exercised.
 func TestWidenedMatchesAgreesWithTheNarrowGate(t *testing.T) {

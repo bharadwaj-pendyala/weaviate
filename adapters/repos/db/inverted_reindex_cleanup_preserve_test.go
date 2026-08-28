@@ -35,9 +35,9 @@ type plantedTracker struct {
 	marker string
 }
 
-// TestCleanStaleMigrationDirsAt_PreservesCompletedGens pins the R2/R2b
-// regression (#10675): the pre-submit sweep must not wipe a completed
-// migration's directory, or a same-generation resubmit overwrites live data.
+// TestCleanStaleMigrationDirsAt_PreservesCompletedGens pins that the pre-submit
+// sweep must not wipe a completed migration's directory, or a same-generation
+// resubmit overwrites live data.
 func TestCleanStaleMigrationDirsAt_PreservesCompletedGens(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -124,8 +124,8 @@ func TestCleanStaleMigrationDirsAt_PreservesCompletedGens(t *testing.T) {
 			wantSurvivors: []string{},
 		},
 		{
-			// The R2 repro: two back-to-back migrations both completed, and
-			// both still hold their data under their own generation's name.
+			// Two back-to-back migrations both completed, and both still
+			// hold their data under their own generation's name.
 			name:     "two committed generations both survive",
 			propName: "text",
 			idxType:  "searchable",
