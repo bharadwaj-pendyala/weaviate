@@ -92,7 +92,8 @@ func matchesAny(name string, patterns ...string) bool {
 // stop it.
 //
 // A guard rather than a behavioral test: nothing in the outcome of a stat and a
-// read distinguishes them.
+// read distinguishes them. Structural rather than lexical, because a call whose
+// error is dropped mentions every name a call that gates the read does.
 func TestEveryPayloadReadIsBounded(t *testing.T) {
 	wantBound := map[string]string{"loadReindexRecoveryRecord": "maxRecoveryWalkPayloadBytes"}
 	const applyPathBound = "maxRecoveryPayloadBytes"
@@ -122,17 +123,23 @@ func TestEveryPayloadReadIsBounded(t *testing.T) {
 			}
 			checked++
 			at := fset.Position(fn.Pos())
-			require.Truef(t, names["refuseOversizedRecoveryPayload"],
-				"%s: %s reads payload.mig without bounding it first", at, fn.Name.Name)
+
+			gate, found := payloadReadGate(fn.Body)
+			require.Truef(t, found,
+				"%s: %s reads payload.mig without an `if err := refuseOversizedRecoveryPayload(...); "+
+					"err <op> nil` gating the read", at, fn.Name.Name)
+			require.Truef(t, gate.admitsTheRead,
+				"%s: %s bounds the payload but reads it outside the arm the bound admits, "+
+					"so the refusal decides nothing", at, fn.Name.Name)
 
 			want := wantBound[fn.Name.Name]
 			if want == "" {
-				require.Truef(t, names[applyPathBound],
+				require.Equalf(t, applyPathBound, gate.bound,
 					"%s: %s runs where a RAFT apply reaches it, so it takes %s", at, fn.Name.Name, applyPathBound)
 				continue
 			}
 			offTheApplyPath++
-			require.Truef(t, names[want],
+			require.Equalf(t, want, gate.bound,
 				"%s: %s takes the apply-path bound, which drops the writes taken since the restart; "+
 					"it has to take %s", at, fn.Name.Name, want)
 		}
@@ -140,6 +147,102 @@ func TestEveryPayloadReadIsBounded(t *testing.T) {
 
 	require.GreaterOrEqual(t, checked, 3, "the guard has to be finding the readers of this file")
 	require.Equal(t, len(wantBound), offTheApplyPath, "every reader off the apply path has to still be one")
+}
+
+// payloadGate is the bound a reader passes and whether the read it performs
+// sits where the refusal can stop it.
+type payloadGate struct {
+	bound         string
+	admitsTheRead bool
+}
+
+// payloadReadGate finds the `if err := refuseOversizedRecoveryPayload(_, bound);
+// err <op> nil` that a payload read is subject to. `err != nil` must leave the
+// function, so the read that follows the statement is admitted; `err == nil`
+// admits only the read inside its own body.
+func payloadReadGate(body *ast.BlockStmt) (payloadGate, bool) {
+	var gate payloadGate
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		stmt, ok := n.(*ast.IfStmt)
+		if !ok {
+			return true
+		}
+		call, errName := refusalIn(stmt.Init)
+		if call == nil || len(call.Args) != 2 {
+			return true
+		}
+		bound, ok := call.Args[1].(*ast.Ident)
+		if !ok {
+			return true
+		}
+		found = true
+		gate.bound = bound.Name
+		switch comparisonWithNil(stmt.Cond, errName) {
+		case token.NEQ:
+			gate.admitsTheRead = endsInReturn(stmt.Body) && readsPayloadAfter(body, stmt.End())
+		case token.EQL:
+			gate.admitsTheRead = identsIn(stmt.Body)["ReadFile"]
+		}
+		return false
+	})
+	return gate, found
+}
+
+// refusalIn reports the refuseOversizedRecoveryPayload call an if-statement
+// takes its condition from, and the name it binds the error to.
+func refusalIn(init ast.Stmt) (*ast.CallExpr, string) {
+	assign, ok := init.(*ast.AssignStmt)
+	if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+		return nil, ""
+	}
+	call, ok := assign.Rhs[0].(*ast.CallExpr)
+	if !ok {
+		return nil, ""
+	}
+	if fn, ok := call.Fun.(*ast.Ident); !ok || fn.Name != "refuseOversizedRecoveryPayload" {
+		return nil, ""
+	}
+	name, ok := assign.Lhs[0].(*ast.Ident)
+	if !ok {
+		return nil, ""
+	}
+	return call, name.Name
+}
+
+// comparisonWithNil reports the operator of `<errName> <op> nil`, or
+// [token.ILLEGAL] for any other condition.
+func comparisonWithNil(cond ast.Expr, errName string) token.Token {
+	binary, ok := cond.(*ast.BinaryExpr)
+	if !ok {
+		return token.ILLEGAL
+	}
+	lhs, lhsOK := binary.X.(*ast.Ident)
+	rhs, rhsOK := binary.Y.(*ast.Ident)
+	if !lhsOK || !rhsOK || lhs.Name != errName || rhs.Name != "nil" {
+		return token.ILLEGAL
+	}
+	return binary.Op
+}
+
+func endsInReturn(body *ast.BlockStmt) bool {
+	if len(body.List) == 0 {
+		return false
+	}
+	_, ok := body.List[len(body.List)-1].(*ast.ReturnStmt)
+	return ok
+}
+
+func readsPayloadAfter(body *ast.BlockStmt, pos token.Pos) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		ident, ok := n.(*ast.Ident)
+		if ok && ident.Name == "ReadFile" && ident.Pos() > pos {
+			found = true
+		}
+		return true
+	})
+	return found
 }
 
 // identsIn collects every identifier named in n, which is all this guard needs:
