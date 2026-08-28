@@ -24,9 +24,11 @@ import (
 )
 
 // TestStoreListFilesMigrationDir pins what an active shard's backup takes from
-// .migrations: the migration state records and recovery payloads, but none of
-// the scratch files an interrupted atomic write leaves behind. A backup that
-// drops the records restores a shard whose directories nothing can attribute.
+// .migrations: the migration state records, the recovery payloads and every
+// tracker sentinel, but none of the scratch files an interrupted atomic write
+// leaves behind. A backup that drops the records restores a shard whose
+// directories nothing can attribute; one that drops started.mig restores a
+// tracker recovery refuses to resume.
 func TestStoreListFilesMigrationDir(t *testing.T) {
 	ctx := context.Background()
 	logger, _ := test.NewNullLogger()
@@ -43,7 +45,11 @@ func TestStoreListFilesMigrationDir(t *testing.T) {
 	recordsDir := filepath.Join(dir, ".migrations", "records")
 	require.NoError(t, os.MkdirAll(trackerDir, 0o755))
 	require.NoError(t, os.MkdirAll(recordsDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(trackerDir, "payload.mig"), []byte("x"), 0o644))
+	for _, name := range []string{
+		"payload.mig", "started.mig", "properties.mig", "progress.mig.000000001",
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(trackerDir, name), []byte("x"), 0o644))
+	}
 	require.NoError(t, os.WriteFile(filepath.Join(recordsDir, "7_searchable_retokenize.json"), []byte("{}"), 0o644))
 
 	// Same call the record store's atomic write makes, so the name carries the
@@ -59,5 +65,8 @@ func TestStoreListFilesMigrationDir(t *testing.T) {
 	require.Equal(t, []string{
 		filepath.Join(".migrations", "records", "7_searchable_retokenize.json"),
 		filepath.Join(".migrations", "searchable_retokenize_text_1", "payload.mig"),
+		filepath.Join(".migrations", "searchable_retokenize_text_1", "progress.mig.000000001"),
+		filepath.Join(".migrations", "searchable_retokenize_text_1", "properties.mig"),
+		filepath.Join(".migrations", "searchable_retokenize_text_1", "started.mig"),
 	}, got)
 }

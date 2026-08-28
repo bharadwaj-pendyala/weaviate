@@ -452,7 +452,16 @@ func (s migrationDirScope) taskProperties(name string) (props []string, ok, unre
 	if rec, found := migrationRecordForTracker(s.records, name); found {
 		return rec.Subject().Properties, len(rec.Subject().Properties) > 0, false
 	}
-	answer := s.props.lookup(filepath.Join(s.lsmPath, ".migrations", name))
+	// properties.mig is the small file every writer lays down beside the
+	// payload, and this caller wants nothing but the list. It is taken here
+	// rather than inside [readTaskProps] so payload.mig stays the only source
+	// of the migration's identity, which the orphan audit reads off the same
+	// answer and a sidecar cannot supply.
+	migDir := filepath.Join(s.lsmPath, ".migrations", name)
+	if props, ok := propsFromSidecar(migDir, s.prefixes); ok {
+		return props, true, false
+	}
+	answer := s.props.lookup(migDir)
 	return answer.props, answer.ok, answer.unreadable
 }
 
@@ -555,4 +564,29 @@ func readTaskProps(migDir string) (answer taskProps, readPayload bool) {
 	answer.props = facts.properties
 	answer.ok = true
 	return answer, true
+}
+
+// propsFromSidecar accepts properties.mig's list only if it reconstructs
+// the tracker dir's own name — an independent witness that catches a
+// truncated, deduped, or contradicting list for free.
+//
+// This is load-bearing: a rejected list makes
+// [migrationDirScope.inScopeFailingOpen] report not-in-scope, dropping a
+// completed migration from the preserve pass ([forEachCompletedMigration])
+// and letting the sweep delete live sidecar dirs still in use.
+func propsFromSidecar(migDir string, prefixes []string) ([]string, bool) {
+	if _, err := os.Stat(filepath.Join(migDir, reindexRecoveryPayloadFile)); err != nil {
+		return nil, false
+	}
+	props, err := readMigrationProps(migDir)
+	if err != nil || len(props) == 0 {
+		return nil, false
+	}
+	base := migrationDirBase(filepath.Base(migDir))
+	for _, prefix := range prefixes {
+		if base == migrationDirWithProps(prefix, props) {
+			return props, true
+		}
+	}
+	return nil, false
 }

@@ -137,13 +137,20 @@ func TestListInactiveLSMFiles(t *testing.T) {
 			},
 		},
 		{
-			name: "migrations tmp leftovers are excluded, records are not",
+			name: "migrations tmp leftovers are excluded, records and sentinels are not",
 			setup: func(t *testing.T, lsmDir string) {
 				trackerDir := filepath.Join(lsmDir, migrationsDir, "searchable_retokenize_text_1")
 				recordsDir := filepath.Join(lsmDir, migrationsDir, "records")
 				require.NoError(t, os.MkdirAll(trackerDir, 0o755))
 				require.NoError(t, os.MkdirAll(recordsDir, 0o755))
-				require.NoError(t, os.WriteFile(filepath.Join(trackerDir, "payload.mig"), []byte("x"), 0o644))
+				// The tracker sentinels the shipped build still needs: recovery
+				// refuses a tracker without started.mig, and the sweeps read
+				// properties.mig.
+				for _, name := range []string{
+					"payload.mig", "started.mig", "properties.mig", "progress.mig.000000001",
+				} {
+					require.NoError(t, os.WriteFile(filepath.Join(trackerDir, name), []byte("x"), 0o644))
+				}
 				require.NoError(t, os.WriteFile(
 					filepath.Join(recordsDir, "7_searchable_retokenize.json"), []byte("{}"), 0o644))
 
@@ -156,6 +163,9 @@ func TestListInactiveLSMFiles(t *testing.T) {
 			expected: []string{
 				filepath.Join(migrationsDir, "records", "7_searchable_retokenize.json"),
 				filepath.Join(migrationsDir, "searchable_retokenize_text_1", "payload.mig"),
+				filepath.Join(migrationsDir, "searchable_retokenize_text_1", "progress.mig.000000001"),
+				filepath.Join(migrationsDir, "searchable_retokenize_text_1", "properties.mig"),
+				filepath.Join(migrationsDir, "searchable_retokenize_text_1", "started.mig"),
 			},
 		},
 		{

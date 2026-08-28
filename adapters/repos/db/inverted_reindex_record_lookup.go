@@ -230,7 +230,13 @@ func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord) 
 		if !found {
 			continue
 		}
-		props, _ := readTaskProps(filepath.Join(migsDir, dirName))
+		migDir := filepath.Join(migsDir, dirName)
+		var props taskProps
+		if fromSidecar, ok := propsFromSidecar(migDir, []string{prefix}); ok {
+			props = taskProps{props: fromSidecar, ok: true}
+		} else {
+			props, _ = readTaskProps(migDir)
+		}
 		out = append(out, migrationLegacyMarkerTracker{
 			dirName:    dirName,
 			marker:     marker,

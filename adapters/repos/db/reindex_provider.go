@@ -1976,6 +1976,11 @@ func (p *ReindexProvider) hasLocalPostMergeState(ctx context.Context, payload *R
 // Every tuple asks about the same .migrations, so dirs memoizes its listing
 // and props the tracker payloads it attributes; nil for either re-reads per
 // tuple. Both belong to one shard, since no two shards name the same path.
+//
+// The scopes are not handed the shard's migration records. The three sweep
+// call sites can be, because the sweep already read them to build its
+// preserve set; here there is none, and building one lists two directories
+// and can open payloads of its own — more than the lookup would save.
 func hasCompletedMigrationTracker(
 	lsmPath string, migrationType ReindexMigrationType, properties []string,
 	dirs *dirNamesCache, props *taskPropsCache,
@@ -2306,6 +2311,9 @@ func (p *ReindexProvider) LocalCallbacksDone(task *distributedtask.Task, localNo
 // this task owns left an uncommitted tracker on the shard at lsmPath. props
 // memoizes payload reads across tuples (nil re-reads); one read is a full
 // payload.mig parse — hundreds of milliseconds on a large migration.
+//
+// Like [hasCompletedMigrationTracker] the scopes carry no records, for the
+// same reason: reading them here costs more than the lookup saves.
 func shardHasUntidiedTracker(
 	lsmPath string, payload *ReindexTaskPayload, indexTypes []string, props *taskPropsCache,
 ) bool {
