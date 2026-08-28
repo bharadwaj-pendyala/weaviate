@@ -81,11 +81,13 @@ func TestMultiNode_RestartInsideMergedBarrier_CommitsAndServes(t *testing.T) {
 	// no node has flipped. A record written in this window says Merged.
 	observed := awaitReindexReachedFinalizing(t, uri, taskID)
 	t.Logf("task %s reached %s — killing node %d inside that window", taskID, observed, restartedNode)
-	if observed == "FINISHED" {
-		t.Logf("WARNING: the barrier closed before the kill; the per-replica assertions below "+
-			"still hold but the restart did not land inside the merged window. "+
-			"Consider raising totalObjects (currently %d).", totalObjects)
-	}
+	// The shared helper also returns on SWAPPING and FINISHED. Both are past
+	// the barrier, so a kill there never lands on a Merged record and this
+	// test asserts nothing it exists to assert. Failing is what keeps a missed
+	// window visible.
+	require.Equalf(t, "PREPARING", observed,
+		"the merged window closed before the kill, so the scenario never ran; "+
+			"raise totalObjects (currently %d) to widen it", totalObjects)
 
 	// SIGKILL, so nothing is flushed on the way out and the node comes back
 	// with exactly what the record says.
