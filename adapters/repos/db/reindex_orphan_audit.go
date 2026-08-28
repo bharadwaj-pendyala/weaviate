@@ -412,13 +412,11 @@ const reindexAuditQuarantineWindow = 5 * time.Minute
 //
 // A directory no record names is the second kind of orphan, and this is its
 // only reclaimer — every cluster upgrading into this build brings a set of
-// them. Their task identity and property list come from payload.mig, since a
-// record is written only once the migration's buckets are open, so a run that
-// crashed before that has a live task and no record. A tracker whose payload is
-// absent gives up its directory alone; one whose payload is present but
-// unreadable is left entirely, because only absence proves the property list is
-// empty. Age is what separates any of them from a directory this process is
-// still writing.
+// them. Their identity comes from payload.mig instead, since a run that
+// crashed before its buckets opened has a live task but no record. A missing
+// payload gives up its directory alone; an unreadable one is left entirely,
+// since only absence proves the property list is empty. Age separates all of
+// these from a directory this process is still writing.
 func collectOrphanTrackers(lsmPath, collection, shardName string, knownTask KnownReindexTaskLookup, logger logrus.FieldLogger) []orphanReindexTracker {
 	migsDir := filepath.Join(lsmPath, ".migrations")
 	entries, err := os.ReadDir(migsDir)
@@ -428,10 +426,9 @@ func collectOrphanTrackers(lsmPath, collection, shardName string, knownTask Know
 	records, someRecordsUnreadable, recordSetUnreadable := migrationRecordsAt(lsmPath, logger)
 	if someRecordsUnreadable || recordSetUnreadable {
 		// A record this build cannot read may name any tracker here, and the
-		// record-less arm below can only fall back on a payload.mig an upgraded
-		// tracker need not have. This
-		// withholds shard-wide like every other consumer of an unreadable
-		// record set, and it costs disk rather than data.
+		// record-less fallback only has payload.mig, which an upgraded tracker
+		// need not carry. So this withholds reclamation shard-wide, like every
+		// other consumer of an unreadable record set — costing disk, not data.
 		logger.WithField("collection", collection).WithField("shard", shardName).
 			Warn("reindex orphan audit: migration records could not be read; reclaiming nothing on this shard")
 		return nil
@@ -572,18 +569,17 @@ func collectOrphanTrackers(lsmPath, collection, shardName string, knownTask Know
 // Only the first-boot timestamp can answer that.
 var processStartTime = time.Now()
 
-// migrationCompletionMarker reports the completed-migration marker a release
-// before the record store left in a tracker directory, if any. Operators are
-// required to drain and promote before upgrading; this only decides that
-// someone who did not gets a property serving empty until they restore, instead
-// of data that is gone.
+// migrationCompletionMarker reports the completed-migration marker a
+// pre-record release left in a tracker directory, if any. Operators must
+// drain and promote before upgrading; this only decides whether someone who
+// didn't gets a property serving empty until restore, instead of data that
+// is actually gone.
 //
-// Downgrading needs the same drain and has no guard at all, in either build: a
-// migration this build flipped but has not promoted keeps its live data under
-// the staged name, and the older release reads no record, so it neither renames
-// that directory back nor counts it as preserved. Queries then answer from the
-// empty canonical bucket three strategies pre-create, and disabling the index
-// to fix that is what removes the staged copy for good.
+// Downgrading needs the same drain and has no guard in either build: a
+// migration this build flipped but hasn't promoted keeps its live data under
+// the staged name, which the older release neither renames back nor
+// preserves. Queries then answer from the empty canonical bucket, and
+// disabling the index to fix that removes the staged copy for good.
 //
 // unreadable is the third outcome, and it is not "no marker": a stat that
 // failed for any reason other than the file being absent (EACCES on a restored
@@ -606,11 +602,11 @@ func migrationCompletionMarker(trackerPath string) (marker string, found, unread
 // migrationDirPredatesThisProcess reports whether a tracker directory that no
 // record names was already on disk when this process started.
 //
-// The audit's own quarantine sentinel is written into the directory, which
-// bumps its modification time. A directory that carries one therefore answers
-// from the sentinel's presence instead: quarantining is itself proof that an
-// earlier sweep found no record for it, and without this the first quarantine
-// would make every legacy directory look fresh forever.
+// The audit's own quarantine sentinel bumps the directory's modification
+// time, so a directory carrying one answers from the sentinel's presence
+// instead: quarantining is itself proof an earlier sweep found no record for
+// it. Without this, the first quarantine would make every legacy directory
+// look fresh forever.
 func migrationDirPredatesThisProcess(trackerPath string) (bool, time.Time, error) {
 	info, err := os.Stat(trackerPath)
 	if err != nil {
@@ -861,8 +857,8 @@ func (db *DB) cleanUnloadedShardOrphans(lsmPath string, orphans []orphanReindexT
 // sealOrphanUnit holds the orphan's own (task, unit) for the length of its
 // cleanup. The audit classifies an orphan from the task's cluster status
 // alone, and a status goes terminal without waiting for the local unit to
-// exit -- so the tracker it is about to delete can be one a worker on this
-// node is still writing through pointers it took before its phase began.
+// exit — so the tracker about to be deleted can be one a worker on this node
+// is still writing through pointers taken before its phase began.
 func (db *DB) sealOrphanUnit(o *orphanReindexTracker) (func(), bool) {
 	return db.migrationSealUnit(
 		distributedtask.TaskDescriptor{ID: o.taskID, Version: o.taskVersion}, o.unitID)
@@ -993,12 +989,11 @@ func (db *DB) cleanupOrphanTrackerCompactionPaused(ctx context.Context, shard *S
 // given migration type. Mirrors [indexTypesFromMigrationType] in the
 // REST handler.
 //
-// An empty type is a tracker from a release that recorded none, and the audit
-// removes its directory whole. A type this build does not know is the
-// opposite: it names a fan-out that exists and that nothing here can compose,
-// so the second result is false and the caller reclaims nothing. Both used to
-// answer nil, which meant a payload naming a future type had its tracker
-// removed on the strength of a list this build could not read.
+// An empty type is a tracker from a release that recorded none, and the
+// audit removes its directory whole. A type this build does not know is the
+// opposite — a fan-out that exists but that nothing here can compose — so the
+// second result is false and the caller reclaims nothing rather than
+// deleting on a list it could not read.
 func semanticMigrationIndexTypesForAudit(mt ReindexMigrationType) (indexTypes []string, known bool) {
 	switch mt {
 	case "":

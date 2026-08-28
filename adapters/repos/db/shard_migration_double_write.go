@@ -413,14 +413,13 @@ func (s *Shard) migrationDoubleWriteDelete(st *propValueIndexState, prevObject *
 //     bucket or in nothing at all: resolveScopedDoubleWriteBucket takes the
 //     canonical name only while it denotes the bucket that mirror armed on.
 //
-// Disarming a subset re-registers the pair over the properties that are left
-// rather than removing it, because the actor that disarms owns one property of
-// the scope — a successor's retirement takes over the properties it overlaps
-// and no others. Rebuilding the callbacks is what keeps the write path
-// carrying one pair per migration rather than one per property: every
-// registered callback fires for every analyzed property, so a pair per
-// property would cost the square of the migration's property count on every
-// write.
+// Disarming a subset re-registers the pair over the properties left, rather
+// than removing it: the actor that disarms owns one property of the scope —
+// a successor's retirement takes over only the properties it overlaps.
+// Rebuilding keeps the write path carrying one pair per migration rather
+// than one per property, since every callback fires for every analyzed
+// property and a pair per property would cost the square of the property
+// count on every write.
 //
 // makeCallbacks receives the properties still armed and must build a pair
 // scoped to exactly them.

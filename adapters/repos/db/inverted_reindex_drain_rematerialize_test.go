@@ -84,13 +84,12 @@ func TestModeADrainRematerialize(t *testing.T) {
 				driveErr = tc.drive(ctx, task, shard)
 			}()
 
-			// Worker parked before the guard; drive the DELETE to completion.
 			<-inHook
 			require.NoError(t, idx.drop())
 			require.NoFileExists(t, idxPath,
 				"drop() must have renamed the class dir away before the worker proceeds")
 
-			// Release the worker so it resumes AFTER the rename.
+			// The worker must resume only after the rename, never before.
 			close(releaseHook)
 			<-workerDone
 

@@ -1026,14 +1026,12 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 			return
 		}
 
-		// Migration reconciliation runs at shard load and reads this node's
-		// own applied task map, never the leader's: a shard load must not wait
-		// on a round-trip. The map cannot be installed at DB construction,
-		// where the cluster service does not exist yet, so shards loaded before
-		// this point decide nothing that depends on it — which is why
-		// installing the sources also starts the pass that revisits them.
-		// waitForMetaStore above is what makes the map complete here, the same
-		// guarantee the scheduler relies on to choose what to resume.
+		// Reconciliation reads this node's own applied task map at shard load
+		// (never the leader's — a shard load must not wait on a round-trip), so
+		// shards loaded before the map exists at DB construction decide nothing
+		// that depends on it. That's why installing the sources also starts the
+		// pass that revisits them; waitForMetaStore above is what makes the map
+		// complete by then.
 		raft := appState.ClusterService.Raft
 		repo.SetMigrationTaskSources(serverShutdownCtx,
 			newMigrationLocalTaskSource(raft), newMigrationClusterTaskSource(raft))
@@ -1170,10 +1168,10 @@ func initReindexAndDistributedTasks(
 	providers[db.ReindexNamespace] = reindexProvider
 	appState.ReindexProvider = reindexProvider
 
-	// Installed here rather than with the other reindex lookups below, because
-	// those are wired from the post-bootstrap goroutine and reconciliation's
-	// first pass runs there too. A pass that ran without this seal could
-	// remove a running unit's directories.
+	// Installed here, not with the other reindex lookups below: those wire from
+	// the post-bootstrap goroutine, where reconciliation's first pass also
+	// runs, and a pass without this seal could remove a running unit's
+	// directories.
 	repo.SetReindexUnitSeal(reindexProvider.ReindexUnitSealBuilder())
 
 	// Read-repair for the v1.38→v1.39 stamp-migration residual; see

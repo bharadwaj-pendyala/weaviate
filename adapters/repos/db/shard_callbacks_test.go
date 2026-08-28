@@ -478,11 +478,10 @@ func TestShardCallbacks_DisarmRemovesCallbacks_NoUnboundedGrowth(t *testing.T) {
 	})
 }
 
-// TestDeriveScope pins what the write path's scope is derived from. The scope
-// is the union of the surviving registrations, so one migration's disarm
-// cannot strip a property another still mirrors; where two overlay one
-// property differently the most recent arm wins, because a single analysis
-// runs per property.
+// TestDeriveScope pins that the write path's scope is the union of the
+// surviving registrations — one migration's disarm can't strip a property
+// another still mirrors — and that the most recent arm wins where two
+// overlay one property differently.
 func TestDeriveScope(t *testing.T) {
 	filterable := inverted.PropertyOverlay{ForceFilterable: true}
 	rangeable := inverted.PropertyOverlay{ForceRangeable: true}

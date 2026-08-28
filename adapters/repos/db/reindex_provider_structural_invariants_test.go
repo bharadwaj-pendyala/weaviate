@@ -239,15 +239,11 @@ func TestStructuralInvariant_StartTask_HandleTerminateDrainsSpawnedWorker(t *tes
 }
 
 // TestStructuralInvariant_SealLocalTaskDrain_WaitsForPrepAndSwap pins the
-// half of the drain the task handle cannot answer for. The handle is created
-// around the iteration goroutine and closed when it exits, but the prep that
-// copies segments into the ingest directory and the swap that flips the
-// pointers run on the scheduler's own tick goroutine and never had one — so a
-// task whose only live worker was in either of them drained instantly, and the
-// cancel sweep and the terminal cleanup both tore down sidecars under it.
-//
-// It waits on the same per-unit registry reconciliation seals against, which
-// every span that holds a bucket pointer registers in.
+// half of the drain the task handle can't answer for: the handle closes when
+// the iteration goroutine exits, but prep and swap run on the scheduler's
+// tick goroutine and never had one, so a task whose only live worker was in
+// either drained instantly. The drain instead waits on the same per-unit
+// registry every bucket-pointer-holding span registers in.
 func TestStructuralInvariant_SealLocalTaskDrain_WaitsForPrepAndSwap(t *testing.T) {
 	p := structuralInvariantNewBareProvider()
 	desc := distributedtask.TaskDescriptor{ID: "task-in-swap", Version: 1}

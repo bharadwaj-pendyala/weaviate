@@ -74,13 +74,11 @@ import (
 // also a silent data loss.
 //
 // To reproduce reliably without relying on iteration timing, we plant the
-// record of a run that crashed mid-rebuild before any reindex submission: a
-// migration whose task the cluster no longer knows, whose staged directories
-// are not on disk, and whose schema effect never landed. No __reindex /
-// __ingest sidecar dirs are created; if the code (correctly) reclaims that
-// state and rebuilds from scratch on resubmit, the migration finishes. If it
-// (incorrectly) resumes against it and skips iteration or swap, the test
-// catches the silent failure.
+// record of a run that crashed mid-rebuild before any reindex submission (no
+// __reindex/__ingest sidecar dirs, task unknown to the cluster). Correct code
+// reclaims that state and rebuilds from scratch on resubmit; code that
+// resumes against it and skips iteration or swap fails silently, which this
+// test catches.
 //
 // Test variants (one per non-semantic strategy + a semantic-strategy
 // canary):

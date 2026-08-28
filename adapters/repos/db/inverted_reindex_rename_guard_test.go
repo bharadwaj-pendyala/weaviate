@@ -23,13 +23,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Every rename in the migration machinery publishes something a durable record
-// already vouches for, so a bare os.Rename is a crash window no test can
-// observe: there is no fault-injection filesystem in this repo, and a
-// container kill keeps the page cache. This guard is the pin instead.
-//
-// Test files are out of scope — a fixture that renames the records directory
-// aside is planting a fault, not publishing one.
+// Pins that migration renames go through diskio.RenameAndSync, not a bare
+// os.Rename, so a crash can't publish a name whose bytes never landed.
 func TestMigrationRenamesGoThroughTheDurableHelper(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	require.NoError(t, err)
@@ -83,17 +78,10 @@ func matchesAny(name string, patterns ...string) bool {
 	return false
 }
 
-// TestEveryPayloadReadIsBounded pins that every reader of payload.mig bounds
-// its read, and which of the two bounds each one takes. The apply-path bound is
-// a latency bound and refusing under it is fail-open. The startup recovery walk
-// takes the far larger memory bound instead: refusing there arms no double-write
-// mirror, and the flip that follows takes the canonical directory away with
-// every write since the restart, so only a size no migration can produce may
-// stop it.
-//
-// A guard rather than a behavioral test: nothing in the outcome of a stat and a
-// read distinguishes them. Structural rather than lexical, because a call whose
-// error is dropped mentions every name a call that gates the read does.
+// Pins that every payload.mig reader gates on refuseOversizedRecoveryPayload
+// with the bound for its call site: the apply path takes the latency bound;
+// the startup recovery walk, which precedes any double-write mirror, takes
+// the larger memory bound.
 func TestEveryPayloadReadIsBounded(t *testing.T) {
 	wantBound := map[string]string{"loadReindexRecoveryRecord": "maxRecoveryWalkPayloadBytes"}
 	const applyPathBound = "maxRecoveryPayloadBytes"
@@ -156,10 +144,9 @@ type payloadGate struct {
 	admitsTheRead bool
 }
 
-// payloadReadGate finds the `if err := refuseOversizedRecoveryPayload(_, bound);
-// err <op> nil` that a payload read is subject to. `err != nil` must leave the
-// function, so the read that follows the statement is admitted; `err == nil`
-// admits only the read inside its own body.
+// payloadReadGate finds the refuseOversizedRecoveryPayload gate a payload
+// read is subject to. `err != nil` must return, admitting the read that
+// follows; `err == nil` admits only the read inside its own body.
 func payloadReadGate(body *ast.BlockStmt) (payloadGate, bool) {
 	var gate payloadGate
 	found := false
@@ -247,14 +234,9 @@ func readsPayloadAfter(body *ast.BlockStmt, pos token.Pos) bool {
 	return found
 }
 
-// A record is published by renaming a fully written temp file over it, so the
-// bytes have to reach the disk before the name does: a machine crash between
-// the two publishes a name over content that never landed, and the record then
-// names directories no reader can account for.
-//
-// Ordering is the pin because the outcome is the same either way without a
-// fault-injecting filesystem, which this repo does not have — the same reason
-// the rename guard above is a guard.
+// Pins that writeFileAtomic syncs the temp file before renaming it into
+// place, so a crash between the two can't publish a name over content that
+// never landed on disk.
 func TestRecordWritesReachDiskBeforeTheNameDoes(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "inverted_reindex_record_store.go", nil, 0)
@@ -294,17 +276,10 @@ func identsIn(n ast.Node) map[string]bool {
 	return found
 }
 
-// Reconciliation removes a migration's directories once its task goes
-// terminal, and it seals the unit first. That interlock once answered from the
-// re-entry guard, which is claimed under `if semantic` and only around the
-// iteration — so it read false for four migration types and for the prep and
-// swap of all nine, and the removal went ahead under a running worker.
-//
-// Three things keep it honest, and none is observable at runtime without a
-// full cluster: the seal must not read the re-entry guard's map, every span
-// that writes into those directories must register unconditionally, and
-// entering must consult the seals so a late entrant is refused rather than
-// admitted alongside a teardown.
+// Pins that SealLocalUnit answers from the liveness registry (liveUnits /
+// sealedUnits), not the semantic-only re-entry guard (activeWorkers), and
+// that every writing span registers unconditionally and checks the seal —
+// otherwise reconciliation can remove directories a running worker still uses.
 func TestLocalUnitSealIsNotTheReEntryGuard(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "reindex_provider.go", nil, 0)
@@ -332,9 +307,7 @@ func TestLocalUnitSealIsNotTheReEntryGuard(t *testing.T) {
 		"enterLocalUnit must refuse a unit a teardown holds: the phase decided to run from a "+
 			"task snapshot frozen at the start of a tick, so the teardown can have started since")
 
-	// processOneUnit is the iteration; runPerUnitPhase drives both the prep
-	// and the swap for every callback that reaches a shard. resolvedBy names
-	// the call each one gets its shard from, which may hydrate it.
+	// resolvedBy names the shard-resolving call for each iteration entry point.
 	resolvedBy := map[string]string{
 		"processOneUnit":  "unwrapShard",
 		"runPerUnitPhase": "resolveUnitForPhase",
@@ -348,10 +321,8 @@ func TestLocalUnitSealIsNotTheReEntryGuard(t *testing.T) {
 			"%s registers the unit only for semantic migrations; the other four types write "+
 				"into the same directories", fn)
 
-		// A hydration runs reconciliation, and reconciliation seals this very
-		// unit to promote it. Claiming first refuses that seal, so promotion
-		// is declined and the property keeps answering from the empty bucket
-		// the migration pre-created.
+		// Claim must precede resolve: a hydration runs reconciliation, which
+		// seals this unit, so claiming after resolve would race the seal.
 		claim := firstUse(decl.Body, "enterLocalUnit")
 		resolve := firstUse(decl.Body, resolvedBy[fn])
 		require.NotEqualf(t, token.NoPos, resolve, "%s must resolve its shard through %s", fn, resolvedBy[fn])

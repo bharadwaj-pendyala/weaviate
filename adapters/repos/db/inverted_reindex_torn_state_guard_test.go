@@ -28,11 +28,10 @@ import (
 )
 
 // A durable claim that the rebuild finished, which the data on disk does not
-// back, has to be distrusted and the rebuild re-run (#240 Symptom A, #244).
-// [TestReconcileReverseEdge] pins that edge against a synthetic fixture. What
-// these two tests add is that a real shard load runs it, that the re-run
-// converges on exactly what a clean migration produces, and that the edge does
-// not fire once the migration is past the state it belongs to.
+// back, has to be distrusted and the rebuild re-run
+// (weaviate/0-weaviate-issues#240 Symptom A, #244). [TestReconcileReverseEdge]
+// pins that edge against a synthetic fixture; these two tests add that a
+// real shard load runs it end to end.
 
 const (
 	tornGuardNumObjects = 25
@@ -99,14 +98,11 @@ func tornGuardReload(t *testing.T, ctx context.Context, shard *Shard, idx *Index
 	return shd.(*Shard), task
 }
 
-// TestTornState_RebuiltDataGone_ReiteratesToBaseline pins the reverse edge
-// end to end: a rebuild whose data is gone restarts from the beginning, and
-// the restarted rebuild produces exactly the index a clean run produces.
-//
-// Resuming instead from the recorded checkpoint would swap in a bucket holding
-// only the objects that happen to sort above the stale key, which is why the
-// checkpoint has to clear along with the state
-// (weaviate/0-weaviate-issues#244).
+// TestTornState_RebuiltDataGone_ReiteratesToBaseline pins that a rebuild
+// whose data is gone restarts from the beginning and reproduces exactly a
+// clean run's index. Resuming from the recorded checkpoint instead would
+// swap in a bucket missing everything below the stale key
+// (weaviate/0-weaviate-issues#244), which is why the checkpoint clears too.
 func TestTornState_RebuiltDataGone_ReiteratesToBaseline(t *testing.T) {
 	baseline := computeBaselineFingerprint(t, tornGuardPropName, tornGuardNumObjects)
 	require.NotEmpty(t, baseline)
@@ -156,11 +152,10 @@ func TestTornState_RebuiltDataGone_ReiteratesToBaseline(t *testing.T) {
 	}
 }
 
-// TestTornState_CommittedRecordKeepsItsMissingSidecarDirs pins the edge's
-// scope. Once the staged data is complete the rebuild's own directories have
-// been consumed and removed on purpose, so their absence is correct rather
-// than torn. Reading it as torn would send every restart of a committed
-// migration back to iteration.
+// TestTornState_CommittedRecordKeepsItsMissingSidecarDirs pins that a
+// committed record's missing rebuild directories (removed on purpose once
+// staged data is complete) read as correct, not torn — misreading them would
+// send every restart of a committed migration back to iteration.
 func TestTornState_CommittedRecordKeepsItsMissingSidecarDirs(t *testing.T) {
 	ctx := testCtx()
 	className := "TornGuardCommitted_" + uuid.NewString()[:8]

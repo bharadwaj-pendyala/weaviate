@@ -25,12 +25,9 @@ import (
 )
 
 // Encode returns the file name the record store gives rec and the bytes it
-// writes into it.
-//
-// Through the production writer on purpose. A hand-built fixture pins the
-// format version it was written against, and a bump turns it into a record the
-// server cannot read — which withholds the whole shard rather than failing, so
-// the test that planted it stays green while pinning nothing.
+// writes into it, through the production writer on purpose: a hand-built
+// fixture would pin the format version it was written against, and a bump
+// would silently stop pinning anything once the server can no longer read it.
 func Encode(t *testing.T, rec db.MigrationRecord) (name, content string) {
 	t.Helper()
 

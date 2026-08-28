@@ -51,11 +51,10 @@ func migrationTrackerDirNames(lsmPath string) (names []string, visible bool) {
 // strategies — pass "" for class-level strategies). The full dir name
 // pattern matched is `<migrationDirPrefix><propNamesSuffix>_<N>`.
 //
-// trackerDirs and records are the two things that say which generations are
-// already claimed, and the caller must have established that each is the
-// whole set. A generation claimed by a record nobody could read, or by a
-// directory nobody could list, is invisible here, and handing it out again
-// gives the retry the very directories that claim names.
+// Both trackerDirs and records must be the complete set the caller
+// established: a generation claimed only by a record nobody could read, or
+// only by a directory nobody could list, is invisible here, and handing it
+// out again collides with the very directories that claim it.
 //
 // Called from [ReindexProvider.buildReindexTasks] before constructing the
 // strategy instance, once per shard / prop / indexType tuple. Computed
@@ -68,16 +67,11 @@ func nextMigrationGeneration(trackerDirs []string, migrationDirPrefix, propNames
 	return highestMigrationGeneration(trackerDirs, migrationDirPrefix, propNamesSuffix, records) + 1
 }
 
-// highestMigrationGeneration is the highest generation this shard has already
-// handed out for the tuple, or 0 if it has handed out none. Both the tracker
-// directories on disk and the records that name one count: a sweep removes a
-// tracker directory and leaves its record behind, so the directories alone
-// under-report which generations are still claimed.
-//
-// The allocating caller adds one; the rehydrate caller re-adopts this exact
-// generation, which is why the two must answer from the same evidence — a
-// rehydrate that answers from disk alone attaches to an older migration's
-// directories while a record claims a newer generation's.
+// highestMigrationGeneration is the highest generation this shard has handed
+// out for the tuple. Counts both on-disk tracker dirs and records, because a
+// sweep can remove one while leaving the other. The allocator and the
+// rehydrate caller must both read this same evidence, or rehydrate can
+// attach to a stale generation.
 func highestMigrationGeneration(trackerDirs []string, migrationDirPrefix, propNamesSuffix string,
 	records []MigrationRecord,
 ) int {
@@ -92,11 +86,10 @@ func highestMigrationGeneration(trackerDirs []string, migrationDirPrefix, propNa
 	return highest
 }
 
-// maxMigrationGeneration returns the highest generation named in trackerDirs
-// for the (prefix, propNamesSuffix) tuple, or 0 if none is. It is the disk
-// half of [highestMigrationGeneration], which is what every caller outside
-// this file wants: on its own it under-reports a generation whose directory a
-// sweep removed.
+// maxMigrationGeneration is the disk-only half of [highestMigrationGeneration]:
+// the highest generation named in trackerDirs for the tuple, or 0. It
+// under-reports a generation whose directory a sweep already removed, so
+// callers outside this file want highestMigrationGeneration instead.
 func maxMigrationGeneration(trackerDirs []string, migrationDirPrefix, propNamesSuffix string) int {
 	target := migrationDirPrefix + propNamesSuffix
 	highest := 0
@@ -115,12 +108,11 @@ func maxMigrationGeneration(trackerDirs []string, migrationDirPrefix, propNamesS
 	return highest
 }
 
-// reindexSuffixFor returns the per-strategy reindex bucket suffix base (e.g.
-// `__retokenize_reindex`) for a tracker dir's name. It is how a reader holding
-// only a directory name — the orphan audit, the legacy-marker probe — reaches
-// the sidecars that name owns. Kept in lockstep with each strategy's
-// ReindexSuffix() base: a new strategy extends both this switch and that
-// method.
+// reindexSuffixFor is the per-strategy reindex bucket suffix base (e.g.
+// `__retokenize_reindex`) for a tracker dir's name — for callers (orphan
+// audit, legacy-marker probe) that hold only the name, not a strategy
+// instance. Kept in lockstep with each strategy's ReindexSuffix(): a new
+// strategy must extend both.
 func reindexSuffixFor(namespace string) string {
 	switch {
 	case strings.HasPrefix(namespace, MigrationDirSearchableMapToBlockmax):
@@ -148,10 +140,9 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-// migrationBucketSuffixes maps a migration dir name to its bucket naming
-// scheme: the canonical bucket each property is migrated from, and the ingest
-// sidecar suffix the migration stages into. [reindexSuffixFor] is the same
-// answer for the reindex sidecar.
+// migrationBucketSuffixes is a migration's canonical source bucket and
+// ingest sidecar suffix; [reindexSuffixFor] answers the same for the
+// reindex sidecar.
 type migrationBucketSuffixes struct {
 	sourceBucketName func(propName string) string
 	ingestSuffix     string

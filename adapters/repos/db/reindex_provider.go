@@ -112,34 +112,31 @@ type ReindexProvider struct {
 	// return path (failure, context.Canceled, panic) releases the slot.
 	activeWorkers map[distributedtask.TaskDescriptor]map[string]bool
 
-	// liveUnits counts the goroutines doing this node's own work for a
-	// (task, unit) right now. Deliberately not [activeWorkers]: that one is a
-	// re-entry guard, claimed only for semantic migrations and only around the
-	// iteration, so four migration types never appear in it, and neither does
-	// the prep or the swap of any type. Reconciliation asks this before removing
-	// a migration's directories, and a gap in it is a directory removed under a
-	// goroutine still writing to it.
+	// liveUnits counts the goroutines doing this node's own work for a (task,
+	// unit) right now — deliberately not [activeWorkers], a re-entry guard
+	// claimed only for semantic migrations around the iteration, so four
+	// migration types and every type's prep/swap never appear there.
+	// Reconciliation checks this before removing a migration's directories; a
+	// gap here means removal under a goroutine still writing.
 	//
-	// A count, not a flag: nothing prevents two workers on one unit for the
-	// types the re-entry guard skips, and with a flag the first to finish would
-	// clear the second's claim. Guarded by [mu], incremented before the work and
-	// decremented from a defer, so failure, cancellation and panic all release
-	// it.
+	// A count, not a flag: two workers can hold one unit for the types the
+	// re-entry guard skips, and a flag would let the first finisher clear the
+	// second's claim. Guarded by [mu]; incremented before the work and
+	// decremented from a defer so failure, cancellation and panic all release it.
 	liveUnits unitClaims
 
 	// sealedUnits counts the teardowns holding one (task, unit) right now, and
-	// sealedTasks the ones holding a whole task, for teardowns that work by
-	// (collection, property) and never learn which units they touched. A
-	// destroyer takes a seal instead of reading [liveUnits], and while it holds
-	// one [ReindexProvider.enterLocalUnit] refuses.
+	// sealedTasks the ones holding a whole task (for teardowns working by
+	// collection/property that never learn which units they touched). A
+	// destroyer takes a seal instead of reading [liveUnits]; while held,
+	// [ReindexProvider.enterLocalUnit] refuses.
 	//
-	// Sealing rather than reading, because [liveUnits] answers only about the
-	// instant it was read. Every phase decides to run from a task snapshot the
-	// scheduler froze at the start of its tick, and the gap to the claim is
-	// unbounded — resolving a unit can hydrate a cold tenant and rebuild its
-	// tasks from disk. A phase entering after a destroyer read "nothing running"
-	// flips live bucket pointers onto directories it is midway through deleting,
-	// which serves the property empty.
+	// Sealing rather than reading, because [liveUnits] only answers about the
+	// instant it was read. Every phase runs from a task snapshot the scheduler
+	// froze at tick start, and the gap to the claim is unbounded — resolving a
+	// unit can hydrate a cold tenant and rebuild its tasks from disk. A phase
+	// entering after a destroyer read "nothing running" would flip live bucket
+	// pointers onto directories mid-delete.
 	//
 	// Counts for the same reason [liveUnits] is one, and two maps rather than a
 	// reserved unit ID so no real unit can be mistaken for the task-wide scope.
@@ -401,10 +398,9 @@ func (c *unitClaims) take(desc distributedtask.TaskDescriptor, unitID string) fu
 	}
 }
 
-// releaseOf puts a drop under [ReindexProvider.mu], so whichever goroutine
-// finishes the span can call it -- never guaranteed to be the one that took
-// the claim. It does not make the drop repeatable: a second call decrements a
-// claim it does not hold.
+// releaseOf puts a drop under [ReindexProvider.mu] so whichever goroutine
+// finishes the span can call it — never guaranteed to be the one that took
+// the claim. Not repeatable: a second call decrements a claim it doesn't hold.
 func (p *ReindexProvider) releaseOf(drop func()) func() {
 	return func() {
 		p.mu.Lock()
@@ -416,14 +412,13 @@ func (p *ReindexProvider) releaseOf(drop func()) func() {
 // SealLocalUnit reserves this exact (task, unit) for teardown and returns the
 // release, or refuses because a worker of it is running here.
 //
-// It exists because a task's cluster status goes terminal without waiting for
-// the local unit to exit: cancelling marks the task and wakes the scheduler,
-// which signals the worker on a later tick and never awaits it. A live worker
-// writes through bucket pointers it captured before its phase began, so
-// removing those directories loses every row it has written since — silently,
-// because a shut-down bucket accepts writes into a memtable that will never be
-// flushed. See [ReindexProvider.sealedUnits] for why this seals rather than
-// asks.
+// It exists because a task's cluster status goes terminal without waiting
+// for the local unit to exit: cancelling marks the task and wakes the
+// scheduler, which signals the worker later and never awaits it. A live
+// worker writes through bucket pointers captured before its phase began, so
+// removing those directories silently loses every row written since — a
+// shut-down bucket still accepts writes into a memtable that's never
+// flushed. See [ReindexProvider.sealedUnits] for why this seals, not asks.
 func (p *ReindexProvider) SealLocalUnit(desc distributedtask.TaskDescriptor, unitID string) (func(), bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -583,21 +578,18 @@ func (p *ReindexProvider) processOneUnit(
 		return
 	}
 
-	// After the shard is resolved, the way the phase callbacks order it. A
-	// hydration runs reconciliation, and reconciliation seals this very unit
-	// to promote it — a claim taken first refuses that seal, so the promotion
-	// is declined and the property goes on being served from the empty bucket
-	// the migration pre-created. From here on the claim covers everything that
-	// holds a bucket pointer or writes into the migration's directories, which
-	// reconciliation may otherwise discard the moment the task goes terminal.
+	// After the shard is resolved, per the phase callbacks' order: a hydration
+	// runs reconciliation, which seals this unit to promote it — claiming
+	// first would refuse that seal, leaving the property served from the empty
+	// pre-created bucket. From here the claim covers everything holding a
+	// bucket pointer or writing into the migration's directories, which
+	// reconciliation could otherwise discard once the task goes terminal.
 	release, entered := p.enterLocalUnit(task.TaskDescriptor, unitID)
 	if !entered {
-		// A teardown holds this unit. Nothing is claimed and no progress is
-		// reported, which leaves the unit neither completed nor failed — so the
-		// next scheduler tick relaunches it, by which time the teardown has
-		// either released or the task is terminal and the unit is skipped
-		// outright. A task-wide seal is held across a whole sweep, so this can
-		// take several ticks.
+		// A teardown holds this unit: nothing is claimed or reported, so the next
+		// tick relaunches it, by which time the teardown has released or the task
+		// is terminal and the unit is skipped outright. A task-wide seal spans a
+		// whole sweep, so this can take several ticks.
 		logger.Warn("reindex provider: a teardown holds this unit, so it is not started; the next tick retries it")
 		return
 	}
@@ -773,13 +765,13 @@ const maxReindexPropertiesPerTask = 1024
 // a per-node generation suffix `_<N>` so back-to-back in-process
 // migrations on the same property don't collide on dir paths.
 //
-// lsmPath is required because the generation is computed per-shard, from the
-// shard's tracker directories and the records that claim one. When rehydrate
-// is true (called from [OnGroupCompleted]'s rehydrate path after a process
-// restart lost the in-memory task cache), the generation is the highest one
-// already claimed — we want to reconstruct the SAME strategy instance the
-// original processOneUnit constructed. When rehydrate is false (the
-// fresh-task path from processOneUnit), it is one past that.
+// lsmPath is required because the generation is computed per-shard, from
+// the shard's tracker directories and the records that claim one. If
+// rehydrate is true (called from [OnGroupCompleted]'s rehydrate path after a
+// restart lost the in-memory task cache), the generation is the highest
+// already claimed, reconstructing the same strategy instance processOneUnit
+// built. If false (the fresh-task path from processOneUnit), it's one past
+// that.
 //
 // See `docs/runtime-reindex.md` for the deferred-finalize + per-migration-
 // generation design rationale.
@@ -813,14 +805,13 @@ func (p *ReindexProvider) buildReindexTasks(payload *ReindexTaskPayload, lsmPath
 			payload.MigrationType, len(payload.Properties), maxReindexPropertiesPerTask)
 	}
 
-	// A generation names directories, and two things say which generations are
-	// already claimed: the records, and the tracker directory listing. Either
-	// one falling short of the whole set leaves a claim invisible, and then
-	// neither allocating a new generation nor re-adopting an existing one is
-	// safe: the first hands a retry the very directories the invisible claim
-	// names, the second attaches this task to an older migration's. Refused
-	// here rather than per strategy, so every arm below and both allocation
-	// modes are covered by one check.
+	// A generation names directories, and two things say which are already
+	// claimed: the records, and the tracker directory listing. Either falling
+	// short of the whole set leaves a claim invisible — then neither allocating
+	// a new generation nor re-adopting an existing one is safe: one hands a
+	// retry the invisible claim's own directories, the other attaches this
+	// task to an older migration's. Refused here, not per strategy, so one
+	// check covers every arm and both allocation modes.
 	records, someRecordsUnreadable, recordSetUnreadable := migrationRecordsAt(lsmPath, p.logger)
 	if someRecordsUnreadable || recordSetUnreadable {
 		return nil, fmt.Errorf("migration records at %s could not all be read, "+

@@ -32,15 +32,10 @@ func segmentsOnDisk(t *testing.T, bucketDir string) int {
 	return len(segments)
 }
 
-// TestCheckpointNeverOutrunsThePostingsItVouchesFor pins the durability
-// ordering the resume depends on.
-//
-// The checkpoint is fsynced; the postings behind it sit in a buffered
-// write-ahead log. A crash between the two drops the postings and keeps the
-// checkpoint, and the resume seeks strictly past the checkpoint key — so
-// nothing ever rebuilds them and the flip promotes a bucket permanently
-// missing a posting. TestMultiNode_MajorityCrashDuringReindex lost exactly one
-// object this way.
+// TestCheckpointNeverOutrunsThePostingsItVouchesFor pins that the checkpoint
+// is fsynced only after the postings behind it. A crash between the two
+// would drop postings the resume's strict past-checkpoint seek never
+// rebuilds, promoting a bucket permanently missing them.
 func TestCheckpointNeverOutrunsThePostingsItVouchesFor(t *testing.T) {
 	const propName = filterableToRangeablePropName
 

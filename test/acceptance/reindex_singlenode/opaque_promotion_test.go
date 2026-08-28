@@ -30,14 +30,11 @@ import (
 
 const opaquePromotionObjectCount = 30
 
-// testPromotionRunsOnRecordedHandles is the executable form of the acceptance
-// requirement that no directory name is ever inferred: a migration's live data
-// is parked at a randomly named directory that no strategy, prefix table or
-// generation suffix could reproduce, and only the record says where it is.
-//
-// A restart has to promote it to the canonical name and serve queries from it.
-// Deriving the name instead finds nothing, and the property answers from an
-// empty bucket while the schema reports it ready.
+// testPromotionRunsOnRecordedHandles pins that no directory name is ever
+// inferred: a migration's live data sits at a randomly named directory only
+// the record can locate, and a restart must promote it to the canonical
+// name from that record. Deriving the name instead finds nothing, serving
+// an empty bucket under a schema that reports ready.
 func testPromotionRunsOnRecordedHandles(t *testing.T, compose *docker.DockerCompose) {
 	const class = "OpaquePromotion"
 	ctx := context.Background()
@@ -123,11 +120,10 @@ func plantSwappedRecordAcrossRestart(t *testing.T, compose *docker.DockerCompose
 	require.NoError(t, compose.StartAt(ctx, 0), "restart after planting must succeed")
 }
 
-// testPromotedRecordOutranItsRename is the crash the promotion record can
-// outlive: the record is durable while the rename it vouches for is not, so a
-// machine crash can leave the data at the staged name under a record that says
-// it is already canonical. The closure sweep then reclaims the staged
-// directory — the only copy there is.
+// testPromotedRecordOutranItsRename pins that a promoted record can outlive
+// its rename: a crash can leave data at the staged name under a record
+// already claiming canonical, so the closure sweep must not reclaim that
+// staged directory — it's the only copy there is.
 func testPromotedRecordOutranItsRename(t *testing.T, compose *docker.DockerCompose) {
 	const class = "PromotedTornRename"
 	ctx := context.Background()

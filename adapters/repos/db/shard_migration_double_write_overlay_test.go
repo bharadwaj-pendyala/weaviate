@@ -24,17 +24,12 @@ import (
 	enthnsw "github.com/weaviate/weaviate/entities/vectorindex/hnsw"
 )
 
-// TestMirrorAnalyzesPerArmedMigration covers two migrations mirroring one
-// property while they disagree about how it is analyzed. That is a steady
-// state: a failed generation stays armed until its successor flips, and the
-// overlap check only blocks active tasks.
-//
-// One analysis for both is wrong in two ways, and both are silent. Same
-// family, different tokenization: the older migration's staged copy accrues
-// the newer one's terms, and a later promote serves them. Different family:
-// the winner's overlay omits the loser's force flag, the analysis never
-// produces the property in the loser's form, and the older copy stops
-// receiving writes entirely.
+// TestMirrorAnalyzesPerArmedMigration pins that two migrations mirroring one
+// property with different analyses each get their own — a failed generation
+// stays armed until its successor flips, so this is a steady state, not an
+// edge case. One shared analysis would silently mis-tokenize the older
+// migration's staged copy (same family) or stop it receiving writes
+// entirely (different family, its force flag omitted).
 func TestMirrorAnalyzesPerArmedMigration(t *testing.T) {
 	const propName = "title"
 

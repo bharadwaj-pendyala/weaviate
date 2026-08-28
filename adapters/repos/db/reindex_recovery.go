@@ -163,22 +163,21 @@ func DiscoverInFlightReindexTasks(
 }
 
 // loadReindexRecoveryRecord reads payload.mig from a migration directory and
-// returns the decoded record, but only for a migration whose rebuild is
-// complete and whose flip is not yet decided. Returns ok=false otherwise, and
-// when payload.mig is missing, unreadable, or names a property this build would
-// not turn into a directory.
+// returns the decoded record, only for a migration whose rebuild is complete
+// and whose flip isn't yet decided. Returns ok=false otherwise, or when
+// payload.mig is missing, unreadable, or names a property this build
+// wouldn't turn into a directory.
 //
-// That window is where the unit is terminal in RAFT — so the scheduler will not
-// call StartTask after a restart — while the swap on the next scheduler tick
-// has not run. Every write arriving in between has to reach the ingest bucket
-// through a double-write callback, and only shard init is early enough to
-// register one. Before the window, the scheduler restarts the unit and arms the
-// callbacks itself, so arming here would leave the write path carrying two.
+// That window is where the unit is terminal in RAFT (so the scheduler won't
+// call StartTask after a restart) but the swap hasn't run yet. Every write
+// arriving in between must reach the ingest bucket through a double-write
+// callback, and only shard init is early enough to register one; before the
+// window, the scheduler itself restarts the unit and arms the callbacks.
 //
-// A recorded flip stays inside the window until promotion actually runs: the
-// flip lives only in the process that made it, so after a restart the property
-// is served from the canonical directory again. Past promotion the staged copy
-// is that directory, and there is nothing left to mirror.
+// A recorded flip stays inside the window until promotion runs: the flip
+// lives only in the process that made it, so after a restart the property is
+// served from the canonical directory again. Past promotion, the staged copy
+// IS that directory — nothing left to mirror.
 func loadReindexRecoveryRecord(migDir string, records []MigrationRecord,
 	logger logrus.FieldLogger,
 ) (reindexRecoveryRecord, bool) {

@@ -169,13 +169,10 @@ func TestMigrationMirrorRegistryConcurrentAccess(t *testing.T) {
 	require.Zero(t, registry.ArmedMigrationMirrors())
 }
 
-// TestMigrationMirrorDisarmIsPerProperty exercises the shape production arms:
-// one registration over the migration's whole property set, published as one
-// handle per property. Disarming a property has to stop exactly that
-// property's mirror. Leaving it armed would write predecessor-form rows into
-// the successor's live bucket the moment the staged one is shut down, and
-// disarming the whole scope would stop mirroring properties no successor took
-// over.
+// TestMigrationMirrorDisarmIsPerProperty pins that disarming one property of
+// a registration's handle stops only that property's mirror — not the whole
+// scope (which would leave other properties unmirrored) and not nothing
+// (which would write predecessor-form rows into the successor's live bucket).
 func TestMigrationMirrorDisarmIsPerProperty(t *testing.T) {
 	const (
 		retired = "title"
@@ -230,12 +227,10 @@ func TestMigrationMirrorDisarmIsPerProperty(t *testing.T) {
 		"a property nobody disarmed must keep mirroring")
 }
 
-// TestOverlappingMirrorsOnOneProperty pins the steady state supersession
-// creates: two records mirroring one property at once. Each arming is owned by
-// its own record, so one record's disarm must leave the other's mirror copying
-// — and must not un-suppress the inline write path, which analyzes under the
-// source schema and would land source-tokenized rows in the survivor's staged
-// bucket, the one a flip is about to make canonical.
+// TestOverlappingMirrorsOnOneProperty pins that two records mirroring one
+// property stay independent: one's disarm must leave the other copying and
+// must not un-suppress the inline write path, which would land
+// source-tokenized rows in the survivor's soon-to-be-canonical staged bucket.
 func TestOverlappingMirrorsOnOneProperty(t *testing.T) {
 	const (
 		propName = "title"

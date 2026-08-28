@@ -79,10 +79,8 @@ func fakeMigrationsDir(t *testing.T, dirs []string) string {
 	return lsmPath
 }
 
-// makeMigrationsUnlistable leaves the tracker directory traversable but not
-// readable, so .migrations/records still answers and only the listing fails.
-// That is the state this branch has to survive: a shard whose migration
-// directory exists and whose contents nothing can enumerate.
+// makeMigrationsUnlistable leaves the tracker dir traversable but unreadable,
+// so only the listing fails — the state this code has to survive.
 func makeMigrationsUnlistable(t *testing.T, lsmPath string) {
 	t.Helper()
 	migrations := filepath.Join(lsmPath, migrationsDir)
@@ -93,9 +91,8 @@ func makeMigrationsUnlistable(t *testing.T, lsmPath string) {
 	}
 }
 
-// nextGenerationAt is the allocation the provider makes on a shard it could
-// read: it asserts the listing was visible, because the generation callers
-// below assert is only meaningful once it is.
+// nextGenerationAt allocates like the provider does, requiring the listing
+// was visible first: an allocation off an unlistable directory is meaningless.
 func nextGenerationAt(t *testing.T, lsmPath, prefix, propNamesSuffix string, records []MigrationRecord) int {
 	t.Helper()
 	trackerDirs, visible := migrationTrackerDirNames(lsmPath)
@@ -217,11 +214,8 @@ func (p plantedMigration) record(t *testing.T) MigrationRecord {
 	return nil
 }
 
-// TestReconcileConvergesEveryMigrationOnAShard pins what the startup finalizer
-// used to own: one shard's disk can carry several migrations at once, and a
-// load has to settle each of them. The suites next to this one plant records
-// that interact — one supersedes another, or answers for the same property —
-// so nothing there would catch a pass that stopped after the first record.
+// TestReconcileConvergesEveryMigrationOnAShard pins that reconciliation
+// settles every migration on a shard's disk in one load, not just the first.
 func TestReconcileConvergesEveryMigrationOnAShard(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -278,9 +272,8 @@ func TestReconcileConvergesEveryMigrationOnAShard(t *testing.T) {
 			wantStaged: []string{"m_31_body"},
 		},
 		{
-			// The #10675 shape: the newer data is complete but its flip never
-			// happened, while an older migration already flipped. Handing the
-			// bucket to the older one serves data the cluster has moved past.
+			// weaviate/weaviate#10675 shape: a newer migration's data is
+			// complete but unflipped while an older one already flipped.
 			name: "the newer migration wins the bucket even though the older one already flipped",
 			plant: []plantedMigration{
 				{taskVersion: 40, code: StrategyCodeSearchableRetokenize, prop: "title", state: MigrationStateSwapped},
@@ -347,11 +340,9 @@ func testRecordsAt(t *testing.T, lsmPath string) []MigrationRecord {
 	return records
 }
 
-// TestNextMigrationGenerationHonorsRecords pins the other half of the claim.
-// The sweeps remove a tracker directory without removing its record, so a
-// generation derived from directories alone is handed out a second time — and
-// the retry then gets the handles the stale record still names, whose discard
-// removes the retry's directories.
+// TestNextMigrationGenerationHonorsRecords pins that generation allocation
+// counts records as well as directories, so a sweep that removes a tracker
+// dir but not its record can't get the freed generation handed out again.
 func TestNextMigrationGenerationHonorsRecords(t *testing.T) {
 	tests := []struct {
 		name       string

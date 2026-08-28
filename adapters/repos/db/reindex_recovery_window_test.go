@@ -26,15 +26,12 @@ import (
 	enthnsw "github.com/weaviate/weaviate/entities/vectorindex/hnsw"
 )
 
-// TestRecoveryWindowSpansAnUnpromotedFlip pins which recorded states still
-// need their double-write mirror re-armed after a restart.
-//
-// A recorded flip is not a promoted one. The pointer flip lives only in the
-// process that made it, so the next load serves the property from the
-// canonical directory again — and promotion removes that directory before
-// renaming the staged one over it. Every write taken in between goes with it
-// unless the mirror is armed, and promotion is withheld for as long as the
-// shard is frozen, a handle is missing, or a stat fails.
+// TestRecoveryWindowSpansAnUnpromotedFlip pins that every recorded state
+// short of promoted needs its double-write mirror re-armed after a restart:
+// the pointer flip lives only in the process that made it, so the next load
+// serves the property from the canonical directory again until promotion
+// renames the staged one over it — and every write in between goes with it
+// unless the mirror is armed.
 func TestRecoveryWindowSpansAnUnpromotedFlip(t *testing.T) {
 	const trackerDir = "searchable_retokenize_title_1"
 

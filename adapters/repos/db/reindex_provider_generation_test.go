@@ -21,15 +21,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestBuildReindexTasksGenerationAllocation pins both halves of the question
-// "which generation does this task get". A generation names directories, and
-// the records say which ones are already claimed — a sweep removes a tracker
-// directory and leaves its record behind, so the directories alone under-report.
-//
-// Both arms answer from the same evidence: the fresh arm must not hand out a
-// generation a record still claims, and the rehydrate arm must not attach to
-// an older generation's directories while a record claims a newer one. Where
-// a record cannot be read the claim is invisible, and neither answer is safe.
+// TestBuildReindexTasksGenerationAllocation pins that both the fresh and the
+// rehydrate arm answer from the same evidence — tracker directories plus
+// records, since a sweep can strand one without the other. The fresh arm
+// must not hand out a generation a record still claims; the rehydrate arm
+// must not attach to an older generation's directories than the record's.
 func TestBuildReindexTasksGenerationAllocation(t *testing.T) {
 	const propName = "title"
 

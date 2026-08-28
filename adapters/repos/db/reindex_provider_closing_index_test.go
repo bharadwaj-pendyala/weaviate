@@ -23,23 +23,15 @@ import (
 	entschema "github.com/weaviate/weaviate/entities/schema"
 )
 
-// A closing index must not be reported as a node whose swap finished.
-//
-// The scheduler treats "callbacks done" as terminal: it stops re-firing
-// OnGroupCompleted, so a node that answers true while it still holds an
-// uncommitted migration keeps the old tokenization after the cluster-wide
-// schema flip already committed. The lenient shard walk answers nil once the
-// index is closing, so it visits nothing and every shard reads as one this
-// node does not hold — which the record loop below skips, landing on true.
-//
-// The rows that signal a close therefore fail if the walk is swapped back to
-// [Index.ForEachShard]: their migration is committed on disk, so the only
-// thing that can produce false is the walk refusing to answer. The open row is
-// the converse, and is what gives the record gate teeth: it can only answer
-// true because a committed record is there to answer with.
-//
-// The two close signals are raised independently here so each row names the
-// one it tests. Teardown raises both, in the order the last row has them.
+// TestLocalCallbacksDoneRefusesToAnswerForAClosingIndex pins that a closing
+// index must not report a swap finished: the scheduler treats "callbacks
+// done" as terminal and stops re-firing OnGroupCompleted, so answering true
+// on an uncommitted migration would strand it on the old tokenization. The
+// lenient shard walk answers nil while closing, which the record loop below
+// reads as true; swapping back to [Index.ForEachShard] would fail these rows,
+// since their migration is committed and only a refusing walk can produce
+// false. The two close signals are raised independently so each row names
+// the one it tests; teardown raises both.
 func TestLocalCallbacksDoneRefusesToAnswerForAClosingIndex(t *testing.T) {
 	const (
 		prop   = "title"
@@ -49,10 +41,8 @@ func TestLocalCallbacksDoneRefusesToAnswerForAClosingIndex(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		// closeRequested is a delete committed against the collection;
-		// closing is teardown having cancelled the index's context. In
-		// production the first precedes the second, and each guard answers on
-		// its own.
+		// closeRequested is a delete committed against the collection; closing
+		// is teardown having cancelled the index's context.
 		closeRequested bool
 		closing        bool
 		// committed says whether the tenant's migration reached the state
@@ -60,10 +50,9 @@ func TestLocalCallbacksDoneRefusesToAnswerForAClosingIndex(t *testing.T) {
 		committed bool
 		want      bool
 	}{
-		// The uncommitted, non-closing baseline is already pinned in
-		// TestLocalCallbacksDoneLeavesUnloadedShardsAlone; an uncommitted
-		// migration answers false with or without closing (row below), so it
-		// wouldn't isolate what closing changes here.
+		// The uncommitted, non-closing baseline is pinned in
+		// TestLocalCallbacksDoneLeavesUnloadedShardsAlone; it wouldn't isolate
+		// what closing changes here.
 		{
 			name:      "an open index whose migration committed",
 			committed: true,

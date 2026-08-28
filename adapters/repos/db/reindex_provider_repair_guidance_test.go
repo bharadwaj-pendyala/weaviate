@@ -264,12 +264,8 @@ func postMergeTrackerDir(t *testing.T, propName string) string {
 	return migrationDirWithProps(prefixes[0], []string{propName}) + "_1"
 }
 
-// mkMigrationRecordFor plants a migration directory and the record that says
-// whose it is and how far it got, which is what every passive reader on the
-// provider paths answers from.
-//
-// The strategy code only keeps two records of one generation apart on disk;
-// no reader reached from here compares it.
+// mkMigrationRecordFor plants a migration directory and the record naming
+// it — what every passive reader on the provider paths answers from.
 func mkMigrationRecordFor(t *testing.T, lsmPath, trackerDir, taskID string, taskVersion uint64,
 	unitID string, mt ReindexMigrationType, state MigrationState, props ...string,
 ) string {
@@ -312,12 +308,9 @@ func mkMigrationRecordFor(t *testing.T, lsmPath, trackerDir, taskID string, task
 	return filepath.Join(lsmPath, ".migrations", trackerDir)
 }
 
-// The probe reads each shard's records once, not once per (index type,
-// property). A change-tokenization of three properties runs six tuples, and a
-// regression that reads per tuple pays six directory reads and six sets of
-// record parses per shard — on a path that runs for every shard a cancelled
-// task touched. migrationRecordsAt logs one line per read for exactly this
-// reason: the cost has no other observable.
+// TestHasLocalPostMergeStateReadsEachShardsRecordsOnce pins that the probe
+// reads each shard's records once, not once per (index type, property);
+// migrationRecordsAt logs one line per read so this cost stays observable.
 func TestHasLocalPostMergeStateReadsEachShardsRecordsOnce(t *testing.T) {
 	ctx := context.Background()
 	shard, idx := testShard(t, ctx, "C")
@@ -393,17 +386,11 @@ func TestHasLocalPostMergeState_GivesUpOnAFinishedContext(t *testing.T) {
 		"a shut-down node must not walk the task's shards")
 }
 
-// Pins what makes the cancel repair guidance reliable: the terminal
-// cleanup leaves the evidence the probe reads. Both sides ask the record
-// whether its data is committed: the cleanup preserves such a migration
-// because wiping it out from under the live bucket pointer is the #10675
-// data loss, and the probe reads it because it is the signature of a swap
-// this node armed.
-//
-// So a cleanup that stopped preserving them would silence this guidance
-// and re-open that data loss at the same time. That shared question is
-// also why the probe's position relative to the cleanup does not change
-// the answer.
+// TestAutoCleanupAfterTerminal_PreservesTheEvidenceTheProbeReads pins that
+// terminal cleanup preserves a committed migration's evidence: both it and
+// the post-merge probe key off the same "is data committed" question
+// (weaviate/weaviate#10675), so a cleanup that stopped preserving it would
+// also silently re-open that data loss.
 func TestAutoCleanupAfterTerminal_PreservesTheEvidenceTheProbeReads(t *testing.T) {
 	ctx := context.Background()
 	p, payload, trackerDir := postMergeEvidenceFixture(t, ctx)
@@ -511,14 +498,10 @@ func TestOnTaskCompleted_CancelledLogsRepairGuidanceWhenTheDrainTimesOut(t *test
 		"the cleanup is skipped on this arm, but the tear is still one only an operator can repair")
 }
 
-// The terminal-cleanup path runs on every node of a cancelled or failed
-// migration, with the collection's tenants as cold as the operator left
-// them. The post-merge probe is the one thing on it that reads a shard, and
-// reading it must not load it.
-//
-// It also pins what counts as evidence: a cancel landing while the task is
-// still STARTED leaves no acknowledgement anywhere, so the guidance keys on
-// this node's own record of how far the migration got.
+// TestHasLocalPostMergeStateLeavesUnloadedShardsAlone pins that the
+// post-merge probe never loads a cold shard while reading it, and that a
+// cancel landing while the task is still STARTED (no ack anywhere) still
+// keys off this node's own record of how far the migration got.
 func TestHasLocalPostMergeStateLeavesUnloadedShardsAlone(t *testing.T) {
 	const (
 		prop   = "title"

@@ -106,13 +106,9 @@ func barrierIntegrationSeedObjects(t *testing.T, ctx context.Context, shard *Sha
 	return out
 }
 
-// TestReindexProviderBarrierIntegration_OnGroupCompletedPrep pins the
-// PREP-phase contract: given a unit at IsReindexed (the post-iteration,
-// pre-merge state that OnGroupCompleted lands in for barrier-mode tasks),
-// the provider's runShardPrepPhase must advance the record to Merged.
-// This is the "OnGroupCompleted → RunPrepareOnShard boundary" gap T2.3 was
-// scoped against; the other unit tests cover RunSwapOnShard's dispatch, not
-// the PREP-phase boundary.
+// TestReindexProviderBarrierIntegration_OnGroupCompletedPrep pins that
+// runShardPrepPhase advances a barrier-mode unit's record from Iterated to
+// Merged — the OnGroupCompleted → RunPrepareOnShard boundary.
 func TestReindexProviderBarrierIntegration_OnGroupCompletedPrep(t *testing.T) {
 	ctx := testCtx()
 	className := "BarrierIntegPrep"
@@ -204,11 +200,9 @@ func TestReindexProviderBarrierIntegration_OnSwapRequestedSwap(t *testing.T) {
 		[]*ShardReindexTaskGeneric{task}, p.logger)
 	require.Empty(t, swapRes.Errs, "SWAP must succeed")
 
-	// Post-SWAP invariants: the flip is recorded and the displaced directory
-	// is gone. In runtimeSwap the per-prop swap and the record write are
-	// atomic (Phase 2a pins this contract — see
-	// TestRuntimeSwap_Phase2a_AtomicTightLoop), so both hold together once
-	// the swap returns clean.
+	// Post-SWAP: the flip must be recorded and the displaced directory gone —
+	// both hold together since Phase 2a makes the swap and record write
+	// atomic (see TestRuntimeSwap_Phase2a_AtomicTightLoop).
 	recFinal, ok := task.migrationRecord(shard)
 	require.True(t, ok)
 	assert.Equal(t, MigrationStateSwapped, recFinal.State(),
@@ -305,10 +299,9 @@ func TestReindexProviderBarrierIntegration_CrashAfterPersistRecoveryRecord(t *te
 	require.Empty(t, records, "no record may exist — iteration never ran")
 
 	// Now simulate process restart: DiscoverInFlightReindexTasks walks
-	// the data dir and must SKIP this migration. We pass nil schemaManager —
-	// the discover path is read-only against disk and never invokes schema
-	// operations until buildRecoveryTasks fires, which needs a record whose
-	// rebuild is complete and whose flip is not yet decided.
+	// the data dir and must SKIP this migration. nil schemaManager is safe:
+	// the discover path is read-only until buildRecoveryTasks fires, which
+	// needs a record whose rebuild is complete and flip undecided.
 	rootPath := idx.Config.RootPath
 	recovered, err := DiscoverInFlightReindexTasks(rootPath, idx.logger, nil)
 	require.NoError(t, err, "discover must not error on a recordless dir")
@@ -331,11 +324,10 @@ func TestReindexProviderBarrierIntegration_CrashAfterPersistRecoveryRecord(t *te
 		"idempotent persist must leave the file bit-identical (no rewrite)")
 }
 
-// TestReindexProviderBarrierIntegration_IteratedRecordDurabilityBarrier
-// pins commit 073d47b460 (weaviate/0-weaviate-issues#214):
-// FlushAndSwitch happens BEFORE the Iterated record, so a restart that
-// dispatches on that record never sees it without the data behind it. A
-// refactor that moved FlushAndSwitch after the record write would fail here.
+// TestReindexProviderBarrierIntegration_IteratedRecordDurabilityBarrier pins
+// that FlushAndSwitch runs BEFORE the Iterated record write
+// (weaviate/0-weaviate-issues#214), so a restart dispatching on that record
+// never sees it without the data behind it.
 func TestReindexProviderBarrierIntegration_IteratedRecordDurabilityBarrier(t *testing.T) {
 	ctx := testCtx()
 	className := "BarrierIntegDurability"
@@ -379,10 +371,8 @@ func TestReindexProviderBarrierIntegration_IteratedRecordDurabilityBarrier(t *te
 	// lost; everything segment-backed survives.
 	require.NoError(t, shard.Shutdown(ctx))
 
-	// Post-shutdown: the record must be readable with bit-identical content.
-	// If a refactor introduces ANY lazy-write path for it, or removes the
-	// FlushAndSwitch barrier so the bucket's memtables are lost, this read
-	// surfaces the regression.
+	// Post-shutdown: the record must be readable with bit-identical content,
+	// so a lazy-write path or a dropped FlushAndSwitch barrier shows up here.
 	postContent, err := os.ReadFile(recordPath)
 	require.NoError(t, err,
 		"the record must persist across shard shutdown (FlushAndSwitch durability barrier contract)")

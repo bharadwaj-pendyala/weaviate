@@ -599,19 +599,15 @@ func writePreAgedQuarantineSentinel(t *testing.T, trackerDir string) {
 	require.NoError(t, os.Chtimes(p, aged, aged))
 }
 
-// mkAuditTracker plants a migration directory and the record that says whose
-// it is. The record is the only thing the audit classifies by: it carries the
-// task identity the DTM lookup is asked about and the property list the
-// cleanup then runs over.
-//
-// state decides whether the tracker is a candidate at all. The audit exempts a
-// migration whose data is committed, because from there the directories back
-// live buckets.
-// auditFixtureUnit is the one unit every record on a fixture shard carries. A
-// real unit is "<shard>__<node>", so records of two units on one shard are a
-// restore or a shard copy, and the store freezes on them.
+// auditFixtureUnit is the one unit every record on a fixture shard carries.
+// A real unit is "<shard>__<node>"; records of two units on one shard would
+// mean a restore or shard copy, which the store freezes on.
 const auditFixtureUnit = "shard-1__node-0"
 
+// mkAuditTracker plants a migration directory and the record naming it: the
+// record carries the task identity the DTM lookup checks and the property
+// list cleanup runs over. state decides whether it's a candidate at all —
+// the audit exempts a migration whose data is already committed.
 func mkAuditTracker(t *testing.T, lsmPath, trackerName, taskID string, taskVersion uint64,
 	unitID string, state MigrationState, props ...string,
 ) string {
@@ -652,14 +648,8 @@ func mkAuditTracker(t *testing.T, lsmPath, trackerName, taskID string, taskVersi
 	return filepath.Join(lsmPath, ".migrations", trackerName)
 }
 
-// TestAuditOrphanReindexTrackersReclaimsTrackersNoRecordNames covers the
-// second kind of orphan: a tracker directory no record names. Every cluster
-// that upgrades into this build brings a set of them, and this audit is the
-// only thing that reclaims one. Age separates it from a directory this
-// process created and has not yet written a record for, the sentinel the
-// audit itself writes has to not turn a reclaimable directory into a fresh
-// one forever, and payload.mig is what still answers whether the task that
-// wrote the directory is alive.
+// TestAuditOrphanReindexTrackersReclaimsTrackersNoRecordNames pins reclaiming
+// a tracker directory no record names — the upgrade-era orphan shape.
 func TestAuditOrphanReindexTrackersReclaimsTrackersNoRecordNames(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -727,10 +717,8 @@ func TestAuditOrphanReindexTrackersReclaimsTrackersNoRecordNames(t *testing.T) {
 			wantDir:     true,
 		},
 		{
-			// The sentinel is written into the directory, so it bumps the very
-			// modification time the age test reads. Without answering from the
-			// sentinel, the first quarantine would make the directory look
-			// fresh on every later sweep and nothing would ever reclaim it.
+			// Quarantining bumps mtime; the age check must read the sentinel, not
+			// raw mtime, or the first quarantine looks fresh forever.
 			name:        "quarantining it must not make it look fresh",
 			mtimeOffset: time.Hour,
 			quarantined: true,
@@ -781,14 +769,9 @@ func TestAuditOrphanReindexTrackersReclaimsTrackersNoRecordNames(t *testing.T) {
 	}
 }
 
-// TestAuditOrphanReindexTrackersHonorsUnreadableRecords covers the shard the
-// audit cannot classify: at least one record on it does not decode, so any
-// tracker here may belong to a live migration whose record is the thing that
-// went unreadable. The record-less arm's own liveness check reads payload.mig,
-// which an upgraded tracker need not have, so the only safe answer is to
-// reclaim nothing until the records read again.
-// Withholding recovery on such a shard is already the behavior everywhere
-// else, and it is reversible; a deletion is not.
+// TestAuditOrphanReindexTrackersHonorsUnreadableRecords pins that a shard
+// with even one undecodable record reclaims nothing, since deletion isn't
+// reversible and the record-less liveness check alone can't prove otherwise.
 func TestAuditOrphanReindexTrackersHonorsUnreadableRecords(t *testing.T) {
 	const trackerName = "searchable_retokenize_legacy_1"
 
@@ -854,13 +837,10 @@ func TestAuditOrphanReindexTrackersHonorsUnreadableRecords(t *testing.T) {
 	}
 }
 
-// TestAuditOrphanReindexTrackersReclaimsSidecarsNamedByPayload covers the
-// trackers every cluster upgrading from a pre-record build carries: a good
-// payload.mig and no migration record. Reclaiming the tracker alone leaves the
-// sidecar directories behind, and since the generation counter is derived from
-// .migrations only, the next migration on that property claims the same
-// generation and opens those directories with the previous run's segments
-// still in them.
+// TestAuditOrphanReindexTrackersReclaimsSidecarsNamedByPayload pins that
+// reclaiming a payload-only tracker also reclaims its sidecar dirs — leaving
+// them behind would let the next migration reuse the generation and open
+// them with the previous run's segments still inside.
 func TestAuditOrphanReindexTrackersReclaimsSidecarsNamedByPayload(t *testing.T) {
 	const (
 		propName    = "title"
@@ -886,11 +866,8 @@ func TestAuditOrphanReindexTrackersReclaimsSidecarsNamedByPayload(t *testing.T) 
 			wantReissued: 1,
 		},
 		{
-			// No payload at all: the mkdir landed and the write did not, so
-			// there is no property list because none was ever recorded. The
-			// payload is written before any bucket is opened, so production
-			// never pairs this state with sidecars; planting them here is what
-			// shows the audit removes only what a payload named.
+			// No payload at all (mkdir landed, write didn't): the audit must
+			// remove only what a payload actually named, never assume sidecars.
 			name:         "a tracker with no payload removes only itself",
 			wantStatus:   AuditStatusOrphansFound,
 			wantSidecars: true,
@@ -910,10 +887,8 @@ func TestAuditOrphanReindexTrackersReclaimsSidecarsNamedByPayload(t *testing.T) 
 			wantReissued: 2,
 		},
 		{
-			// The release before the record store recorded a finished
-			// migration with a marker file, and this build reads none. An
-			// operator who upgrades without draining first would otherwise
-			// have these directories — the live data — reclaimed.
+			// A pre-record release's tidied.mig marks live data; upgrading
+			// without draining first must not have this build reclaim it.
 			name:         "a tracker marked tidied by an older release is left alone",
 			payload:      `{"payload":{"properties":["title"],"migrationType":"enable-filterable"}}`,
 			marker:       "tidied.mig",
@@ -932,11 +907,8 @@ func TestAuditOrphanReindexTrackersReclaimsSidecarsNamedByPayload(t *testing.T) 
 			wantReissued: 2,
 		},
 		{
-			// The audit composes a directory name out of each property the
-			// payload names and hands it to a recursive delete. A record's
-			// property names are validated when the record is decoded; these
-			// are not validated anywhere, and a restored archive can carry
-			// any bytes here.
+			// Payload property names aren't validated the way a decoded record's
+			// are, so a path-escaping property must not be read as a real one.
 			name:         "a payload naming a property that escapes the shard is not read as a property list",
 			payload:      `{"payload":{"properties":["../../../victim"],"migrationType":"enable-filterable"}}`,
 			escapingProp: "../../../victim",
@@ -1010,11 +982,9 @@ func TestAuditOrphanReindexTrackersReclaimsSidecarsNamedByPayload(t *testing.T) 
 			for _, path := range escapees {
 				assert.True(t, dirExists(t, path), "a directory outside the shard: %s", path)
 			}
-			// The adoption is the conjunction of the two: a surviving
-			// directory only gets opened again if the generation that names
-			// it is handed back. Removing the tracker and its record together
-			// is what hands it back, since either one on its own still claims
-			// the generation.
+			// Adoption needs both: a surviving directory is only reopened once the
+			// generation naming it is handed back, which removing tracker and
+			// record does together — either alone still claims the generation.
 			assert.Equal(t, tt.wantReissued,
 				nextGenerationAt(t, lsmPath, "enable_filterable_", propName,
 					testRecordsAt(t, lsmPath)),
@@ -1023,12 +993,9 @@ func TestAuditOrphanReindexTrackersReclaimsSidecarsNamedByPayload(t *testing.T) 
 	}
 }
 
-// TestOrphanCleanupSealsTheUnit pins that the audit's destructive arms hold
-// the migration's own unit while they work. The audit classifies an orphan
-// from the owning task's cluster status alone, and a status goes terminal
-// without waiting for the local unit to exit — so the tracker and sidecars it
-// deletes can be ones a worker on this node is still writing into through
-// bucket pointers it took before its phase began.
+// TestOrphanCleanupSealsTheUnit pins that cleanup holds the migration's own
+// unit sealed while it deletes, since a live worker can still be writing
+// through pointers taken before its task's status went terminal.
 func TestOrphanCleanupSealsTheUnit(t *testing.T) {
 	const (
 		taskID      = "task-orphan"

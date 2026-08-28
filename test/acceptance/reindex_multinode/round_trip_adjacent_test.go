@@ -685,10 +685,10 @@ func testEnableFilterableThenChangeTok(t *testing.T, compose *docker.DockerCompo
 	}, 30*time.Second, 50*time.Millisecond,
 		"text.IndexFilterable should be true after enable-filterable")
 
-	// Step 2: change-tokenization word→field on the same property.
-	// Hypothesis: enable-filterable's completed record poisons the new
-	// change-tok migration's state, leaving N-1 replicas with empty
-	// post-swap buckets.
+	// Step 2: change-tokenization word→field, right after a completed
+	// enable-filterable migration on the same property — its leftover record
+	// must not corrupt the new migration's state or leave replicas with
+	// empty post-swap buckets.
 	taskID = reindexhelpers.SubmitIndexUpsert(t, restURI, className, "text", "searchable",
 		`{"tokenization":"field"}`)
 	reindexhelpers.AwaitReindexFinished(t, restURI, taskID, reindexhelpers.WithTimeout(180*time.Second))

@@ -27,14 +27,11 @@ import (
 	enthnsw "github.com/weaviate/weaviate/entities/vectorindex/hnsw"
 )
 
-// TestBackToBackMigrationsRetireInProcess drives the sequence the mirror
-// contract exists for: a migration whose swap fails keeps its mirror armed —
-// tearing it down would route every later write into the one directory a
-// restart deletes — and a second migration on the same property then supersedes
-// it inside the same process. Without the in-process retirement the failed
-// migration's mirror stays armed past the successor's flip, where its own
-// staged bucket name no longer resolves and the copy falls back onto the
-// successor's live bucket.
+// TestBackToBackMigrationsRetireInProcess pins in-process retirement: a
+// failed migration's mirror stays armed (tearing it down would route writes
+// into a directory a restart deletes), and a second migration on the same
+// property must retire it before its own flip, or the copy falls back onto
+// the successor's live bucket once the stale staged name stops resolving.
 func TestBackToBackMigrationsRetireInProcess(t *testing.T) {
 	const propName = "title"
 
@@ -97,12 +94,10 @@ func TestBackToBackMigrationsRetireInProcess(t *testing.T) {
 		"retiring the predecessor must not reach the successor's live data")
 }
 
-// TestTrimOlderGenerationsLeavesRecordOwnedDirsAlone pins the trim's one
-// question. A directory a record still names belongs to the relation, which
-// disarms the mirror aimed at it and shuts its bucket down first; removing it
-// here would delete an open bucket's directory out from under a live mirror.
-// A directory no record names is what nothing else can attribute, and this
-// sweep is the only thing that reclaims it.
+// TestTrimOlderGenerationsLeavesRecordOwnedDirsAlone pins that the trim
+// leaves alone any directory a record still names (removing it would delete
+// an open bucket's directory out from under a live mirror), and reclaims
+// only what no record can attribute.
 func TestTrimOlderGenerationsLeavesRecordOwnedDirsAlone(t *testing.T) {
 	const propName = "title"
 
@@ -143,10 +138,8 @@ func TestTrimOlderGenerationsLeavesRecordOwnedDirsAlone(t *testing.T) {
 			wantDir:    true,
 		},
 		{
-			// The marker scan is the other half of the protection set, and it
-			// reads a directory this trim never lists for itself. A scan that
-			// could not run leaves an empty set, which reads as "nobody owns
-			// it" — the one conclusion an unread directory cannot support.
+			// An unlistable marker directory must not read as an empty (and
+			// therefore unowned) protection set.
 			name:       "a migration directory that cannot be listed withholds the whole trim",
 			unlistable: true,
 			wantDir:    true,

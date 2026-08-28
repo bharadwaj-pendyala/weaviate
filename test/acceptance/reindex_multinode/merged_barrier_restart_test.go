@@ -23,23 +23,16 @@ import (
 	"github.com/weaviate/weaviate/test/docker"
 )
 
-// TestMultiNode_RestartInsideMergedBarrier_CommitsAndServes covers the journey
-// the migration record was built for: a node goes down holding staged data that
-// is complete but not yet live, and comes back to decide what becomes of it.
+// TestMultiNode_RestartInsideMergedBarrier_CommitsAndServes covers a node
+// that restarts holding Merged (staged-but-not-live) data: whether it should
+// go live is a cluster fact from the RAFT task map, which isn't installed
+// yet while shards load during catch-up, so a node deciding nothing at that
+// load can serve pre-migration data forever.
 //
-// Every shard must finish its rebuild before any shard flips, so between those
-// two points a node's records sit at Merged. Whether that staged data should
-// ever become live is a cluster fact, and the node reads it from the task map
-// its own RAFT log has applied — a map that is not installed yet while shards
-// load during catch-up. A node that decides nothing at that load and is never
-// loaded again serves pre-migration data for the rest of its life, and the next
-// restart repeats the same ordering.
-//
-// The assertion is per replica on purpose. A cluster-level query is answered by
-// whichever replica responds, so a single stranded node hides behind the two
-// that promoted. Each node is asked directly, before and after a second full
-// restart: the second round is what separates "promoted" from "still serving
-// the pre-migration bucket and about to lose it".
+// Assertions run per replica, since a cluster-level query can hide a
+// stranded node behind ones that promoted; each node is checked before and
+// after a second restart to separate "promoted" from "about to lose its
+// stale data".
 func TestMultiNode_RestartInsideMergedBarrier_CommitsAndServes(t *testing.T) {
 	ctx := context.Background()
 	compose, cleanup := start3NodeReindexCluster(ctx, t)
@@ -114,14 +107,11 @@ func TestMultiNode_RestartInsideMergedBarrier_CommitsAndServes(t *testing.T) {
 	awaitTokenizationOnAllNodes(t, compose, className, "path", "field")
 }
 
-// requireEveryReplicaServes asks each node for its own answer. A filtered
-// Aggregate runs on the local replica of every shard the node holds, and at
-// replication factor 3 on 3 nodes that is all of them — so a stranded node
-// answers zero here instead of hiding behind the two that did the work.
-//
-// The assertions run inside the poll so the failure says which of the two it
-// was: a node serving 0 from its pre-migration bucket is the bug, a node that
-// cannot be reached at all is a broken fixture.
+// requireEveryReplicaServes asks each node for its own answer via a filtered
+// Aggregate on its local replica of every shard, so a stranded node answers
+// zero instead of hiding behind the two that did the work. Assertions run
+// inside the poll so a failure says whether it's the bug (a node serving 0
+// from its pre-migration bucket) or a broken fixture (unreachable node).
 func requireEveryReplicaServes(t *testing.T, compose *docker.DockerCompose,
 	className, propName, value string, want int, phase string,
 ) {

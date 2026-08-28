@@ -268,15 +268,13 @@ func TestRecoveryConvergence_RoaringSetRefresh_FromEachState(t *testing.T) {
 			assert.Equalf(t, tc.expectedState, rec.State(),
 				"after driveToState (case %q)", tc.name)
 
-			// Phase 2: simulate restart — full shutdown + shard re-init
-			// + fresh task. This is the real-world restart sequence:
-			// shard_init reconciles the records, then LSM init, then
-			// OnAfterLsmInit, then the OnAfterLsmInitAsync loop on the
-			// background scheduler.
-			// Whether a merged migration should become live is a cluster
-			// fact. With no task map the verdict is "leave", and the row
-			// that exists to prove promotion happens at load would pass
-			// against the pre-migration bucket instead.
+			// Phase 2: simulate restart via full shutdown + shard re-init + fresh
+			// task, mirroring the real sequence (records reconciled at shard_init,
+			// then LSM init, then OnAfterLsmInit/Async).
+			//
+			// Whether a merged migration should become live is a cluster fact; with
+			// no task map the verdict is "leave", and the row proving promotion
+			// happens at load would otherwise pass against the pre-migration bucket.
 			subject := rec.Subject()
 			require.NotNil(t, idx.db, "test shard fixture must wire idx.db")
 			installTestMigrationTaskSources(ctx, idx.db, nil, &distributedtask.Task{

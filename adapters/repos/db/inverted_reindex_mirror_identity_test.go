@@ -24,16 +24,13 @@ import (
 )
 
 // TestMirrorStragglerNeverWritesIntoLiveData drives the gap the mirror's
-// canonical fallback leaves open. A writer snapshots the callback state, then
-// the migration is torn down — the staged bucket is shut down, so its name
-// stops resolving — and the write applies afterwards. Following the canonical
-// name there reaches live source-form data and writes the migration's target
-// form into it: new terms on the add leg, removed postings on the delete leg.
-//
-// Word to field is what makes both visible. Word tokenization indexes each
-// word, field tokenization indexes the whole value, so a multi-word object's
-// target form is a term the live bucket could never hold, and a one-word
-// object's target form is exactly one the live bucket does hold.
+// canonical fallback leaves open: a writer snapshots callback state, the
+// migration is torn down (staged bucket shut down, name unresolvable), and
+// the write applies afterward — following the canonical name then writes
+// the migration's target form into live source-form data. Word-vs-field
+// tokenization makes this visible either way: a multi-word object's target
+// form is a term the live bucket could never hold; a one-word object's is
+// one it does.
 func TestMirrorStragglerNeverWritesIntoLiveData(t *testing.T) {
 	const (
 		propName = "title"

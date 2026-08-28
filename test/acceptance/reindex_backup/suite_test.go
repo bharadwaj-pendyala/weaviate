@@ -314,14 +314,10 @@ func submitChangeTokenization(t *testing.T, restURI, collection, property, targe
 		fmt.Sprintf(`{"tokenization":%q}`, target))
 }
 
-// testPostRestartOrphanAuditClearsTracker injects an orphan migration on disk
-// (the shape a pre-fix backup-restore would leave), restarts the container,
-// and asserts both its directories are reclaimed while the canonical bucket
-// and the data stay intact.
-//
-// Two things reclaim it and the test accepts either: reconciliation discards
-// an uncommitted migration whose task the cluster no longer knows when the
-// shard loads, and the post-bootstrap audit is the backstop for a shard that
+// testPostRestartOrphanAuditClearsTracker injects an orphan migration on
+// disk, restarts the container, and asserts its directories are reclaimed
+// while the canonical bucket and data stay intact — either by reconciliation
+// at shard load, or by the post-bootstrap audit as backstop for a shard that
 // never loads.
 func testPostRestartOrphanAuditClearsTracker(t *testing.T, ctx context.Context, compose *docker.DockerCompose, restURI string) {
 	const (

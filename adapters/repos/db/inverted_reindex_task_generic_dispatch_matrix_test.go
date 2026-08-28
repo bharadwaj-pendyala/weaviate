@@ -27,18 +27,13 @@ import (
 )
 
 // Full [ShardReindexTaskGeneric.RunSwapOnShard] dispatch matrix: 8 strategies
-// × every recorded state the dispatch resumes from.
+// × every recorded state the dispatch resumes from. Extends
+// [TestRunSwapOnShard_RecordAwareDispatch] (MapToBlockmax only) to pin
+// weaviate/0-weaviate-issues#214 Phase 7c across every strategy.
 //
-// Extends [TestRunSwapOnShard_RecordAwareDispatch], which only covers
-// MapToBlockmax. weaviate/0-weaviate-issues#214 Phase 7c is the dispatch fix
-// being pinned; without it a rolling restart past the prepend would call the
-// full prep+swap on a reindex bucket that is no longer there, flip the
-// cluster-wide task to FAILED, and leave the already-swapped replicas inverted
-// against the schema.
-//
-// Promoted has no row: the dispatch branches on PointerSwapped, which Promoted
-// answers exactly as Swapped does, so a Promoted cell would repeat the Swapped
-// one. It is also only ever produced by a load, never in-process.
+// Promoted has no row: the dispatch branches on PointerSwapped, which
+// Promoted answers exactly as Swapped does, and Promoted is only ever
+// produced by a load, never in-process.
 
 // dispatchMatrixStates is the canonical iteration order, so the failure output
 // reads left-to-right along the state machine.
@@ -410,10 +405,8 @@ func dispatchMatrixSeedObjects(
 	}
 }
 
-// TestRunSwapOnShard_DispatchMatrix: full state × strategy cross product. Each
-// cell drives to the target state via the strategy's primitives, verifies the
-// setup landed, calls RunSwapOnShard, and asserts the target bucket
-// fingerprint matches the baseline.
+// TestRunSwapOnShard_DispatchMatrix cross-products every strategy against
+// every recorded state RunSwapOnShard's dispatch resumes from.
 func TestRunSwapOnShard_DispatchMatrix(t *testing.T) {
 	const numObjects = 10
 

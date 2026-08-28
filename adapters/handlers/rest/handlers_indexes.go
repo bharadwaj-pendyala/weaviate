@@ -341,14 +341,12 @@ func findCancelTarget(tasks []*distributedtask.Task, collection, propertyName, i
 	return refusable, refusablePayload
 }
 
-// reindexTaskDescriptorsForProperty names every reindex task in the snapshot
-// that targets this (collection, property), whatever its status. Terminal is
-// what the callers care about: a task goes terminal cluster-wide without
-// waiting for the local unit to exit, so its worker can still be writing
-// through bucket pointers it took before its phase began.
-//
-// A task whose payload does not decode is skipped, the same way the cancel
-// path skips it: nothing here can tell which property it targets.
+// reindexTaskDescriptorsForProperty names every reindex task in the
+// snapshot targeting this (collection, property), whatever its status:
+// callers care about terminal tasks whose worker can still be writing
+// through bucket pointers taken before its phase began. A task whose
+// payload doesn't decode is skipped, same as the cancel path — nothing
+// here can tell which property it targets.
 func reindexTaskDescriptorsForProperty(tasks []*distributedtask.Task, collection, propertyName string,
 	logger logrus.FieldLogger,
 ) []distributedtask.TaskDescriptor {

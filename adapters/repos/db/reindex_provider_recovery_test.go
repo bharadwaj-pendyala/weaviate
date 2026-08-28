@@ -292,10 +292,9 @@ func TestLocalCallbacksDoneLeavesUnloadedShardsAlone(t *testing.T) {
 }
 
 // TestBuildRecoveryTasksStampsTheIdentity is the recovery-path mirror of the
-// enumeration pin on createReindexTasks. A recovered task that reaches a shard
-// unkeyed runs a migration that records nothing: the flip it completes after
-// the restart writes no record, and the data it leaves behind sits at a
-// directory no later load can attribute.
+// enumeration pin on createReindexTasks: a recovered task reaching a shard
+// unkeyed would run a migration that records nothing, at a directory no
+// later load can attribute.
 func TestBuildRecoveryTasksStampsTheIdentity(t *testing.T) {
 	// Every type the recovery switch dispatches. ReindexTypeRebuildSearchable
 	// is absent because that switch has no arm for it, here as on the base
@@ -360,16 +359,10 @@ func TestBuildRecoveryTasksStampsTheIdentity(t *testing.T) {
 	}
 }
 
-// TestLocalCallbacksDoneReadsEachShardsRecordsOnce pins the bootstrap probe's
-// cost. It fires once per task at startup with every tenant cold, and it asks
-// one question per shard — not one per (property, index type) tuple the
-// payload names. Reading a shard's records is a directory walk plus a parse
-// per record, and a migration over many tuples multiplies the tuples without
-// adding a single new place to look.
-//
-// The healthy row is the one that can catch the regression: an unreadable
-// shard ends the walk on the spot, so a probe reading once per tuple would
-// still read only once.
+// TestLocalCallbacksDoneReadsEachShardsRecordsOnce pins that the bootstrap
+// probe reads a shard's records once, not once per (property, index type)
+// tuple the payload names. The unreadable-shard row is what can actually
+// catch a per-tuple regression: the walk ends on the spot either way.
 func TestLocalCallbacksDoneReadsEachShardsRecordsOnce(t *testing.T) {
 	const (
 		prop   = "title"

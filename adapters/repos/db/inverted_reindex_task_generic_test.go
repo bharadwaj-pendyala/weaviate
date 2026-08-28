@@ -302,23 +302,13 @@ func TestMapToBlockmaxMigration_RuntimeSwap_ThenRestart(t *testing.T) {
 }
 
 // TestRunSwapOnShard_RecordAwareDispatch pins the recovery branches in
-// [ShardReindexTaskGeneric.RunSwapOnShard] that took over after
-// https://github.com/weaviate/0-weaviate-issues/issues/214 Phase 7c.
-//
-// Before the dispatch fix, RunSwapOnShard always ran the full prep+swap, which
-// needs the reindex bucket in the in-memory store. A rolling restart that
-// landed past the prepend found those directories already removed, so the
-// rehydrate path failed with "reindex bucket not found", acked a failure, and
-// flipped the cluster-wide task to FAILED while the other replicas had already
-// swapped their buckets.
-//
-// Each row drives a real migration to one recorded state, then calls
-// RunSwapOnShard through a FRESH task and strategy, which is the shape the
-// rehydrate path produces after a node restart. OnMigrationComplete firing is
-// the tail of every dispatch branch, so it proves the branch was reached.
-//
-// The end-to-end multi-node convergence assertion lives in
-// test/acceptance/reindex_multinode/issue_214_finalize_crash_test.go.
+// [ShardReindexTaskGeneric.RunSwapOnShard] added for
+// weaviate/0-weaviate-issues#214 Phase 7c: a rehydrate after restart must
+// dispatch from Merged/Swapped state rather than always running full
+// prep+swap. Each row drives a real migration to one state, then calls
+// RunSwapOnShard through a fresh task/strategy — the shape rehydrate
+// produces. The end-to-end multi-node assertion lives in
+// test/acceptance/reindex_multinode/finalizing_crash_test.go.
 func TestRunSwapOnShard_RecordAwareDispatch(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -387,44 +377,16 @@ func TestRunSwapOnShard_RecordAwareDispatch(t *testing.T) {
 	}
 }
 
-// TestRuntimeSwap_Phase2a_AtomicTightLoop pins the architectural contract from
-// https://github.com/weaviate/0-weaviate-issues/issues/216 (per QA-Claude
-// design consideration in PR https://github.com/weaviate/weaviate/pull/11322
-// comment 4470016252): between consecutive per-prop SwapBucketPointer calls
-// inside runtimeSwap's Phase 2a, NO I/O of any kind is allowed — no Shutdown,
-// no Rename, no RAFT, no compaction wait, and no record write either. The flip
-// decision is written and fsynced before the loop begins, which is what leaves
-// the loop with no I/O to do.
+// TestRuntimeSwap_Phase2a_AtomicTightLoop pins the Phase 2a contract from
+// weaviate/0-weaviate-issues#216: between consecutive per-prop
+// SwapBucketPointer calls, no I/O is allowed at all (Shutdown, Rename, RAFT,
+// compaction wait, record write) — the flip decision is fsynced before the
+// loop starts, so there's nothing left to do inside it. This keeps the
+// per-shard overlay's mixed-state subwindow in the microseconds-to-low-ms
+// range at any scale; the 20ms/4-prop budget is orders of magnitude above
+// the real cost, so don't relax it without a separate signal justifying it.
 //
-// The total Phase 2a wall-clock for an N-prop migration MUST stay inside the
-// microseconds-to-low-ms budget at any scale; the per-shard tokenization
-// overlay's "mixed-state" subwindow (some props swapped, others not — queries
-// to not-yet-swapped props during the window would tokenize input with the new
-// value against an old-tokenized bucket and return wrong results) is exactly
-// this wall-clock.
-//
-// Regression scenarios this guards against:
-//
-//   - Bucket.Shutdown back inside the per-prop loop (pre-refactor
-//     behavior; ~100s of ms at production scale because Shutdown waits
-//     for in-flight compaction to drain).
-//   - RAFT call inside the loop (cluster apply latency, ~100s of ms).
-//   - os.Rename inside the loop (filesystem dependent, ms-to-tens-of-ms
-//     per call).
-//   - Any artificial slowdown (e.g. a sleep/Gosched accidentally added
-//     during refactor).
-//
-// The loop body is one map-write under a lock per property, so the budget is
-// 20ms across 4 props: orders of magnitude above what the work costs, and far
-// below any of the regression scenarios above. If a real reason emerges to
-// relax the bound (e.g. a CI disk performance regression), surface that as a
-// separate signal — DO NOT just raise the threshold, that would silently
-// swallow the architectural regression the test is meant to catch.
-//
-// Uses the test-only ShardReindexTaskGeneric.processOneSwapPropFn seam as the
-// observation point so this test is deterministic (no race with a concurrent
-// observer) and does not depend on probing the bucket map from another
-// goroutine.
+// Uses the test-only processOneSwapPropFn seam to observe deterministically.
 func TestRuntimeSwap_Phase2a_AtomicTightLoop(t *testing.T) {
 	ctx := testCtx()
 	className := "TestPhase2aAtomic"

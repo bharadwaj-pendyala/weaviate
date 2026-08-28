@@ -781,16 +781,15 @@ func (h *indexesHandlers) reindexDrainSealer() localReindexDrainSealer {
 }
 
 // sealLocalReindexWorkers holds every local worker of every task on this
-// (collection, property) for as long as the caller keeps the returned release.
-// The sweep that follows shuts the __reindex and __ingest buckets down and
-// removes their directories, and a task goes terminal cluster-wide without
-// waiting for the local unit to exit — which is the very case the cancel
-// handler hands to this sweep when its own drain times out.
+// (collection, property) for as long as the caller keeps the returned
+// release, since the sweep that follows removes __reindex/__ingest bucket
+// directories out from under a task that went terminal without waiting for
+// its local unit to exit.
 //
-// Every task it can reach here is terminal: an active one on an overlapping
-// property already refused this submit with a 409. A worker that will not
-// drain refuses it too, rather than letting the sweep remove directories from
-// under writes it already acknowledged.
+// Every task reachable here is terminal — an active one on an overlapping
+// property already refused this submit with a 409 — and a worker that won't
+// drain refuses too, rather than let the sweep remove directories out from
+// under acknowledged writes.
 func (h *indexesHandlers) sealLocalReindexWorkers(ctx context.Context, principal *models.Principal,
 	sealer localReindexDrainSealer, collection, propertyName string,
 	reindexTasks []*distributedtask.Task,

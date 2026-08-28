@@ -513,12 +513,10 @@ func TestClassifyCleanupSweep(t *testing.T) {
 	}
 }
 
-// TestLocalUnitSealSpansEveryWorkerOfEveryType pins the registry every
-// teardown seals before it removes a migration's directories. It answered from
-// the re-entry guard once, which is claimed only for semantic migrations and
-// only around the iteration — so four migration types never appeared in it and
-// neither did the prep or the swap of any type, and the discard it gates went
-// ahead under a running worker.
+// TestLocalUnitSealSpansEveryWorkerOfEveryType pins that the registry every
+// teardown seals before removing a migration's directories spans every
+// migration type's every phase — not just the semantic-only re-entry guard,
+// which only ever covered the iteration of semantic migrations.
 func TestLocalUnitSealSpansEveryWorkerOfEveryType(t *testing.T) {
 	desc := distributedtask.TaskDescriptor{ID: "Books:enable-rangeable:price:ab12", Version: 7}
 	other := distributedtask.TaskDescriptor{ID: "Books:enable-rangeable:price:ab12", Version: 8}
@@ -611,12 +609,9 @@ func TestLocalUnitSealSurvivesAPanickingWorker(t *testing.T) {
 	require.True(t, sealed)
 }
 
-// TestSealedUnitRefusesLateEntrants pins the half of the interlock a probe
-// cannot have. Every phase decides to run from a task snapshot the scheduler
-// froze at the start of its tick, and resolving the unit in between can
-// hydrate a cold tenant and rebuild its tasks from disk — so a phase can
-// arrive after a teardown read "nothing running" and take bucket pointers into
-// directories it is midway through deleting.
+// TestSealedUnitRefusesLateEntrants pins that a phase resolving its unit
+// after a teardown read "nothing running" is still refused: resolving can
+// hydrate a cold tenant from disk, arriving only after that read missed it.
 func TestSealedUnitRefusesLateEntrants(t *testing.T) {
 	desc := distributedtask.TaskDescriptor{ID: "Books:enable-rangeable:price:ab12", Version: 7}
 	other := distributedtask.TaskDescriptor{ID: "Books:enable-rangeable:price:ab12", Version: 8}
@@ -715,12 +710,9 @@ func TestSealedUnitRefusesLateEntrants(t *testing.T) {
 }
 
 // TestUnitRegistriesWorkOnAZeroValueProvider pins that all three registries
-// build themselves. Sealing runs on a terminal-cleanup path that any provider
-// reaches, and a map left nil by whichever constructor built the provider
-// panics on the first write rather than failing a decision.
-//
-// Each row asserts on the map its own claim writes: asking about the others
-// would hold whatever the code did.
+// build themselves lazily: sealing runs on a terminal-cleanup path any
+// provider reaches, and a nil map would panic on first write rather than
+// failing a decision.
 func TestUnitRegistriesWorkOnAZeroValueProvider(t *testing.T) {
 	desc := distributedtask.TaskDescriptor{ID: "Books:enable-rangeable:price:ab12", Version: 7}
 
