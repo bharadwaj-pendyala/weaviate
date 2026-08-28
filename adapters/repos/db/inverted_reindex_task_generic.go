@@ -590,10 +590,10 @@ func (t *ShardReindexTaskGeneric) RunSwapOnShard(ctx context.Context, shard Shar
 //   - On restart, the shard-registered recovery task's OnAfterLsmInit
 //     (see [shardReindexerV3RecoveryOnly]) is the only re-load hook.
 //     If for any reason the bucket name lookup in
-//     [runtimeSwap]'s first iteration misses (lsm store re-init,
+//     [runtimePrepare]'s first iteration misses (lsm store re-init,
 //     concurrent bucket shutdown, cached-task vs fresh-task pointer
 //     differences after the rehydrate path's [createReindexTasks]),
-//     runtimeSwap fails with "reindex bucket not found" before any
+//     the prepare fails with "reindex bucket not found" before any
 //     side effect, and the post-completion ack records success=false
 //     for the whole task — flipping the cluster to FAILED while
 //     other replicas have already completed the swap.
@@ -1138,11 +1138,9 @@ func (t *ShardReindexTaskGeneric) OnAfterLsmInitAsync(ctx context.Context, shard
 		// truncated reindex bucket into ingest, the cluster schema flips
 		// to the new tokenization, and this replica's canonical bucket is
 		// missing the lost rows: queries return per-replica divergent
-		// counts.
-		//
-		// Doing it here makes the record write strictly happen-after durable
-		// persistence, on both the barrier path (where the swap is deferred
-		// and the crash window is wide) and the inline one.
+		// counts. The barrier path, where the swap is deferred, leaves that
+		// crash window widest; the inline path is narrower with the same
+		// hazard.
 		if err = t.flushReindexBuckets(shard, props, "recording the rebuild complete"); err != nil {
 			return zerotime, false, err
 		}
@@ -1178,99 +1176,20 @@ func (t *ShardReindexTaskGeneric) OnAfterLsmInitAsync(ctx context.Context, shard
 	return time.Now().Add(t.config.pauseDuration), false, nil
 }
 
-// runtimeSwap implements Phase 2 of the runtime swap path. See the
-// file-level phase-contract godoc for the full prep/atomic/defer
-// design. The implementation is partitioned into 2a / 2b / 2c
-// sub-phases with HARD boundaries — do not move work between them
-// without re-reading the contract.
+// runtimePrepare is Phase 1 of the runtime swap: the heavy disk work that
+// stages each property's rebuilt data into its ingest bucket and commits it in
+// the record. See the phase contract at the top of this file.
 //
-// Phase 2a — atomic per-prop SwapBucketPointer loop. MUST stay
-// microseconds total. This bounds the per-shard "mixed-state"
-// subwindow (some props swapped, others not) during which queries
-// to not-yet-swapped props would tokenize input with the new value
-// against an old-tokenized bucket. Only allowed work: the in-memory
-// pointer flip. The loop performs no I/O at all.
-//
-//   - store.SwapBucketPointer(mainName, ingestName) per prop
-//   - the flip decision, written ahead of the loop
-//
-// Forbidden in 2a: anything that can block (disk I/O, lock
-// contention, RAFT calls, compaction waits). A guard test must
-// catch regressions where someone adds a yield point between two
-// SwapBucketPointer calls.
-//
-// Phase 2b — post-atomic inline tidy. Slow but correctness-safe:
-// every prop is already in-memory-swapped, so the mixed-state
-// subwindow is closed and queries see all-new buckets with the
-// overlay still active.
-//
-//   - oldMainBucket.Shutdown(ctx) per prop (REQUIRED INLINE — see
-//     below)
-//   - os.RemoveAll(oldMainDir) per prop (safe inline — the load-bearing
-//     rule is: only remove a shut-down bucket, never one that is still
-//     serving queries)
-//
-// Why oldMain.Shutdown MUST be inline (not deferred to next-startup
-// like the live-ingest rename): Bucket.Shutdown is the only call
-// that removes the bucket's path from GlobalBucketRegistry (see
-// lsmkv/bucket.go Shutdown defer of Remove(b.GetDir())). After
-// SwapBucketPointer the old bucket is no longer in the store's
-// bucketsByName map, so Store.Shutdown's iteration will not call
-// its Shutdown. Without an inline Shutdown the old bucket's path
-// remains in the process-wide registry indefinitely, and any
-// subsequent in-process shard init that tries to register a bucket
-// at the same canonical name (shard reload, lazy-load unwrap,
-// second migration on the same shard) fails with
-// ErrBucketAlreadyRegistered. The unit test
-// TestMapToBlockmaxMigration_RuntimeSwap_ThenRestart reproduces
-// this if the inline Shutdown is removed.
-//
-// Phase 2c — post-atomic inline finalize.
-//
-//   - OnMigrationComplete (per-strategy hook; see
-//     [MigrationStrategy.OnMigrationComplete] godoc for the
-//     per-strategy contract)
-//   - trimOlderGenerationsLocked (removes the current gen's reindex
-//     dir + every older gen's sidecars)
-//
-// Live-bucket rename (Phase 3): the ingest bucket whose pointer was
-// flipped into the canonical slot is STILL at __ingest_<gen>/ on
-// disk. That rename to the canonical name is deferred to next
-// load via reconciliation, because renaming a
-// dir whose mmaps are open would corrupt the segment registry.
-//
-// The double-write mirror survives every error exit, because a mid-loop
-// teardown would route writes for a not-yet-flipped property into the
-// directory restart promotion then deletes. It is disarmed only once the
-// swap completes. Same-process retry of runtimeSwap is not supported (the
-// in-memory bucket state is partially mutated); recovery after a mid-swap
-// crash happens after the next node restart, through reconciliation at
-// shard init and RunSwapOnShard's record dispatch.
-// runtimePrepare runs the Phase 1 (background-safe) preparation work
-// that used to be inlined into runtimeSwap.
-//
-// Performs, per property:
-//   - reindexBucket.FlushAndSwitch()            // memtable → segments
-//   - store.ShutdownBucket(reindexName)         // drains compaction
-//   - ingestBucket.PrependSegmentsFromBucket(...) // segment copy
-//
-// Then commits the staged data in the record and removes the reindex
-// bucket dirs.
-//
-// Bucket=OLD and schema=OLD throughout — queries on the live main
-// bucket continue correctly. The per-shard tokenization overlay
-// MUST NOT yet be set: setting it before this call would expose the
-// very gap the overlay was supposed to close (query input
-// tokenized as NEW against the still-OLD bucket while prep does
-// disk I/O for seconds).
-//
-// The caller checks that the record is not yet committed before calling.
+// It must run before the per-shard tokenization overlay is set. Bucket and
+// schema are both still OLD here, so queries stay correct across the seconds of
+// disk I/O; setting the overlay first would open the very gap the overlay
+// exists to close. Callers check that the record is not yet committed.
 //
 // Crash safety: the record advances to Merged after the per-prop loop and
-// BEFORE removeReindexBucketsDirs, so a crash in that window leaves a
-// committed record with reindex dirs partially removed. The removal re-runs
-// harmlessly, but no path reloads the live bucket, so the shard can report the
-// migration complete while still serving pre-migration data. Tracked as
+// BEFORE removeReindexBucketsDirs, so a crash in that window leaves a committed
+// record with reindex dirs partially removed. The removal re-runs harmlessly,
+// but no path reloads the live bucket, so the shard can report the migration
+// complete while still serving pre-migration data. Tracked as
 // weaviate/etienne-claude-issues#390.
 func (t *ShardReindexTaskGeneric) runtimePrepare(ctx context.Context,
 	logger logrus.FieldLogger, shard ShardLike, props []string,
@@ -1337,6 +1256,16 @@ func (t *ShardReindexTaskGeneric) runtimePrepare(ctx context.Context,
 	return nil
 }
 
+// runtimeSwap is Phase 2 of the runtime swap: it makes the flip decision
+// durable, then moves every property's bucket pointer in one tight, I/O-free
+// loop (2a) before retiring the displaced buckets (2b) and finalizing (2c).
+// See the phase contract at the top of this file; the 2a/2b/2c boundaries are
+// hard, and work must not move across them.
+//
+// A same-process retry is not supported: a failed call leaves the in-memory
+// bucket state partially mutated. Recovery from a mid-swap crash happens at the
+// next node restart, through reconciliation at shard init and RunSwapOnShard's
+// record dispatch.
 func (t *ShardReindexTaskGeneric) runtimeSwap(ctx context.Context,
 	logger logrus.FieldLogger, shard ShardLike, props []string,
 ) error {
@@ -1435,21 +1364,20 @@ func (t *ShardReindexTaskGeneric) runtimeSwap(ctx context.Context,
 	}
 	logger.Debug("runtime swap: all props in-memory swapped")
 
-	// Phase 2b (post-atomic, slow but inline): shutdown + removal of the
-	// OLD (now-dead) main buckets. The load-bearing rule is: remove
-	// only shut-down buckets; never remove a live bucket that is
-	// serving queries. The OLD bucket is no longer in the store's
-	// bucketsByName map (SwapBucketPointer deleted it), so it's not
-	// serving queries; Shutdown drains any in-flight compaction and
-	// closes mmaps cleanly. Removing its dir leaves the LIVE bucket
-	// (still at ingest_<gen> on disk) as the only candidate for the
-	// canonical name on next restart.
+	// Phase 2b: shut down and remove the displaced main buckets. Only a
+	// shut-down bucket may be removed; one still serving queries never may.
+	// SwapBucketPointer already dropped these from the store's bucketsByName
+	// map, so Store.Shutdown's iteration will not reach them — this inline call
+	// is the only Shutdown they get, and Bucket.Shutdown is what releases their
+	// path from lsmkv.GlobalBucketRegistry (the deferred Remove in
+	// lsmkv/bucket.go). Skip it and the next in-process shard init at the same
+	// canonical name fails with ErrBucketAlreadyRegistered, which
+	// TestMapToBlockmaxMigration_RuntimeSwap_ThenRestart reproduces.
 	//
-	// This work is OUTSIDE the mixed-state window — every prop has
-	// already had its in-memory pointer swapped. Queries during this
-	// phase see new buckets for all props (overlay matches), so
-	// per-prop slow ops here don't extend the correctness-sensitive
-	// window.
+	// The displaced directory is removed inline while the live bucket's rename
+	// onto the canonical name waits for the next load: removing a directory
+	// whose bucket is shut down is safe, renaming one whose mmaps are open is
+	// not.
 	for _, propName := range props {
 		oldMainBucket, ok := oldMainBuckets[propName]
 		if !ok {
@@ -1916,20 +1844,17 @@ func (t *ShardReindexTaskGeneric) removeBucketsDirs(ctx context.Context, logger 
 
 // registerDoubleWriteCallbacks arms the strategy's add/delete mirror callbacks
 // and publishes one disarm handle per (record, property) on the shard. The
-// returned func disarms the whole record, for the failure paths that must not
-// touch other shards' registrations.
+// returned func disarms this record only, never another shard's registrations.
 //
-// The handles go on the shard rather than on this task instance because the
-// actor that disarms is never the actor that armed: a successor's retirement,
-// reconciliation's cancel edge, terminal cleanup. The provider also clears a
-// terminal task's instance cache outright.
+// The handles live on the shard, not on this task instance, because the actor
+// that disarms is never the one that armed: a successor's retirement,
+// reconciliation's cancel edge, terminal cleanup.
 //
-// Per property because the relation that disarms is per property: a
-// successor's property set can partially overlap a committed predecessor's,
-// and one shared handle would either keep mirroring a property the successor
-// took over — writing predecessor-form rows into the successor's live bucket
-// once its staged bucket is shut down — or stop mirroring the properties the
-// successor never touched.
+// One handle per property, because a successor's property set can partially
+// overlap a committed predecessor's. A shared handle would either keep
+// mirroring a property the successor took over — writing predecessor-form rows
+// into the successor's live bucket once its staged bucket is shut down — or
+// stop mirroring the properties the successor never touched.
 func (t *ShardReindexTaskGeneric) registerDoubleWriteCallbacks(shard *Shard, props []string,
 	bucketNamer func(string) string,
 ) func() {
