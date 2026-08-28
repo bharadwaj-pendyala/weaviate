@@ -1532,7 +1532,7 @@ func TestEverySidecarSuffixIsASidecar(t *testing.T) {
 				"%T is filed under %q but names its tracker dir %q",
 				strategy, prefix, strategy.MigrationDirName())
 			for _, suffix := range []string{
-				strategy.ReindexSuffix(), strategy.IngestSuffix(), strategy.BackupSuffix(),
+				strategy.ReindexSuffix(), strategy.IngestSuffix(),
 			} {
 				assert.Truef(t, isSidecarDirOf(main+suffix, main),
 					"%T's %q is not recognized as a sidecar suffix", strategy, suffix)
@@ -1541,10 +1541,21 @@ func TestEverySidecarSuffixIsASidecar(t *testing.T) {
 		}
 	}
 
+	// legacyRoleWords earn their place in the list by reclamation alone: no
+	// strategy on this build produces one, but every cluster upgrading into
+	// this build brings those directories with it. Pin that they stay
+	// unproduced, so the list's own godoc cannot quietly go stale.
+	legacyRoleWords := []string{"backup", "map"}
+	produced := slices.Collect(maps.Keys(roles))
+	for _, word := range legacyRoleWords {
+		require.NotContainsf(t, produced, word,
+			"%q is produced by a strategy, so it is no longer reclamation-only", word)
+	}
+
 	// Set equality, both directions: a word missing from the list leaves a
-	// live sidecar that nothing reclaims, and a word no strategy produces is
-	// a claim about disk that nothing on this build backs.
-	require.ElementsMatch(t, sidecarRoleWords, slices.Collect(maps.Keys(roles)))
+	// live sidecar that nothing reclaims, and a word that is neither produced
+	// nor legacy is a claim about disk that nothing on this build backs.
+	require.ElementsMatch(t, sidecarRoleWords, append(produced, legacyRoleWords...))
 }
 
 // The names that are NOT sidecars of the swept property, and that the sweep

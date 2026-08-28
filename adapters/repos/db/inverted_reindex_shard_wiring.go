@@ -244,9 +244,8 @@ func (s *Shard) reconcileMigrationRecords(ctx context.Context, class *models.Cla
 }
 
 // warnAboutLegacyMarkerMigrations reports migrations completed on a
-// build that writes no record — this one, and every release before records
-// existed — whose staged data the load-time finalize did not promote. Those
-// properties serve empty until a finalize picks the tracker up.
+// pre-migration-records release: this build preserves their data but cannot
+// promote it, so affected properties serve empty until restored or downgraded.
 func (s *Shard) warnAboutLegacyMarkerMigrations() {
 	if s.migrationRecords == nil || len(s.migrationRecords.Unreadable()) > 0 {
 		// A record this build cannot read may be the one naming that tracker,
@@ -295,6 +294,16 @@ func (s *Shard) reconcileMigrationRecordsWithCluster(ctx context.Context, tasks 
 		return
 	}
 	s.liveMigrationReconciler().ReconcileWithClusterTasks(ctx, tasks)
+}
+
+// retireSupersededMigrations runs supersession in the process that just
+// flipped, the only place a predecessor's mirror is armed and staged buckets
+// are open; reconciliation re-derives the same outcome at any later load.
+func (s *Shard) retireSupersededMigrations(ctx context.Context) {
+	if s.migrationRecords == nil {
+		return
+	}
+	s.liveMigrationReconciler().RetireSuperseded(ctx)
 }
 
 // liveMigrationReconciler reads the class as it is now rather than as it was

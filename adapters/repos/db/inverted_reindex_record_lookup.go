@@ -354,6 +354,29 @@ func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord,
 	return out, true
 }
 
+// migrationLegacyMarkerDirsAt is the same answer as a name set, for removal
+// loops keeping their own record check. complete=false means names are
+// missing (unreadable payload, or unlistable directory), so callers must stop.
+func migrationLegacyMarkerDirsAt(lsmPath string, records []MigrationRecord) (dirs map[string]struct{}, complete bool) {
+	dirs = map[string]struct{}{}
+	trackers, listed := migrationLegacyMarkerTrackersAt(lsmPath, records, "", nil)
+	if !listed {
+		return dirs, false
+	}
+	complete = true
+	for _, legacy := range trackers {
+		if legacy.unreadable {
+			complete = false
+			continue
+		}
+		dirs[legacy.dirName] = struct{}{}
+		for _, sidecar := range legacy.sidecars {
+			dirs[sidecar] = struct{}{}
+		}
+	}
+	return dirs, complete
+}
+
 // servesEmpty reports properties whose data is still under this tracker's
 // staged name while the canonical directory is gone: the schema flip already
 // committed cluster-wide, and nothing has renamed the staged directory back.
@@ -375,4 +398,28 @@ func (t migrationLegacyMarkerTracker) servesEmpty(lsmPath string) []string {
 		out = append(out, prop)
 	}
 	return out
+}
+
+// migrationRecordStagingIncomplete is the want-predicate for readers asking
+// the opposite of StagedDataComplete.
+func migrationRecordStagingIncomplete(rec MigrationRecord) bool { return !rec.StagedDataComplete() }
+
+// migrationRecordFor reports whether any record on the shard belongs to the
+// named migration and satisfies want. Matching on type and property list,
+// not directory names, covers both strategies a change-tokenization fans into.
+func migrationRecordFor(records []MigrationRecord, migrationType ReindexMigrationType,
+	properties []string, want func(MigrationRecord) bool,
+) bool {
+	for _, rec := range records {
+		subject := rec.Subject()
+		if subject.MigrationType != migrationType || !want(rec) {
+			continue
+		}
+		for _, prop := range properties {
+			if slices.Contains(subject.Properties, prop) {
+				return true
+			}
+		}
+	}
+	return false
 }

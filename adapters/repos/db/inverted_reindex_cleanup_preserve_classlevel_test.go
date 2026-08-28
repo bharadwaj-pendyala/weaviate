@@ -31,13 +31,9 @@ import (
 // mkTrackerDir creates a migration's own directory under .migrations. On its
 // own it describes a migration that never got as far as its first record
 // write; mkMigrationRecord is what gives it a state.
-func mkTrackerDir(t *testing.T, lsmPath, name string, sentinels ...string) {
+func mkTrackerDir(t *testing.T, lsmPath, name string) {
 	t.Helper()
-	dir := filepath.Join(lsmPath, ".migrations", name)
-	require.NoError(t, os.MkdirAll(dir, 0o755))
-	for _, s := range sentinels {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, s), []byte("x"), 0o644))
-	}
+	require.NoError(t, os.MkdirAll(filepath.Join(lsmPath, ".migrations", name), 0o755))
 }
 
 // mkMigrationRecord plants the record for tracker dir trackerName, which
@@ -171,19 +167,7 @@ func fixtureSidecarFor(staged string) string {
 	return staged + "__reindex"
 }
 
-// makeMigrationsUnlistable makes .migrations unreadable so a test can stage
-// the fault that hides every tracker directory.
-func makeMigrationsUnlistable(t *testing.T, lsmPath string) {
-	t.Helper()
-	migrations := filepath.Join(lsmPath, migrationsDir)
-	require.NoError(t, os.Chmod(migrations, 0o111))
-	t.Cleanup(func() { os.Chmod(migrations, 0o755) })
-	if _, err := os.ReadDir(migrations); err == nil {
-		t.Skip("this user can list an unreadable directory, so the failure cannot be staged")
-	}
-}
-
-// dirIsThere fails the test on a stat it cannot interpret, so an assertion
+// dirExists fails the test on a stat it cannot interpret, so an assertion
 // never reads an unreadable directory as an absent one.
 func dirIsThere(t *testing.T, path string) bool {
 	t.Helper()

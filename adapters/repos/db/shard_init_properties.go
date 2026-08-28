@@ -501,9 +501,9 @@ func mainBucketForPropertyIndex(propName, indexType string) (string, bool) {
 // prefix, and drops their entries from [lsmkv.GlobalBucketRegistry].
 //
 // A completed migration leaves both stores of truth — the on-disk dir (until
-// [FinalizeCompletedMigrations] renames it) and [lsmkv.GlobalBucketRegistry]
-// (the live ingest bucket is only pointer-swapped, never shut down) — under the
-// ingest name. A DELETE followed by a same-process re-enable would otherwise
+// reconciliation renames it) and [lsmkv.GlobalBucketRegistry] (the live
+// ingest bucket is only pointer-swapped, never shut down) — under the ingest
+// name. A DELETE followed by a same-process re-enable would otherwise
 // collide with both: TryAdd fails "bucket already registered" and the
 // follow-up migration reports FAILED with no clear remediation.
 //

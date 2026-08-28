@@ -230,10 +230,6 @@ type migrationDirScope struct {
 	// records answers for every directory a record names, which is what keeps
 	// payload.mig off this path. Set by [migrationDirScope.knownFrom].
 	records []MigrationRecord
-	// classDir is a whole tracker dir name matched as it is. Only
-	// [classLevelMigrationDirsOf] sets it, and it goes away with that
-	// function's last caller.
-	classDir string
 }
 
 // cachingProps scopes a payload memo to this scope and every scope derived from
@@ -248,20 +244,6 @@ func (s migrationDirScope) cachingProps(c *taskPropsCache) migrationDirScope {
 func (s migrationDirScope) knownFrom(state migrationPreservedState) migrationDirScope {
 	s.records = state.records
 	return s
-}
-
-// cachingDirs scopes a directory-listing memo to this scope, for the scopes
-// [classLevelMigrationDirsOf] builds without one.
-func (s migrationDirScope) cachingDirs(c *dirNamesCache) migrationDirScope {
-	s.dirs = c
-	return s
-}
-
-// classLevelMigrationDirsOf returns the scope of a single class-level tracker
-// dir, which every property of the collection shares. The per-property scope
-// omits it, so only a caller that names it explicitly ever sees it.
-func classLevelMigrationDirsOf(lsmPath, classDir string) migrationDirScope {
-	return migrationDirScope{lsmPath: lsmPath, classDir: classDir}
 }
 
 // migrationDirsOf returns the tracker dirs a (propName, indexType) cleanup
@@ -283,9 +265,6 @@ func migrationDirsOf(lsmPath string, dirs *dirNamesCache, propName, indexType st
 // only because [ReindexProvider.createReindexTasks] rejects such a payload
 // unless it carries exactly one property.
 func (s migrationDirScope) inScope(name string) bool {
-	if s.classDir != "" && migrationDirBase(name) == s.classDir {
-		return true
-	}
 	if matched, decided := s.matchByName(name); decided {
 		return matched
 	}
@@ -410,9 +389,6 @@ func migrationDirBase(name string) string {
 // from the same sorted list.
 func (s migrationDirScope) inScopeFailingOpen(name string) (matched, unreadablePayload bool) {
 	base := migrationDirBase(name)
-	if s.classDir != "" && base == s.classDir {
-		return true, false
-	}
 	if !s.hasStrategyPrefix(base) {
 		// Not this cleanup's dir; skip reading its payload.
 		return false, false
@@ -523,18 +499,15 @@ type taskProps struct {
 // because the answer is a pure function of the directory: no strategy prefix
 // is a prefix of another, so at most one can ever satisfy a given dir name.
 //
-// properties.mig is consulted here rather than by the caller so a memo hit
-// skips it too: on a shard with many completed trackers the stat-and-read it
-// costs is paid once per index type of the same sweep otherwise.
 func (c *taskPropsCache) lookup(migDir string) taskProps {
 	if c == nil {
-		answer, _ := readTrackerProps(migDir)
+		answer, _ := readTaskProps(migDir)
 		return answer
 	}
 	if answer, hit := c.byDir[migDir]; hit {
 		return answer
 	}
-	answer, readPayload := readTrackerProps(migDir)
+	answer, readPayload := readTaskProps(migDir)
 	if c.byDir == nil {
 		c.byDir = map[string]taskProps{}
 	}
@@ -545,16 +518,6 @@ func (c *taskPropsCache) lookup(migDir string) taskProps {
 	return answer
 }
 
-// readTrackerProps is one tracker directory's property list, taken from
-// properties.mig where that small sidecar reconstructs the directory's own
-// name and from payload.mig otherwise. readPayload reports whether the
-// megabyte-scale payload had to be opened, which is the cost the caller counts.
-func readTrackerProps(migDir string) (answer taskProps, readPayload bool) {
-	if props, ok := propsFromSidecar(migDir, migrationPerPropertyDirPrefixes()); ok {
-		return taskProps{props: props, ok: true}, false
-	}
-	return readTaskProps(migDir)
-}
 
 // count is how many payloads this cache had to read; a refusal opens none.
 func (c *taskPropsCache) count() int {
@@ -603,29 +566,4 @@ func readTaskProps(migDir string) (answer taskProps, readPayload bool) {
 	answer.props = facts.properties
 	answer.ok = true
 	return answer, true
-}
-
-// propsFromSidecar accepts properties.mig's list only if it reconstructs
-// the tracker dir's own name — an independent witness that catches a
-// truncated, deduped, or contradicting list for free.
-//
-// This is load-bearing: a wrong list accepted here decides the scope of a
-// deletion sweep ([migrationDirScope.inScopeFailingOpen]) and names the
-// sidecar dirs of a tracker no record names ([migrationLegacyMarkerTrackersAt])
-// — for a completed migration those dirs hold the property's only copy.
-func propsFromSidecar(migDir string, prefixes []string) ([]string, bool) {
-	if _, err := os.Stat(filepath.Join(migDir, reindexRecoveryPayloadFile)); err != nil {
-		return nil, false
-	}
-	props, err := readMigrationProps(migDir)
-	if err != nil || len(props) == 0 {
-		return nil, false
-	}
-	base := migrationDirBase(filepath.Base(migDir))
-	for _, prefix := range prefixes {
-		if base == migrationDirWithProps(prefix, props) {
-			return props, true
-		}
-	}
-	return nil, false
 }
