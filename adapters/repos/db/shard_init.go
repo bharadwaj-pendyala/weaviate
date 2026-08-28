@@ -163,6 +163,11 @@ func NewShard(ctx context.Context, promMetrics *monitoring.PrometheusMetrics,
 	// so that buckets are found at their canonical directory names.
 	FinalizeCompletedMigrations(s.pathLSM(), s.index.logger)
 
+	// Runs alongside the marker-era finalize above, not instead of it: no
+	// task writes a migration record yet, so this pass has nothing to act on
+	// and every disposition it could reach is still the marker path's.
+	s.reconcileMigrationRecords(ctx, class)
+
 	// Pessimistically mark any in-flight enable-rangeable / repair-rangeable
 	// migration's target property as "not locally ready" on this shard.
 	// Without this, a post-restart shard whose recovery hasn't finished
@@ -270,6 +275,12 @@ func (s *Shard) NotifyReady() {
 // in this same startup), are left untouched — the default-true policy
 // in [Shard.IsRangeableLocallyReady] applies to them.
 func markInFlightRangeableMigrationsNotReady(s *Shard) {
+	// A record that does not decode cannot be answered per property: the
+	// property list is exactly what could not be read. The shard is marked
+	// undecidable instead, which the readiness policy reads as not ready.
+	if s.migrationRecords != nil && len(s.migrationRecords.Unreadable()) > 0 {
+		s.rangeableUndecidable.Store(true)
+	}
 	migrationsDir := filepath.Join(s.pathLSM(), ".migrations")
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {
@@ -337,6 +348,72 @@ var errRecoveryPayloadTooLarge = errors.New("recovery payload exceeds the parse 
 //
 // maxBytes refuses a larger payload before opening it;
 // [unboundedRecoveryPayload] reads any size.
+// refuseOversizedRecoveryPayload reports a payload.mig too large to read where
+// it is being read. The bound travels with the caller because the two readers
+// bound for opposite reasons; see the constants above.
+func refuseOversizedRecoveryPayload(path string, bound int64) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.Size() > bound {
+		return fmt.Errorf("%w: %s holds %d bytes, bound is %d",
+			errRecoveryPayloadTooLarge, reindexRecoveryPayloadFile, info.Size(), bound)
+	}
+	return nil
+}
+
+// recoveryPayloadFacts is what a tracker's payload.mig says about the
+// migration that wrote it: what it touches, and which task and unit own it.
+// The identity is what lets a reader ask whether that task is still live
+// before it reclaims the directory.
+type recoveryPayloadFacts struct {
+	properties    []string
+	migrationType ReindexMigrationType
+	taskID        string
+	taskVersion   uint64
+	unitID        string
+}
+
+// readRecoveryPayloadFacts reads them from a migration tracker dir (see
+// ShardReindexTaskGeneric.SaveRecoveryPayload). The error keeps a missing
+// payload (os.IsNotExist) distinguishable from an unreadable or unparseable
+// one: [migrationDirScope.inScopeFailingOpen] treats only the former as "the
+// task recorded nothing", while the latter makes the unloaded-shard gate fail
+// open.
+func readRecoveryPayloadFacts(migDir string) (recoveryPayloadFacts, error) {
+	path := filepath.Join(migDir, reindexRecoveryPayloadFile)
+	if err := refuseOversizedRecoveryPayload(path, maxRecoveryPayloadBytes); err != nil {
+		return recoveryPayloadFacts{}, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return recoveryPayloadFacts{}, err
+	}
+	// Anonymous shape: only the fields we need. Avoids depending on
+	// ReindexTaskPayload here (no import cycle risk, but keeping shard
+	// init lean).
+	var rec struct {
+		TaskID      string `json:"taskID"`
+		TaskVersion uint64 `json:"taskVersion"`
+		UnitID      string `json:"unitID"`
+		Payload     struct {
+			Properties    []string             `json:"properties"`
+			MigrationType ReindexMigrationType `json:"migrationType"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return recoveryPayloadFacts{}, fmt.Errorf("parse %s: %w", reindexRecoveryPayloadFile, err)
+	}
+	return recoveryPayloadFacts{
+		properties:    rec.Payload.Properties,
+		migrationType: rec.Payload.MigrationType,
+		taskID:        rec.TaskID,
+		taskVersion:   rec.TaskVersion,
+		unitID:        rec.UnitID,
+	}, nil
+}
+
 func readRecoveryPropertyNames(migDir string, maxBytes int64) ([]string, error) {
 	path := filepath.Join(migDir, reindexRecoveryPayloadFile)
 	if maxBytes > unboundedRecoveryPayload {

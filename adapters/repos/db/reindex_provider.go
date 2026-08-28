@@ -2092,6 +2092,15 @@ type CleanupInProgressLookup func(collection, shard string) bool
 // wiring in configure_api.go can install both lookups identically.
 type CleanupInProgressLookupBuilder func() CleanupInProgressLookup
 
+// ReindexUnitSeal answers for one (task, unit) pair. Keyed per unit rather
+// than per task because a task's other units run on other shards, and
+// withholding a shard's own decision on a sibling's account would strand it.
+type ReindexUnitSeal func(desc distributedtask.TaskDescriptor, unitID string) (func(), bool)
+
+// ReindexUnitSealBuilder returns a fresh seal. Same shape as
+// [CleanupInProgressLookupBuilder] so the wiring installs both the same way.
+type ReindexUnitSealBuilder func() ReindexUnitSeal
+
 // CleanupInProgressLookupBuilder returns a builder whose closures
 // re-read the live [cleanupInProgress] registry on every invocation.
 // Use to wire the backup gate into the provider without coupling the

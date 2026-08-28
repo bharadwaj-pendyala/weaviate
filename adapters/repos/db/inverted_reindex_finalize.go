@@ -108,28 +108,6 @@ func completedMigrationGens(scope migrationDirScope) map[int]bool {
 	return out
 }
 
-// completedMigrationSidecarSuffixes returns the gen-suffixed sidecar dir
-// suffixes (e.g. "__roaringset_ingest_2") owned by completed-but-deferred
-// migrations in `scope`. Keying by (suffix-base, gen) instead of
-// bare gen stops one strategy's completed gen from shielding — or failing
-// to shield — a different strategy's sidecar at the same gen (issue #295).
-func completedMigrationSidecarSuffixes(scope migrationDirScope) map[string]bool {
-	out := map[string]bool{}
-	forEachCompletedMigration(scope, func(base string, gen int) {
-		suffixes := migrationSuffixes(base)
-		if suffixes == nil {
-			return
-		}
-		tail := genSuffix(gen)
-		out[suffixes.ingestSuffix+tail] = true
-		out[suffixes.backupSuffix+tail] = true
-		if rs := reindexSuffixForFinalize(base); rs != "" {
-			out[rs+tail] = true
-		}
-	})
-	return out
-}
-
 // forEachCompletedMigration invokes fn for every tracker dir in `scope` that
 // carries tidied.mig or merged.mig (completed in-process, awaiting
 // next-restart finalize).
@@ -428,7 +406,7 @@ func removeStaleSidecarsForGen(lsmPath, namespace, dirName string, logger logrus
 	genTail := "_" + strconv.Itoa(gen)
 	for _, propName := range props {
 		main := suffixes.sourceBucketName(propName)
-		for _, suff := range []string{suffixes.ingestSuffix, suffixes.backupSuffix, reindexSuffixForFinalize(namespace)} {
+		for _, suff := range []string{suffixes.ingestSuffix, suffixes.backupSuffix, reindexSuffixFor(namespace)} {
 			path := filepath.Join(lsmPath, main+suff+genTail)
 			if fileExists(path) {
 				if err := os.RemoveAll(path); err != nil {
@@ -440,12 +418,12 @@ func removeStaleSidecarsForGen(lsmPath, namespace, dirName string, logger logrus
 	}
 }
 
-// reindexSuffixForFinalize returns the per-strategy reindex bucket
+// reindexSuffixFor returns the per-strategy reindex bucket
 // suffix base (e.g. `__retokenize_reindex`) used to identify older-gen
 // reindex sidecar dirs in the finalize cleanup. Kept in lockstep with
 // each strategy's ReindexSuffix() base — when a new strategy is added,
 // extend both this switch and the strategy's ReindexSuffix() method.
-func reindexSuffixForFinalize(namespace string) string {
+func reindexSuffixFor(namespace string) string {
 	switch {
 	case strings.HasPrefix(namespace, MigrationDirSearchableMapToBlockmax):
 		return "__blockmax_reindex"

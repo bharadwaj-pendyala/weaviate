@@ -796,6 +796,42 @@ func removeUnloadedSidecarsForOrphan(lsmPath string, o *orphanReindexTracker, lo
 //
 // Closes S3 by routing through the strategy registry instead of
 // re-deriving sidecar names by hard-coded string prefix.
+// migrationCompletionMarker reports the completed-migration marker a tracker
+// directory carries, if any. The record store reads it to tell a marker-era
+// tracker apart from one this build wrote.
+func migrationCompletionMarker(trackerPath string) (string, bool) {
+	for _, marker := range []string{"tidied.mig", "merged.mig"} {
+		if fileExistsInDir(trackerPath, marker) {
+			return marker, true
+		}
+	}
+	return "", false
+}
+
+// migrationSidecarDirsFor names the sidecar bucket dirs one tracker owns.
+// Shared with the legacy-marker preserve pass so a directory the audit would
+// reclaim and a directory a sweep must keep are never derived two ways.
+func migrationSidecarDirsFor(dirName, prefix string, generation int, properties []string) []string {
+	if len(properties) == 0 {
+		return nil
+	}
+	suffixes := migrationSuffixes(dirName)
+	if suffixes == nil {
+		return nil
+	}
+	reindexSuffix := reindexSuffixFor(prefix)
+	genTail := genSuffix(generation)
+	out := make([]string, 0, 2*len(properties))
+	for _, propName := range properties {
+		main := suffixes.sourceBucketName(propName)
+		out = append(out, main+suffixes.ingestSuffix+genTail)
+		if reindexSuffix != "" {
+			out = append(out, main+reindexSuffix+genTail)
+		}
+	}
+	return out
+}
+
 func sidecarDirsForOrphan(o *orphanReindexTracker) []string {
 	if len(o.properties) == 0 {
 		return nil
@@ -804,7 +840,7 @@ func sidecarDirsForOrphan(o *orphanReindexTracker) []string {
 	if suffixes == nil {
 		return nil
 	}
-	reindexSuffix := reindexSuffixForFinalize(o.prefix)
+	reindexSuffix := reindexSuffixFor(o.prefix)
 	genTail := genSuffix(o.generation)
 	out := make([]string, 0, 3*len(o.properties))
 	for _, propName := range o.properties {

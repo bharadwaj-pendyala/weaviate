@@ -756,12 +756,12 @@ func (t *ShardReindexTaskGeneric) ensureReindexBucketsLoadedForSwap(
 	for _, propName := range props {
 		reindexName := t.reindexBucketName(propName)
 		if store.Bucket(reindexName) == nil &&
-			dirExists(filepath.Join(lsmPath, reindexName)) {
+			dirExistsAtPath(filepath.Join(lsmPath, reindexName)) {
 			missingReindex = append(missingReindex, propName)
 		}
 		ingestName := t.ingestBucketName(propName)
 		if store.Bucket(ingestName) == nil &&
-			dirExists(filepath.Join(lsmPath, ingestName)) {
+			dirExistsAtPath(filepath.Join(lsmPath, ingestName)) {
 			missingIngest = append(missingIngest, propName)
 		}
 	}
@@ -1889,7 +1889,7 @@ func (t *ShardReindexTaskGeneric) backupBucketName(propName string) string {
 func (t *ShardReindexTaskGeneric) firstMissingReindexBucketDir(lsmPath string, props []string) string {
 	for _, propName := range props {
 		dir := filepath.Join(lsmPath, t.reindexBucketName(propName))
-		if !dirExists(dir) {
+		if !dirExistsAtPath(dir) {
 			return dir
 		}
 	}
@@ -1950,9 +1950,9 @@ func (t *ShardReindexTaskGeneric) recoverRuntimeSwapBuckets(ctx context.Context,
 		ingestDir := filepath.Join(lsmPath, t.ingestBucketName(propName))
 		backupDir := filepath.Join(lsmPath, t.backupBucketName(propName))
 
-		mainExists := dirExists(mainDir)
-		backupExists := dirExists(backupDir)
-		ingestExists := dirExists(ingestDir)
+		mainExists := dirExistsAtPath(mainDir)
+		backupExists := dirExistsAtPath(backupDir)
+		ingestExists := dirExistsAtPath(ingestDir)
 
 		switch {
 		case mainExists && !backupExists:
@@ -2115,7 +2115,7 @@ func (t *ShardReindexTaskGeneric) removeBucketsDirs(ctx context.Context, logger 
 	return eg.Wait()
 }
 
-func dirExists(path string) bool {
+func dirExistsAtPath(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
 }
@@ -2285,11 +2285,11 @@ func (t *ShardReindexTaskGeneric) SaveSelectedProps(shard ShardLike) error {
 	return rt.saveProps(props)
 }
 
-// recordedProps reads the property list the tracker holds. HasProps only
+// trackerRecordedProps reads the property list the tracker holds. HasProps only
 // reports a file that has content, so a list that parses to nothing means that
 // content is corrupt — answering "no properties" would silently retire the
 // shard's reindex instead of reporting the file.
-func recordedProps(rt reindexTracker) ([]string, error) {
+func trackerRecordedProps(rt reindexTracker) ([]string, error) {
 	props, err := rt.GetProps()
 	if err != nil {
 		return nil, err
@@ -2302,7 +2302,7 @@ func recordedProps(rt reindexTracker) ([]string, error) {
 
 func (t *ShardReindexTaskGeneric) getPropsToReindex(shard ShardLike, rt reindexTracker) ([]string, error) {
 	if rt.HasProps() {
-		return recordedProps(rt)
+		return trackerRecordedProps(rt)
 	}
 	props, save := t.findPropsToReindex(shard)
 	if save {
@@ -2315,7 +2315,7 @@ func (t *ShardReindexTaskGeneric) getPropsToReindex(shard ShardLike, rt reindexT
 
 func (t *ShardReindexTaskGeneric) readPropsToReindex(rt reindexTracker) ([]string, error) {
 	if rt.HasProps() {
-		return recordedProps(rt)
+		return trackerRecordedProps(rt)
 	}
 	return []string{}, nil
 }
