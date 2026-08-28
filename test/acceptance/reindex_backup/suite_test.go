@@ -31,10 +31,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	tcexec "github.com/testcontainers/testcontainers-go/exec"
+	"github.com/weaviate/weaviate/adapters/repos/db"
 	clientbackups "github.com/weaviate/weaviate/client/backups"
 	"github.com/weaviate/weaviate/client/batch"
 	"github.com/weaviate/weaviate/entities/models"
 	reindexhelpers "github.com/weaviate/weaviate/test/acceptance/helpers/reindex"
+	"github.com/weaviate/weaviate/test/acceptance/helpers/reindexrecords"
 	"github.com/weaviate/weaviate/test/docker"
 	"github.com/weaviate/weaviate/test/helper"
 	moduleshelper "github.com/weaviate/weaviate/test/helper/modules"
@@ -356,22 +358,29 @@ func testPostRestartOrphanAuditClearsTracker(t *testing.T, ctx context.Context, 
 	orphanDir := "searchable_retokenize_body_999" // gen 999 is far outside any runtime-picked value
 	sidecarBucket := "property_body_searchable__retokenize_reindex_999"
 	stagedBucket := "property_body_searchable__retokenize_ingest_999"
+	// Iterating: nothing is staged completely, so no reader may treat the
+	// canonical bucket as replaceable, and the target tokenization the subject
+	// names is one the collection's schema does not show.
+	recordFile, recordJSON := reindexrecords.Encode(t, db.NewMigrationRecordIterating(db.MigrationSubject{
+		Key: db.MigrationRecordKey{
+			TaskVersion:  1,
+			StrategyCode: db.StrategyCodeSearchableRetokenize,
+			UnitID:       "u0",
+		},
+		TaskID:               "orphan-from-prefix-backup",
+		MigrationType:        db.ReindexTypeChangeTokenization,
+		Properties:           []string{"body"},
+		TargetTokenization:   "lowercase",
+		OriginalTokenization: "word",
+		IterationCutoff:      time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		TrackerDir:           orphanDir,
+		StagedDirs:           map[string]string{"body": stagedBucket},
+		CanonicalDirs:        map[string]string{"body": "property_body_searchable"},
+		SidecarDirs:          []string{sidecarBucket},
+	}, db.MigrationCheckpoint{}))
 	injectOrphanTrackerOnDisk(t, ctx, container, lsmPath, orphanDir, sidecarBucket,
 		`{"taskID":"orphan-from-prefix-backup","taskVersion":1,"unitID":"u0","payload":{"collection":"`+className+`","migrationType":"change-tokenization","properties":["body"],"targetTokenization":"lowercase","bucketStrategy":"map_collection"}}`,
-		// The record file name carries the whole key, unit included.
-		"1_searchable_retokenize_u0.json",
-		// Iterating: nothing is staged completely, so no reader may treat the
-		// canonical bucket as replaceable, and the target tokenization the
-		// subject names is one the collection's schema does not show.
-		`{"formatVersion":1,"state":"iterating","subject":{`+
-			`"key":{"taskVersion":1,"strategyCode":"searchable_retokenize","unitID":"u0"},`+
-			`"taskID":"orphan-from-prefix-backup","migrationType":"change-tokenization",`+
-			`"properties":["body"],"targetTokenization":"lowercase","originalTokenization":"word",`+
-			`"iterationCutoff":"2026-01-01T00:00:00Z","trackerDir":"`+orphanDir+`",`+
-			`"stagedDirs":{"body":"`+stagedBucket+`"},`+
-			`"canonicalDirs":{"body":"property_body_searchable"},`+
-			`"sidecarDirs":["`+sidecarBucket+`"]},`+
-			`"checkpoint":{"processedCount":0,"indexedCount":0,"updatedAt":"0001-01-01T00:00:00Z"}}`)
+		recordFile, recordJSON)
 
 	require.NoError(t, compose.StopAt(ctx, 0, nil))
 	require.NoError(t, compose.StartAt(ctx, 0))

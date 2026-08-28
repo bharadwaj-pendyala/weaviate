@@ -26,8 +26,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	tcexec "github.com/testcontainers/testcontainers-go/exec"
+	"github.com/weaviate/weaviate/adapters/repos/db"
 	"github.com/weaviate/weaviate/entities/models"
 	reindexhelpers "github.com/weaviate/weaviate/test/acceptance/helpers/reindex"
+	"github.com/weaviate/weaviate/test/acceptance/helpers/reindexrecords"
 	"github.com/weaviate/weaviate/test/docker"
 	"github.com/weaviate/weaviate/test/helper"
 )
@@ -295,23 +297,28 @@ func plantTornMigrationAcrossRestart(
 	stagedMigDir := filepath.Join(stagedDotMigrations, migDir)
 	require.NoError(t, os.MkdirAll(stagedMigDir, 0o755))
 
-	nowRFC := time.Now().UTC().Format(time.RFC3339Nano)
+	subject := db.MigrationSubject{
+		Key: db.MigrationRecordKey{
+			TaskVersion:  1,
+			StrategyCode: db.MigrationStrategyCode(strategyCode),
+			UnitID:       "u0",
+		},
+		TaskID:          "torn-resume-crashed-run",
+		MigrationType:   db.ReindexMigrationType(migrationType),
+		Properties:      props,
+		IterationCutoff: time.Now().UTC(),
+		TrackerDir:      migDir,
+		StagedDirs:      make(map[string]string, len(props)),
+		CanonicalDirs:   make(map[string]string, len(props)),
+	}
 	quoted := make([]string, len(props))
-	staged := make([]string, len(props))
-	canonical := make([]string, len(props))
 	for i, prop := range props {
 		quoted[i] = strconv.Quote(prop)
-		staged[i] = fmt.Sprintf("%s:%q", strconv.Quote(prop), migDir+"__ingest_1")
-		canonical[i] = fmt.Sprintf("%s:%q", strconv.Quote(prop), "property_"+prop)
+		subject.StagedDirs[prop] = migDir + "__ingest_1"
+		subject.CanonicalDirs[prop] = "property_" + prop
 	}
-	record := fmt.Sprintf(`{"formatVersion":1,"state":"iterating","subject":{`+
-		`"key":{"taskVersion":1,"strategyCode":%q,"unitID":"u0"},`+
-		`"taskID":"torn-resume-crashed-run","migrationType":%q,`+
-		`"properties":[%s],"iterationCutoff":%q,"trackerDir":%q,`+
-		`"stagedDirs":{%s},"canonicalDirs":{%s}},`+
-		`"checkpoint":{"processedCount":0,"indexedCount":0,"updatedAt":"0001-01-01T00:00:00Z"}}`,
-		strategyCode, migrationType, strings.Join(quoted, ","), nowRFC, migDir,
-		strings.Join(staged, ","), strings.Join(canonical, ","))
+	recordName, record := reindexrecords.Encode(t,
+		db.NewMigrationRecordIterating(subject, db.MigrationCheckpoint{}))
 
 	payload := fmt.Sprintf(
 		`{"taskID":"torn-resume-crashed-run","taskVersion":1,"unitID":"u0",`+
@@ -321,8 +328,8 @@ func plantTornMigrationAcrossRestart(
 	stagedRecordsDir := filepath.Join(stagedDotMigrations, "records")
 	require.NoError(t, os.MkdirAll(stagedRecordsDir, 0o755))
 	for path, content := range map[string]string{
-		filepath.Join(stagedMigDir, "payload.mig"):                                 payload,
-		filepath.Join(stagedRecordsDir, fmt.Sprintf("1_%s_u0.json", strategyCode)): record,
+		filepath.Join(stagedMigDir, "payload.mig"):  payload,
+		filepath.Join(stagedRecordsDir, recordName): record,
 	} {
 		require.NoError(t, os.WriteFile(path, []byte(content), 0o666),
 			"plantTornMigrationAcrossRestart: staging %s on host must succeed", path)

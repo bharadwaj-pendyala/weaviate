@@ -13,7 +13,6 @@ package reindex_singlenode
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,7 +21,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"github.com/weaviate/weaviate/adapters/repos/db"
 	"github.com/weaviate/weaviate/entities/models"
+	"github.com/weaviate/weaviate/test/acceptance/helpers/reindexrecords"
 	"github.com/weaviate/weaviate/test/docker"
 	"github.com/weaviate/weaviate/test/helper"
 )
@@ -96,13 +97,9 @@ func plantSwappedRecordAcrossRestart(t *testing.T, compose *docker.DockerCompose
 	t.Helper()
 	ctx := context.Background()
 
-	record := fmt.Sprintf(`{"formatVersion":1,"state":"swapped","subject":{`+
-		`"key":{"taskVersion":4711,"strategyCode":"filterable_roaringset_refresh","unitID":"u0"},`+
-		`"taskID":"opaque-promotion","migrationType":"repair-filterable",`+
-		`"properties":["score"],"iterationCutoff":%q,"trackerDir":"opaque_promotion_tracker",`+
-		`"stagedDirs":{"score":%q},"canonicalDirs":{"score":"property_score"}},`+
-		`"flip":{"flipped":["score"],"displacedDirs":{"score":"property_score"}}}`,
-		time.Now().UTC().Format(time.RFC3339Nano), staged)
+	subject := opaqueMigrationSubject(4711, "opaque-promotion", "opaque_promotion_tracker", staged)
+	recordName, record := reindexrecords.Encode(t, db.NewMigrationRecordSwapped(
+		subject, []string{"score"}, map[string]string{"score": "property_score"}))
 
 	// Repoint on every exit path: the restart rebinds the host port, and a
 	// failure in between would otherwise strand the client on the old one.
@@ -117,8 +114,7 @@ func plantSwappedRecordAcrossRestart(t *testing.T, compose *docker.DockerCompose
 	require.NoError(t, os.MkdirAll(filepath.Join(dotMigrations, "records"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dotMigrations, "opaque_promotion_tracker"), 0o755))
 	require.NoError(t, os.WriteFile(
-		filepath.Join(dotMigrations, "records", "4711_filterable_roaringset_refresh_u0.json"),
-		[]byte(record), 0o666))
+		filepath.Join(dotMigrations, "records", recordName), []byte(record), 0o666))
 
 	require.NoError(t,
 		compose.GetWeaviate().Container().CopyDirToContainer(ctx, dotMigrations, lsmPath+"/.migrations", 0o755),
@@ -182,13 +178,9 @@ func plantPromotedRecordAcrossRestart(t *testing.T, compose *docker.DockerCompos
 	t.Helper()
 	ctx := context.Background()
 
-	record := fmt.Sprintf(`{"formatVersion":1,"state":"promoted","subject":{`+
-		`"key":{"taskVersion":4712,"strategyCode":"filterable_roaringset_refresh","unitID":"u0"},`+
-		`"taskID":"promoted-torn-rename","migrationType":"repair-filterable",`+
-		`"properties":["score"],"iterationCutoff":%q,"trackerDir":"promoted_torn_tracker",`+
-		`"stagedDirs":{"score":%q},"canonicalDirs":{"score":"property_score"}},`+
-		`"flip":{"flipped":["score"],"displacedDirs":{"score":"property_score"}}}`,
-		time.Now().UTC().Format(time.RFC3339Nano), staged)
+	subject := opaqueMigrationSubject(4712, "promoted-torn-rename", "promoted_torn_tracker", staged)
+	recordName, record := reindexrecords.Encode(t, db.NewMigrationRecordPromoted(
+		subject, []string{"score"}, map[string]string{"score": "property_score"}))
 
 	// Repoint on every exit path: the restart rebinds the host port, and a
 	// failure in between would otherwise strand the client on the old one.
@@ -202,12 +194,30 @@ func plantPromotedRecordAcrossRestart(t *testing.T, compose *docker.DockerCompos
 	require.NoError(t, os.MkdirAll(filepath.Join(dotMigrations, "records"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dotMigrations, "promoted_torn_tracker"), 0o755))
 	require.NoError(t, os.WriteFile(
-		filepath.Join(dotMigrations, "records", "4712_filterable_roaringset_refresh_u0.json"),
-		[]byte(record), 0o666))
+		filepath.Join(dotMigrations, "records", recordName), []byte(record), 0o666))
 
 	require.NoError(t,
 		compose.GetWeaviate().Container().CopyDirToContainer(ctx, dotMigrations, lsmPath+"/.migrations", 0o755),
 		"CopyDirToContainer must succeed against the stopped container")
 
 	require.NoError(t, compose.StartAt(ctx, 0), "restart after planting must succeed")
+}
+
+// opaqueMigrationSubject is the one-property repair-filterable both planters
+// record, differing only in which migration it is and where its data sits.
+func opaqueMigrationSubject(taskVersion uint64, taskID, trackerDir, staged string) db.MigrationSubject {
+	return db.MigrationSubject{
+		Key: db.MigrationRecordKey{
+			TaskVersion:  taskVersion,
+			StrategyCode: db.StrategyCodeFilterableRoaringsetRefresh,
+			UnitID:       "u0",
+		},
+		TaskID:          taskID,
+		MigrationType:   db.ReindexTypeRepairFilterable,
+		Properties:      []string{"score"},
+		IterationCutoff: time.Now().UTC(),
+		TrackerDir:      trackerDir,
+		StagedDirs:      map[string]string{"score": staged},
+		CanonicalDirs:   map[string]string{"score": "property_score"},
+	}
 }
