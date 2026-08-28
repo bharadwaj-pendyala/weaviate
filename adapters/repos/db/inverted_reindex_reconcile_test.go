@@ -866,8 +866,10 @@ func TestReconcilePromotedRepairsATornPromotion(t *testing.T) {
 			wantRecordGone: true,
 		},
 		{
-			// Nothing to repair and nothing to promote onto. Preserving the
-			// record is the only reading that keeps the divergence visible.
+			// Nothing to repair and nothing left to reclaim, and the schema
+			// carries the effect. A bucket directory is created on demand, so
+			// an absent canonical name is what an empty bucket looks like, not
+			// a divergence — and the record has nothing left to answer for.
 			name:           "neither name present",
 			wantStagedGone: true,
 			wantRecordGone: true,
