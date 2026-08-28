@@ -14,8 +14,10 @@ package db
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -437,44 +439,46 @@ func migrationHandleIsOneElement(h string) bool {
 // an archive's record bytes into the records directory untouched. Both
 // directions ask, so they cannot disagree on what a valid record is.
 func validateMigrationHandles(e migrationRecordEnvelope) error {
-	reject := func(field, handle string) error {
-		return fmt.Errorf("record %q names %s %q, which is not a single directory inside the shard",
-			e.Subject.Key, field, handle)
-	}
-
-	named := map[string][]string{
-		"tracker directory": {e.Subject.TrackerDir},
-		"sidecar directory": e.Subject.SidecarDirs,
-		"property":          e.Subject.Properties,
-	}
-	for field, dirs := range map[string]map[string]string{
-		"staged directory":    e.Subject.StagedDirs,
-		"canonical directory": e.Subject.CanonicalDirs,
-	} {
-		for prop, dir := range dirs {
-			named[field] = append(named[field], dir)
-			named["property"] = append(named["property"], prop)
+	// Sorted, so a record with two bad handles names the same one every time.
+	// Ranging the maps directly would make the error text a coin flip.
+	byProperty := func(dirs map[string]string) (props, handles []string) {
+		props = slices.Sorted(maps.Keys(dirs))
+		for _, prop := range props {
+			handles = append(handles, dirs[prop])
 		}
+		return props, handles
 	}
+	stagedProps, staged := byProperty(e.Subject.StagedDirs)
+	canonicalProps, canonical := byProperty(e.Subject.CanonicalDirs)
+	var flipped, displacedProps, displaced []string
 	if e.Flip != nil {
-		for prop, dir := range e.Flip.DisplacedDirs {
-			named["displaced directory"] = append(named["displaced directory"], dir)
-			named["property"] = append(named["property"], prop)
-		}
-		named["property"] = append(named["property"], e.Flip.Flipped...)
+		flipped = e.Flip.Flipped
+		displacedProps, displaced = byProperty(e.Flip.DisplacedDirs)
 	}
 
-	for field, handles := range named {
-		for _, handle := range handles {
+	for _, group := range []struct {
+		field   string
+		handles []string
+	}{
+		{"tracker directory", []string{e.Subject.TrackerDir}},
+		{"sidecar directory", e.Subject.SidecarDirs},
+		{"property", slices.Concat(
+			e.Subject.Properties, stagedProps, canonicalProps, displacedProps, flipped)},
+		{"staged directory", staged},
+		{"canonical directory", canonical},
+		{"displaced directory", displaced},
+	} {
+		for _, handle := range group.handles {
 			// An empty handle is the ordinary "this record names none", and
 			// every reader already guards on it. An empty property name is
 			// not: nothing legitimate emits one, and it composes into a
 			// bucket name that names another property's sidecar.
-			if handle == "" && field != "property" {
+			if handle == "" && group.field != "property" {
 				continue
 			}
 			if !migrationHandleIsOneElement(handle) {
-				return reject(field, handle)
+				return fmt.Errorf("record %q names %s %q, which is not a single directory inside the shard",
+					e.Subject.Key, group.field, handle)
 			}
 		}
 	}
