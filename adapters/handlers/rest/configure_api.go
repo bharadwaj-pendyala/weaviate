@@ -1028,18 +1028,12 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 
 		// Migration reconciliation runs at shard load and reads this node's
 		// own applied task map, never the leader's: a shard load must not wait
-		// on a round-trip. The map cannot be installed at DB construction
-		// because the cluster service does not exist yet, so shards loaded
-		// before this point decide nothing that depends on it, which is why
+		// on a round-trip. The map cannot be installed at DB construction,
+		// where the cluster service does not exist yet, so shards loaded before
+		// this point decide nothing that depends on it — which is why
 		// installing the sources also starts the pass that revisits them.
-		//
-		// Ahead of Scheduler.Start, which resumes local units synchronously, so
-		// the pass's first run precedes the first resumed iterator. That
-		// ordering used to be the whole reason the pass could delete a
-		// migration's directories; it no longer is, because the pass repeats
-		// for the life of the node and asks the unit registry directly. The
-		// map is complete here for the same reason the scheduler trusts it to
-		// choose what to resume — waitForMetaStore above.
+		// waitForMetaStore above is what makes the map complete here, the same
+		// guarantee the scheduler relies on to choose what to resume.
 		raft := appState.ClusterService.Raft
 		repo.SetMigrationTaskSources(serverShutdownCtx,
 			newMigrationLocalTaskSource(raft), newMigrationClusterTaskSource(raft))

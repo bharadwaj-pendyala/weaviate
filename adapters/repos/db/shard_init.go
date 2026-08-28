@@ -242,22 +242,20 @@ func (s *Shard) NotifyReady() {
 
 // markInFlightRangeableMigrationsNotReady flips the per-prop entry in
 // Shard.rangeableLocalReady to false for every rangeable migration on this
-// shard whose flip decision is not yet durable. See
-// [Shard.rangeableLocalReady] for the rationale. Idempotent and safe to call
-// on shards with no rangeable migration.
+// shard whose flip decision is not yet durable. See [Shard.rangeableLocalReady]
+// for the rationale. Idempotent and safe on shards with no rangeable migration.
 //
-// Property names come from the record rather than from the tracker dir's
-// name: that name joins multiple properties with "_", so its decoder cannot
-// tell "price_cents" (one property) from ["price", "cents"] (two).
+// Property names come from the record rather than from the tracker dir's name:
+// that name joins multiple properties with "_", so its decoder cannot tell
+// "price_cents" (one property) from ["price", "cents"] (two).
 //
 // A migration whose flip is decided is left untouched — reconciliation has
 // promoted it, or will at the load that can rename its directory safely — and
-// so is a property no record names. Both fall back to the default-true policy
-// in [Shard.IsRangeableLocallyReady].
-//
-// A record that does not decode is the third case, and it cannot be answered
-// per property: the property list is exactly what could not be read. It marks
-// the shard undecidable instead, which the same policy reads as not ready.
+// so is a property no record names; both fall back to the default-true policy
+// in [Shard.IsRangeableLocallyReady]. A record that does not decode cannot be
+// answered per property, since the property list is exactly what could not be
+// read: it marks the whole shard undecidable, which the same policy reads as
+// not ready.
 func markInFlightRangeableMigrationsNotReady(s *Shard) {
 	if s.migrationRecords == nil {
 		return
