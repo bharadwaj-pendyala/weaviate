@@ -157,3 +157,53 @@ func TestSanitizeFilePathJoin(t *testing.T) {
 		})
 	}
 }
+
+// TestRenameAndSync covers what a rename does and does not leave behind. The
+// fsync it adds has no outcome a test can tell apart from a plain rename
+// without a fault-injecting filesystem, so what is asserted here is the rename
+// and the errors — the sync is covered only in the sense that it must not turn
+// a working rename into a failing one.
+func TestRenameAndSync(t *testing.T) {
+	tests := []struct {
+		name string
+		// from and to are relative to the temp root; a "d/" prefix names the
+		// second directory, which is what makes the rename cross one.
+		from, to string
+		// missingSource plants nothing at from.
+		missingSource bool
+		wantErr       bool
+	}{
+		{name: "within one directory", from: "a.tmp", to: "a"},
+		{name: "across two directories", from: "a.tmp", to: "d/a"},
+		{name: "over an existing name", from: "a.tmp", to: "taken"},
+		{name: "source is not there", from: "gone.tmp", to: "a", missingSource: true, wantErr: true},
+		{name: "target directory is not there", from: "a.tmp", to: "absent/a", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			require.NoError(t, os.Mkdir(filepath.Join(root, "d"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(root, "taken"), []byte("old"), 0o600))
+			from, to := filepath.Join(root, tc.from), filepath.Join(root, tc.to)
+			if !tc.missingSource {
+				require.NoError(t, os.WriteFile(from, []byte("new"), 0o600))
+			}
+
+			err := RenameAndSync(from, to)
+
+			if tc.wantErr {
+				require.Error(t, err)
+				_, statErr := os.Stat(to)
+				require.True(t, os.IsNotExist(statErr), "a failed rename must publish nothing")
+				return
+			}
+			require.NoError(t, err)
+			moved, err := os.ReadFile(to)
+			require.NoError(t, err)
+			require.Equal(t, "new", string(moved), "the target must hold what the source held")
+			_, statErr := os.Stat(from)
+			require.True(t, os.IsNotExist(statErr), "the source name must be gone")
+		})
+	}
+}
