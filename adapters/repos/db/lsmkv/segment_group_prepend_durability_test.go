@@ -28,7 +28,10 @@ import (
 // missing them.
 //
 // An fsync has no observable effect a test can assert, so this asserts the
-// call instead: no function in the file may publish a rename without syncing.
+// call: every function that publishes a rename must sync the directory the
+// renamed entry lands in, after the last rename that puts one there. Syncing
+// the source directory instead would leave the publish undurable while
+// looking, to a call count, exactly like the real thing.
 func TestPrependPublishesEveryRenameDurably(t *testing.T) {
 	const fileName = "segment_group_prepend.go"
 
@@ -42,28 +45,99 @@ func TestPrependPublishesEveryRenameDurably(t *testing.T) {
 			continue
 		}
 
-		var renamesHere, syncs int
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			sel, ok := selectorOfCall(n)
-			if !ok {
-				return true
-			}
-			switch sel {
-			case "os.Rename":
-				renamesHere++
-			case "diskio.Fsync":
-				syncs++
-			}
-			return true
-		})
-
-		renames += renamesHere
-		if renamesHere > 0 {
-			require.NotZerof(t, syncs,
-				"%s renames a published file but never syncs the directory holding the entry", fn.Name.Name)
+		lastRename, target := lastPublishedRename(fn.Body)
+		if lastRename == token.NoPos {
+			continue
 		}
+		renames++
+		require.NotEmptyf(t, target,
+			"%s renames to a path this guard cannot trace to a directory", fn.Name.Name)
+
+		synced, at := syncedDir(fn.Body)
+		require.NotEmptyf(t, synced,
+			"%s renames a published file but never syncs the directory holding the entry", fn.Name.Name)
+		require.Equalf(t, target, synced,
+			"%s syncs %q, but the renames it publishes land in %q", fn.Name.Name, synced, target)
+		require.Greaterf(t, at, lastRename,
+			"%s syncs before its last rename, so that entry is not covered", fn.Name.Name)
 	}
 	require.NotZero(t, renames, "the guard is watching a file that no longer renames anything")
+}
+
+// lastPublishedRename reports the position of the last os.Rename in body and
+// the directory its destination is built from.
+func lastPublishedRename(body *ast.BlockStmt) (token.Pos, string) {
+	assigned := assignmentsIn(body)
+	at, dir := token.NoPos, ""
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, _ := n.(*ast.CallExpr)
+		if sel, ok := selectorOfCall(n); !ok || sel != "os.Rename" || len(call.Args) != 2 {
+			return true
+		}
+		at, dir = call.Pos(), dirRootOf(call.Args[1], assigned)
+		return true
+	})
+	return at, dir
+}
+
+// syncedDir reports the directory diskio.Fsync is called on, and where.
+func syncedDir(body *ast.BlockStmt) (string, token.Pos) {
+	dir, at := "", token.NoPos
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, _ := n.(*ast.CallExpr)
+		if sel, ok := selectorOfCall(n); !ok || sel != "diskio.Fsync" || len(call.Args) != 1 {
+			return true
+		}
+		if ident, ok := call.Args[0].(*ast.Ident); ok {
+			dir, at = ident.Name, call.Pos()
+		}
+		return true
+	})
+	return dir, at
+}
+
+// assignmentsIn maps each local name to the expression it was last assigned.
+func assignmentsIn(body *ast.BlockStmt) map[string]ast.Expr {
+	assigned := map[string]ast.Expr{}
+	ast.Inspect(body, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok || len(assign.Lhs) != len(assign.Rhs) {
+			return true
+		}
+		for i, lhs := range assign.Lhs {
+			if ident, ok := lhs.(*ast.Ident); ok {
+				assigned[ident.Name] = assign.Rhs[i]
+			}
+		}
+		return true
+	})
+	return assigned
+}
+
+// dirRootOf resolves a path expression back to the identifier naming the
+// directory it is rooted at: a filepath.Join takes its first argument, a
+// string transform takes the path it transforms, and a local name is followed
+// to what it was assigned.
+func dirRootOf(expr ast.Expr, assigned map[string]ast.Expr) string {
+	for depth := 0; depth < 8; depth++ {
+		switch e := expr.(type) {
+		case *ast.Ident:
+			next, ok := assigned[e.Name]
+			if !ok {
+				return e.Name
+			}
+			delete(assigned, e.Name) // a self-assignment must not loop
+			expr = next
+		case *ast.CallExpr:
+			if len(e.Args) == 0 {
+				return ""
+			}
+			expr = e.Args[0]
+		default:
+			return ""
+		}
+	}
+	return ""
 }
 
 // selectorOfCall returns "pkg.Fn" for a call of that shape.
