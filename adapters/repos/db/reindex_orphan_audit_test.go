@@ -665,6 +665,10 @@ func TestAuditOrphanReindexTrackersReclaimsTrackersNoRecordNames(t *testing.T) {
 		wantStatus      AuditOutcomeStatus
 		wantOrphans     int
 		wantDir         bool
+		// wantSentinel is only meaningful where the row leaves a tracker dir.
+		// A sentinel that survives a sweep which decided the tracker is not an
+		// orphan is stored destructive intent with no grace window left.
+		wantSentinel bool
 	}{
 		{
 			// A record is written once the migration's buckets are open, so a
@@ -697,6 +701,7 @@ func TestAuditOrphanReindexTrackersReclaimsTrackersNoRecordNames(t *testing.T) {
 			payloadMigrType: "reticulate-splines",
 			wantStatus:      AuditStatusRan,
 			wantDir:         true,
+			wantSentinel:    true,
 		},
 		{
 			name:        "older than this process: reclaimed",
@@ -766,6 +771,9 @@ func TestAuditOrphanReindexTrackersReclaimsTrackersNoRecordNames(t *testing.T) {
 			assert.Equal(t, tt.wantStatus, outcome.Status)
 			assert.Equal(t, tt.wantOrphans, outcome.OrphansFound)
 			assert.Equal(t, tt.wantDir, dirExists(t, dir))
+			assert.Equal(t, tt.wantSentinel,
+				fileExists(filepath.Join(dir, reindexAuditQuarantineFile)),
+				"quarantine sentinel")
 		})
 	}
 }

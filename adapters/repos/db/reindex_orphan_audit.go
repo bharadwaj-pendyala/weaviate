@@ -693,7 +693,8 @@ func writeQuarantineSentinel(trackerPath string) error {
 }
 
 // clearStaleQuarantineSentinels removes audit_quarantined.mig from tracker dirs
-// whose migration record now maps to a known-live DTM task. Called per-shard
+// whose record — or, for a tracker that has none yet, whose payload — maps to
+// a known-live DTM task. Called per-shard
 // when the orphan list is empty, so that a sweep which mis-classified a live
 // migration as an orphan (a follower with stale RAFT, say) does not leave a
 // quarantine age behind for a future, legitimate orphan to inherit.
@@ -731,9 +732,18 @@ func clearStaleQuarantineSentinels(lsmPath string, knownTask KnownReindexTaskLoo
 		}
 		rec, recOK := migrationRecordForTracker(records, dirName)
 		if !recOK {
-			continue
-		}
-		if !knownTask(rec.Subject().TaskID, rec.Subject().Key.TaskVersion) {
+			// The record lands once the migration's buckets open, so a run
+			// that crashed before that carries only payload.mig — the same
+			// identity collectOrphanTrackers classifies it by. Reading it here
+			// too is what makes the grace window repeatable instead of
+			// single-use: without it the sentinel this tracker already carries
+			// can never be cleared, and the next sweep that misclassifies it
+			// destroys on the first pass.
+			payload, _ := readTaskProps(trackerPath)
+			if payload.unreadable || !knownTask(payload.taskID, payload.taskVersion) {
+				continue
+			}
+		} else if !knownTask(rec.Subject().TaskID, rec.Subject().Key.TaskVersion) {
 			// Tracker is still classified as orphan from the record's
 			// perspective; the empty-orphans branch got here only because
 			// collectOrphanTrackers already filtered upstream (e.g. the
