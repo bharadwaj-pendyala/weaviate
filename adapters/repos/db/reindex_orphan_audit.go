@@ -405,22 +405,20 @@ const reindexAuditQuarantineFile = "audit_quarantined.mig"
 // live" → quarantine sentinel is removed without destruction.
 const reindexAuditQuarantineWindow = 5 * time.Minute
 
-// collectOrphanTrackers walks <lsmPath>/.migrations/ and returns every
-// tracker dir classified as an orphan: a migration record names it, its data
-// is not committed, and the task that record names is not known to DTM.
-// Read-only; cleanup is the caller's job.
+// collectOrphanTrackers walks <lsmPath>/.migrations/ and returns every tracker
+// dir classified as an orphan: a migration record names it, its data is not
+// committed, and the task that record names is not known to DTM. Read-only;
+// cleanup is the caller's job.
 //
-// A directory no record names is the second kind of orphan, and the only
-// reclaimer it has. Every cluster that upgrades into this build brings a set
-// of them, and a run whose record was already removed can leave one behind.
-// Those upgrade trackers still carry payload.mig, so the property list and the
-// task identity both come from there: the identity because a record is written
-// only once the migration's buckets are open, so a run that crashed before
-// that has a live task and no record. A tracker whose payload is absent has no
-// properties to name and gives up its directory alone; one whose payload is
-// present but unreadable is left entirely, because only absence proves the
-// list is empty. Age is what separates any of them from a directory this
-// process is still writing.
+// A directory no record names is the second kind of orphan, and this is its
+// only reclaimer — every cluster upgrading into this build brings a set of
+// them. Their task identity and property list come from payload.mig, since a
+// record is written only once the migration's buckets are open, so a run that
+// crashed before that has a live task and no record. A tracker whose payload is
+// absent gives up its directory alone; one whose payload is present but
+// unreadable is left entirely, because only absence proves the property list is
+// empty. Age is what separates any of them from a directory this process is
+// still writing.
 func collectOrphanTrackers(lsmPath, collection, shardName string, knownTask KnownReindexTaskLookup, logger logrus.FieldLogger) []orphanReindexTracker {
 	migsDir := filepath.Join(lsmPath, ".migrations")
 	entries, err := os.ReadDir(migsDir)
@@ -577,16 +575,15 @@ var processStartTime = time.Now()
 // migrationCompletionMarker reports the completed-migration marker a release
 // before the record store left in a tracker directory, if any. Operators are
 // required to drain and promote before upgrading; this only decides that
-// someone who did not gets a property serving empty until they restore,
-// instead of data that is gone.
+// someone who did not gets a property serving empty until they restore, instead
+// of data that is gone.
 //
-// Downgrading needs the same drain and has no guard at all, in either build.
-// A migration this build flipped but has not promoted keeps its live data
-// under the staged name; the older release reads no record, so it neither
-// renames that directory back nor counts it as preserved — its preserve set
-// comes from the markers above, which this build never writes. Queries then
-// answer from the empty canonical bucket three strategies pre-create, and
-// disabling the index to fix that is what removes the staged copy for good.
+// Downgrading needs the same drain and has no guard at all, in either build: a
+// migration this build flipped but has not promoted keeps its live data under
+// the staged name, and the older release reads no record, so it neither renames
+// that directory back nor counts it as preserved. Queries then answer from the
+// empty canonical bucket three strategies pre-create, and disabling the index
+// to fix that is what removes the staged copy for good.
 //
 // unreadable is the third outcome, and it is not "no marker": a stat that
 // failed for any reason other than the file being absent (EACCES on a restored
@@ -628,12 +625,10 @@ func migrationDirPredatesThisProcess(trackerPath string) (bool, time.Time, error
 
 // partitionOrphansByQuarantine passes through only the orphans whose
 // audit_quarantined.mig has been on disk for [reindexAuditQuarantineWindow];
-// the rest get a sentinel written and wait for a later sweep.
-//
-// It exists because one node's DTM snapshot can be stale — a follower that has
-// not caught up reports a live task as gone. The second sweep runs against
-// fresh state and either confirms the orphan or clears the sentinel through
-// [clearStaleQuarantineSentinels].
+// the rest get a sentinel written and wait for a later sweep. One node's DTM
+// snapshot can be stale — a follower that has not caught up reports a live task
+// as gone — so the second sweep runs against fresh state and either confirms
+// the orphan or clears the sentinel through [clearStaleQuarantineSentinels].
 //
 // A sentinel this cannot stat or write passes the orphan straight through, on
 // the view that a permanently broken disk path is worse than a missed
@@ -701,20 +696,15 @@ func writeQuarantineSentinel(trackerPath string) error {
 	return f.Close()
 }
 
-// clearStaleQuarantineSentinels removes audit_quarantined.mig from
-// tracker dirs whose migration record (now / freshly-evaluated) maps
-// to a known-live DTM task. Called per-shard when the orphan list is
-// empty: it covers the case where a previous audit sweep mis-
-// classified a live migration as orphan (e.g. follower with stale
-// RAFT) and wrote a quarantine sentinel — the subsequent sweep on a
-// caught-up follower sees the same tracker as "known live" and must
-// clear the sentinel so a future legitimate orphan classification
-// does not inherit the prior quarantine age.
+// clearStaleQuarantineSentinels removes audit_quarantined.mig from tracker dirs
+// whose migration record now maps to a known-live DTM task. Called per-shard
+// when the orphan list is empty, so that a sweep which mis-classified a live
+// migration as an orphan (a follower with stale RAFT, say) does not leave a
+// quarantine age behind for a future, legitimate orphan to inherit.
 //
-// Errors are logged at Warn and never propagated: the worst case is
-// a stale sentinel that converts a future-detected orphan into an
-// immediate destructive cleanup — at which point the orphan was
-// real and the operator visibility is preserved.
+// Errors are logged at Warn and never propagated: the worst case is a stale
+// sentinel that turns a later-detected orphan into an immediate destructive
+// cleanup, and at that point the orphan was real and the cleanup is logged.
 func clearStaleQuarantineSentinels(lsmPath string, knownTask KnownReindexTaskLookup, logger logrus.FieldLogger) {
 	migsDir := filepath.Join(lsmPath, ".migrations")
 	entries, err := os.ReadDir(migsDir)

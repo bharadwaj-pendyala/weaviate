@@ -27,16 +27,16 @@ import (
 
 // RecoveredReindex describes one in-flight reindex task discovered on disk at
 // startup, with the [ShardReindexTaskGeneric] instances rebuilt from its
-// payload — one per migration directory, and two instances per unit for a
+// payload — one per migration directory, and two per unit for a
 // change-tokenization, which fans into a searchable and a filterable strategy.
 //
 // Callers register the Tasks with the static [ShardReindexerV3] before
-// [DB.WaitForStartup], so [OnAfterLsmInit] re-installs the double-write
-// callbacks before any post-restart write reaches the shard; without that,
-// writes between shard init and the swap go only to the old main bucket and
-// are lost. They also seed [ReindexProvider.reindexTasks] with the same
-// instances, so the swap phase does not build fresh ones and re-run
-// [OnAfterLsmInit] against already-loaded ingest buckets.
+// [DB.WaitForStartup], so [OnAfterLsmInit] re-arms the double-write callbacks
+// before any post-restart write reaches the shard; without that, writes between
+// shard init and the swap reach only the old main bucket and are lost. The same
+// instances seed [ReindexProvider.reindexTasks], so the swap phase does not
+// rebuild them and re-run [OnAfterLsmInit] against already-loaded ingest
+// buckets.
 type RecoveredReindex struct {
 	Descriptor distributedtask.TaskDescriptor
 	UnitID     string
@@ -165,23 +165,20 @@ func DiscoverInFlightReindexTasks(
 // loadReindexRecoveryRecord reads payload.mig from a migration directory and
 // returns the decoded record, but only for a migration whose rebuild is
 // complete and whose flip is not yet decided. Returns ok=false otherwise, and
-// when payload.mig is missing, unreadable, or names a property this build
-// would not turn into a directory.
+// when payload.mig is missing, unreadable, or names a property this build would
+// not turn into a directory.
 //
-// The window is where the unit is terminal in RAFT — so the scheduler will not
+// That window is where the unit is terminal in RAFT — so the scheduler will not
 // call StartTask after a restart — while the swap on the next scheduler tick
 // has not run. Every write arriving in between has to reach the ingest bucket
 // through a double-write callback, and only shard init is early enough to
-// register one.
+// register one. Before the window, the scheduler restarts the unit and arms the
+// callbacks itself, so arming here would leave the write path carrying two.
 //
-// A recorded flip stays inside it until promotion actually runs: the flip
-// lives only in the process that made it, so after a restart the property is
-// served from the canonical directory again, and promotion removes that
-// directory before renaming the staged one over it.
-//
-// Either side is wrong for its own reason. Before, the scheduler restarts the
-// unit and arms the callbacks itself, so arming here leaves the write path
-// carrying two. After promotion the staged copy is the canonical one.
+// A recorded flip stays inside the window until promotion actually runs: the
+// flip lives only in the process that made it, so after a restart the property
+// is served from the canonical directory again. Past promotion the staged copy
+// is that directory, and there is nothing left to mirror.
 func loadReindexRecoveryRecord(migDir string, records []MigrationRecord,
 	logger logrus.FieldLogger,
 ) (reindexRecoveryRecord, bool) {
