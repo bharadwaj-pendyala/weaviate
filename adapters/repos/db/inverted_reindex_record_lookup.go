@@ -102,9 +102,9 @@ func migrationPreservedStateFor(lsmPath, propName string, props *taskPropsCache,
 	state.settled = migrationReadSettledNote(lsmPath)
 	legacyTrackers, listed := migrationLegacyMarkerTrackersAt(lsmPath, records, propName, props)
 	if someRecordsUnreadable && listed {
-		// Already preserving the whole shard, so reading trackers would only
-		// cost syscalls; listing still had to happen to catch an unlistable
-		// directory.
+		// The shard is already preserved whole, so what the trackers say
+		// changes nothing. The walk above still had to run: an unlistable
+		// directory is the one answer this arm may not swallow.
 		return state
 	}
 	if !listed {

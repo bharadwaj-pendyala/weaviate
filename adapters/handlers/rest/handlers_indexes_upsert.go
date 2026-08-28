@@ -803,10 +803,12 @@ func (h *indexesHandlers) sealLocalReindexWorkers(ctx context.Context, principal
 			unseal()
 		}
 	}
+	// One deadline for the whole drain, not one per task: inside the loop the
+	// submit could wait N x reindexCancelDrainTimeout before it answers.
+	drainCtx, cancel := context.WithTimeout(ctx, reindexCancelDrainTimeout)
+	defer cancel()
 	for _, desc := range reindexTaskDescriptorsForProperty(reindexTasks, collection, propertyName, h.appState.Logger) {
-		drainCtx, cancel := context.WithTimeout(ctx, reindexCancelDrainTimeout)
 		unseal, err := sealer.SealLocalTaskDrain(drainCtx, desc)
-		cancel()
 		if err != nil {
 			release()
 			entry := h.appState.Logger.WithFields(logrus.Fields{

@@ -708,17 +708,21 @@ func clearStaleQuarantineSentinels(lsmPath string, knownTask KnownReindexTaskLoo
 	if err != nil {
 		return
 	}
-	records, someRecordsUnreadable, recordSetUnreadable := migrationRecordsAt(lsmPath, logger)
+	// Most shards carry no sentinel at all, and this runs per shard on every
+	// sweep, so the record store is only read once one is found.
+	var quarantined []string
 	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+		if entry.IsDir() && fileExists(filepath.Join(migsDir, entry.Name(), reindexAuditQuarantineFile)) {
+			quarantined = append(quarantined, entry.Name())
 		}
-		dirName := entry.Name()
+	}
+	if len(quarantined) == 0 {
+		return
+	}
+	records, someRecordsUnreadable, recordSetUnreadable := migrationRecordsAt(lsmPath, logger)
+	for _, dirName := range quarantined {
 		trackerPath := filepath.Join(migsDir, dirName)
 		sentinelPath := filepath.Join(trackerPath, reindexAuditQuarantineFile)
-		if !fileExists(sentinelPath) {
-			continue
-		}
 		if someRecordsUnreadable || recordSetUnreadable {
 			// A matured sentinel is stored destructive intent. Leaving it on a
 			// shard nothing can classify means the first sweep after the
@@ -869,6 +873,12 @@ func (db *DB) cleanUnloadedShardOrphans(lsmPath string, orphans []orphanReindexT
 // alone, and a status goes terminal without waiting for the local unit to
 // exit — so the tracker about to be deleted can be one a worker on this node
 // is still writing through pointers taken before its phase began.
+//
+// A tracker with no payload.mig names no task, and the seal it takes is the
+// empty descriptor, which holds nothing back. That is sound only because such
+// a tracker cannot belong to a run this process started: the payload is
+// written before any unit begins, and the caller has already excluded every
+// directory created since process start.
 func (db *DB) sealOrphanUnit(o *orphanReindexTracker) (func(), bool) {
 	return db.migrationSealUnit(
 		distributedtask.TaskDescriptor{ID: o.taskID, Version: o.taskVersion}, o.unitID)

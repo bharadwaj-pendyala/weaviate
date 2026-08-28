@@ -1168,10 +1168,9 @@ func initReindexAndDistributedTasks(
 	providers[db.ReindexNamespace] = reindexProvider
 	appState.ReindexProvider = reindexProvider
 
-	// Installed here, not with the other reindex lookups below: those wire from
-	// the post-bootstrap goroutine, where reconciliation's first pass also
-	// runs, and a pass without this seal could remove a running unit's
-	// directories.
+	// Installed here, not with the other reindex lookups: those wire from the
+	// post-bootstrap goroutine, where reconciliation's first pass also runs,
+	// and a pass without this seal could remove a running unit's directories.
 	repo.SetReindexUnitSeal(reindexProvider.ReindexUnitSealBuilder())
 
 	// Read-repair for the v1.38→v1.39 stamp-migration residual; see

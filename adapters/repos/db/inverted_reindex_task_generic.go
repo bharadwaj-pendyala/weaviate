@@ -1539,8 +1539,9 @@ func (t *ShardReindexTaskGeneric) obsoleteSidecarDirs(logger logrus.FieldLogger,
 			}
 			switch suffixBase {
 			case currentReindexBase:
-				// Already removed during runtimeSwap step 2; this is the
-				// leftover of a run that did not get that far.
+				// Already removed at the end of runtimePrepare
+				// ([ShardReindexTaskGeneric.removeReindexBucketsDirs]); this
+				// is the leftover of a run that did not get that far.
 				out = append(out, filepath.Join(lsmPath, name))
 			case currentIngestBase:
 				if suffixGen < currentGenN {

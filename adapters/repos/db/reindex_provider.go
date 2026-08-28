@@ -1429,8 +1429,9 @@ func (p *ReindexProvider) runShardSwapPhase(
 //   - separate per-shard LSM store / bucket pointers (Shard.store).
 //   - separate per-shard migration record (.migrations/records/).
 //   - separate per-shard tokenization overlay (Shard.TokenizationFor).
-//   - separate ShardReindexTaskGeneric instance per (task, unit) with
-//     its own callbackDisableFuncs guarded by callbackDisableFuncsMu.
+//   - separate ShardReindexTaskGeneric instance per (task, unit), whose
+//     double-write handles are published on the shard under its own record
+//     key, so no two instances name the same registration.
 //
 // Provider-level shared state (p.payloads, p.runningHandles,
 // p.reindexTasks) is already mutex-protected via p.mu in

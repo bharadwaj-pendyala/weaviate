@@ -557,8 +557,14 @@ func (s *Shard) cleanStaleSidecarDirsWithPreserved(mainBucketName string, commit
 
 // sidecarRoleWords are the words every migration sidecar suffix ends in, once
 // the numeric generation tail is off. Keep in lockstep with the strategies'
-// ReindexSuffix / IngestSuffix / BackupSuffix; [TestEverySidecarSuffixIsASidecar]
-// pins that a new strategy either reuses one of these or extends the list.
+// ReindexSuffix / IngestSuffix; [TestEverySidecarSuffixIsASidecar] pins that a
+// new strategy either reuses one of these or extends the list.
+//
+// "backup" and "map" name no suffix this build produces — the swap removes the
+// directory it displaces at the handle the record names, instead of renaming
+// it aside. They stay because every cluster upgrading into this build brings
+// those directories with it, and no record names them, so this sweep is the
+// only thing that can reclaim them.
 var sidecarRoleWords = []string{"reindex", "ingest", "backup", "map"}
 
 // isSidecarDirOf reports whether name is a per-property sidecar of

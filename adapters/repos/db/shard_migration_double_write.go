@@ -234,8 +234,10 @@ func replaceDeleteCallback(cur []deleteCallbackEntry, id uint64, cb onDeleteFrom
 	return updated
 }
 
-// fireAddToPropertyValueIndex invokes every add callback, bypassing the
-// inline write path's scope suppression (the migration pass needs it fired).
+// fireAddToPropertyValueIndex invokes the callbacks it is given, bypassing the
+// inline write path's scope suppression (the migration pass needs them fired).
+// The caller picks the set, so a pass over one migration's properties never
+// mirrors into another's.
 func (s *Shard) fireAddToPropertyValueIndex(callbacks []addCallbackEntry, docID uint64, property *inverted.Property) error {
 	ec := errorcompounder.New()
 	for _, cb := range callbacks {

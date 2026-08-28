@@ -16,22 +16,22 @@ source of truth; this doc is the navigable overview that ties them
 together. If a section here disagrees with a godoc in source, the
 godoc wins — and that's a bug in this doc.
 
-> **Out of date: how migration state is stored.** Everywhere below that
-> describes per-migration marker files (`started.mig`, `reindexed.mig`,
-> `prepended.mig`, `merged.mig`, `swapped.mig`, `tidied.mig`,
-> `properties.mig`) or `FinalizeCompletedMigrations` describes a
-> representation that no longer exists. One JSON record per (shard,
-> migration) at `<shard>/lsm/.migrations/records/` holds the state now, in
-> five states (Iterating, Iterated, Merged, Swapped, Promoted), and
-> reconciliation at shard load owns every load-time decision the finalizer
-> used to make. Read `inverted_reindex_record.go` and
-> `inverted_reindex_reconcile.go` for the current shape. The phase contract
-> is stale for the same reason: the displaced directory is now removed at the
-> handle the record names, not renamed to a derived backup name, so every
-> mention below of a rename-to-backup or of a "tidied" state describes the
-> retired representation too. The API, the strategy catalogue, the
-> concurrency model, multi-tenancy and the tokenization overlay are
-> unaffected.
+> **How migration state is stored, as of this build.** One JSON record per
+> (shard, migration) at `<shard>/lsm/.migrations/records/` holds it, in five
+> states — Iterating, Iterated, Merged, Swapped, Promoted — and
+> reconciliation at shard load makes every load-time decision. The record
+> names each directory the migration touches, so the swap removes the
+> directory it displaces at the recorded handle rather than renaming it to a
+> derived backup name. `inverted_reindex_record.go` and
+> `inverted_reindex_reconcile.go` are the source of truth.
+>
+> Sections 4 onwards have not caught up. Read every mention below of a
+> marker file (`started.mig`, `reindexed.mig`, `prepended.mig`, `merged.mig`,
+> `swapped.mig`, `tidied.mig`, `properties.mig`), of
+> `FinalizeCompletedMigrations`, of a rename-to-backup, or of a "tidied"
+> state as a description of the retired representation. The API, the strategy
+> catalogue, the concurrency model, multi-tenancy and the tokenization
+> overlay are unaffected and still accurate.
 
 ## 1. Overview
 

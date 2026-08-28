@@ -551,8 +551,8 @@ func (h *indexesHandlers) cancelReindexTask(ctx context.Context, svc reindexTask
 				"property":   propertyName,
 				"index_type": indexType,
 			}).Info("cancel: drain complete, running on-disk cleanup")
-			// Released when the handler returns, which is after the cleanup
-			// below and nothing else.
+			// Released when the handler returns: after the cleanup below and
+			// the audit line that follows it.
 			defer unseal()
 			// Goroutine has drained. Wipe the sidecars and migration
 			// directories for every indexType this migration touches —

@@ -235,11 +235,9 @@ func loadReindexRecoveryRecord(migDir string, records []MigrationRecord,
 
 // buildRecoveryTasks reconstructs the [ShardReindexTaskGeneric]
 // instances that processOneUnit would have created for this migration
-// type, but scoped to exactly the named shard. The scope is what makes
-// per-instance callbackDisableFuncs safe to share with [runtimeSwap]
-// later: the static reindexer iterates all registered tasks on every
-// shard init, but each task's isShardSelected filter drops everything
-// except the one shard the record came from.
+// type, but scoped to exactly the named shard: the static reindexer iterates
+// all registered tasks on every shard init, and each task's isShardSelected
+// filter drops everything except the one shard the record came from.
 func buildRecoveryTasks(
 	rec reindexRecoveryRecord,
 	shardName string,
@@ -320,9 +318,8 @@ func buildRecoveryTasks(
 		return nil, fmt.Errorf("unknown migration type %q", payload.MigrationType)
 	}
 
-	// Constrain each task to exactly this shard so multiple recovered
-	// instances (one per shard) don't fight over the same
-	// callbackDisableFuncs slice when [runtimeSwap] runs per-shard.
+	// Constrain each task to exactly this shard, so recovered instances of
+	// the same migration never act on each other's shards.
 	//
 	// The identity is stamped here rather than by the caller for the same
 	// reason createReindexTasks stamps its own: a recovered task that
