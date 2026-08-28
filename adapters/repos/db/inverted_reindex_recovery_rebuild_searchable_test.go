@@ -301,9 +301,9 @@ func TestRecoveryConvergence_RebuildSearchable_FromEachState(t *testing.T) {
 			idx.shards.Store(shardName, shd2)
 
 			// Drive the async loop. For RebuildSearchable the
-			// in-process OnAfterLsmInitAsync path stops at IsReindexed
-			// when skipSwapOnFinish is set; for non-set cases we still
-			// drain it in case any work is pending.
+			// in-process OnAfterLsmInitAsync path stops at the Iterated
+			// record when skipSwapOnFinish is set; for non-set cases we
+			// still drain it in case any work is pending.
 			for {
 				rerunAt, _, err := task2.OnAfterLsmInitAsync(ctx, shard2)
 				require.NoErrorf(t, err, "recovery OnAfterLsmInitAsync must not error (case %q)", tc.name)

@@ -34,63 +34,31 @@ import (
 	"github.com/weaviate/weaviate/test/helper"
 )
 
-// testTornResumeReindexedNotTidied pins the journey:
+// testTornResumeReindexedNotTidied pins the journey: a prior reindex crashed
+// mid-rebuild (I/O failure, container kill, a process death mid-swap), so the
+// shard carries a record naming staged directories that never reached disk,
+// for a task the cluster has never heard of. A fresh submit for the same
+// property must reclaim that state and rebuild from scratch.
 //
-//	"a prior reindex left the on-disk migration in IsStarted+IsReindexed
-//	 state but never reached IsTidied — what does a fresh re-submit do?"
+// The failure it catches is a resume that trusts the leftover record and
+// skips either the iteration or the flip. The task still reports FINISHED,
+// so both halves are asserted per variant — the schema flag AND the hit
+// count — because either alone passes on the wrong state.
 //
-// Realistic root causes that produce this on-disk shape:
+// Planting the record directly, rather than racing a real run, is what makes
+// the starting state exact and the test independent of iteration timing.
 //
-//   - a runtime error inside runtimeSwap (e.g. PrependSegmentsFromBucket
-//     hit ENOSPC, or any I/O failure between markReindexed and markTidied),
-//     so markReindexed() ran but none of the markPrepended /
-//     markMerged / markSwapped / markTidied ran;
+// One variant per shape:
 //
-//   - a container kill that landed between the markReindexed() write and
-//     the first runtimeSwap step (no .mig files past reindexed.mig on disk);
-//
-//   - a control-plane bug or RAFT replay that crashed the process mid-swap
-//     and left disk in a torn shape.
-//
-// The bug this test guards against: OnAfterLsmInitAsync at the
-// `if rt.IsReindexed() { ... "nothing to do" ... }` branch short-circuits
-// without ever invoking runtimeSwap. For non-semantic migration types
-// (enable-rangeable, repair-*), the full lifecycle is supposed to complete
-// inside RunOnShard — there is NO OnGroupCompleted swap fallback. So the
-// re-submitted task reports FINISHED while:
-//
-//   - the schema flag is never flipped (OnMigrationComplete never fires);
-//   - the in-place "new" bucket layer (whatever was prepared in the reindex
-//     bucket, or the in-progress ingest bucket) is never promoted to the
-//     main bucket slot;
-//   - any subsequent filter/range/bm25 query that relies on the new bucket
-//     returns no hits or stale hits.
-//
-// For semantic migration types (enable-filterable, enable-searchable,
-// change-tokenization), OnGroupCompleted's RunSwapOnShard does run on the
-// FINISHED unit — but if the on-disk reindex bucket is empty (because the
-// failure that produced the torn state was BEFORE any data was actually
-// written), the swap promotes an empty bucket and flips the schema flag,
-// also a silent data loss.
-//
-// To reproduce reliably without relying on iteration timing, we plant the
-// record of a run that crashed mid-rebuild before any reindex submission (no
-// __reindex/__ingest sidecar dirs, task unknown to the cluster). Correct code
-// reclaims that state and rebuilds from scratch on resubmit; code that
-// resumes against it and skips iteration or swap fails silently, which this
-// test catches.
-//
-// Test variants (one per non-semantic strategy + a semantic-strategy
-// canary):
-//
-//   - enable-rangeable (non-semantic): missing-swap is the dominant
-//     failure mode here because OnGroupCompleted has no swap path.
+//   - enable-rangeable (non-semantic): the whole lifecycle completes inside
+//     RunOnShard with no OnGroupCompleted swap fallback, so a skipped flip
+//     has nothing behind it — the schema flag never flips and queries miss.
 //
 //   - repair-filterable (non-semantic, RoaringSetRefresh): same shape.
 //
-//   - enable-filterable (semantic): OnGroupCompleted DOES run swap, but
-//     against an empty reindex bucket → schema flag flips to true on an
-//     empty bucket. Silent data loss in a different shape.
+//   - enable-filterable (semantic): OnGroupCompleted does run the swap, so
+//     the failure lands the other way round — an empty staged bucket goes
+//     live with the schema flag flipped over it.
 //
 // restURI is re-derived inside each subtest from plantTornMigrationAcrossRestart
 // (the host port changes across the restart), so no URI is threaded in here.

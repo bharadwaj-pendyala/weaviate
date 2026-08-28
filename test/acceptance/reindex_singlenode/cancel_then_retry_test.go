@@ -35,10 +35,10 @@ import (
 //
 // Structurally similar to DELETE→re-enable (testDeleteThenReEnable):
 //
-//   - DELETE→re-enable: removes the target bucket, leaves
-//     .migrations/<dir>/tidied.mig on disk. Without cleanup, the second enable
-//     short-circuits on rt.IsTidied()=true, re-flips the schema flag, and
-//     reports success with an empty bucket — silent data loss.
+//   - DELETE→re-enable: removes the target bucket but leaves the completed
+//     migration's record and directories behind. Without cleanup, the second
+//     enable re-flips the schema flag and reports success over the bucket the
+//     DELETE emptied — silent data loss.
 //
 //   - CANCEL→retry: aborts the iteration loop, leaves
 //     .migrations/<dir>/{started.mig, payload.mig, progress.mig} on disk plus

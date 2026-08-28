@@ -121,7 +121,7 @@ func TestReindexProviderBarrierIntegration_OnGroupCompletedPrep(t *testing.T) {
 
 	barrierIntegrationSeedObjects(t, ctx, shard, className, 25)
 
-	// Drive to IsReindexed via the barrier path.
+	// Drive to the Iterated record via the barrier path.
 	task, _ := barrierIntegrationDrivenToReindexed(t, ctx, shard, idx.logger)
 
 	// Pre-PREP invariants: reindexed yes, merged no.
@@ -172,7 +172,7 @@ func TestReindexProviderBarrierIntegration_OnSwapRequestedSwap(t *testing.T) {
 
 	barrierIntegrationSeedObjects(t, ctx, shard, className, 25)
 
-	// Stage 1: drive to IsReindexed.
+	// Stage 1: drive to the Iterated record.
 	task, strategy := barrierIntegrationDrivenToReindexed(t, ctx, shard, idx.logger)
 
 	// Stage 2: run PREP to advance to IsMerged (what the cluster-wide

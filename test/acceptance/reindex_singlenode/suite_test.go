@@ -249,14 +249,12 @@ func TestSingleNode_ReindexSuite(t *testing.T) {
 		testChangeTokDeleteJourneys(t, restURI)
 	})
 
-	// --- Subtest 15: torn "reindexed but not tidied" resume ---
-	// Pins the journey where a prior reindex left the on-disk migration
-	// in IsReindexed+!IsTidied state (real causes: I/O failure mid-
-	// runtimeSwap, container kill between markReindexed and the first
-	// swap step, etc.). The re-submit must NOT silently no-op on the
-	// IsReindexed=true short-circuit in OnAfterLsmInitAsync; it must
-	// either finish the swap or rebuild from scratch. If RED, schema
-	// reports ready while queries return zero hits (Sev 1).
+	// --- Subtest 15: torn-state resume ---
+	// Pins the journey where a prior reindex crashed mid-rebuild and left a
+	// record naming staged directories that never reached disk. A fresh
+	// submit must reclaim that state and rebuild from scratch rather than
+	// resume against it. If RED, schema reports ready while queries return
+	// zero hits (Sev 1).
 	t.Run("TornResumeReindexedNotTidied", func(t *testing.T) {
 		testTornResumeReindexedNotTidied(t, compose)
 	})
