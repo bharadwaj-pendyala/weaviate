@@ -517,23 +517,20 @@ func (c *taskPropsCache) count() int {
 	return c.reads
 }
 
-// readTaskProps answers from payload.mig, which costs megabytes per tracker
-// on a large migration, inside a RAFT apply that holds the FSM loop
-// cluster-wide.
-//
-// A payload over [maxRecoveryPayloadBytes] is refused rather than parsed, and
-// reads the same as one that could not be parsed: fail-open, never
-// fail-wrong. Deletion falls back to matching the dir's own name (removing
-// only what the name proves, else leaving it for the record check to refuse
-// loudly); preservation matches on a name token and so keeps more;
-// the unloaded-shard gate hydrates the shard instead of skipping it.
+// readTaskProps answers from payload.mig, which costs megabytes per tracker on
+// a large migration, inside a RAFT apply that holds the FSM loop cluster-wide.
+// A payload over [maxRecoveryPayloadBytes] is therefore refused rather than
+// parsed, and reads the same as one that could not be parsed: fail-open, never
+// fail-wrong. Deletion falls back to matching the dir's own name (removing only
+// what the name proves, leaving the rest for the record check to refuse
+// loudly), preservation matches on a name token and so keeps more, and the
+// unloaded-shard gate hydrates the shard instead of skipping it.
 //
 // A property name that does not name a single directory entry makes the whole
 // payload unreadable. The sweeps and the orphan audit compose bucket and
-// sidecar directory names out of these names and then remove those
-// directories, and unlike a record's names these never passed
-// [validateMigrationHandles] — a restored archive is free to carry any bytes
-// here.
+// sidecar directory names out of these names and then remove those directories,
+// and unlike a record's names these never passed [validateMigrationHandles] — a
+// restored archive is free to carry any bytes here.
 //
 // readPayload reports whether payload.mig was opened, so the caller's read
 // counter keeps meaning what it says. A refusal opens nothing.
