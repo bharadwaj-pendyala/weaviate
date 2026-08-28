@@ -183,6 +183,8 @@ func payloadReadGate(body *ast.BlockStmt) (payloadGate, bool) {
 			gate.admitsTheRead = endsInReturn(stmt.Body) && readsPayloadAfter(body, stmt.End())
 		case token.EQL:
 			gate.admitsTheRead = identsIn(stmt.Body)["ReadFile"]
+		default:
+			// A condition that is not a comparison against nil admits nothing.
 		}
 		return false
 	})
