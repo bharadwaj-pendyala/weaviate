@@ -342,3 +342,13 @@ func TestOverlappingMirrorsOnOneProperty(t *testing.T) {
 		})
 	}
 }
+
+// ArmedMigrationMirrors reports how many mirrors are armed. Two migrations on
+// one property is a steady state while a failed one waits to be superseded, so
+// the count is what tells a leak from that overlap. Nothing in production asks,
+// so it lives here rather than on the registry.
+func (r *migrationMirrorRegistry) ArmedMigrationMirrors() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.disarms)
+}
