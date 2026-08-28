@@ -179,10 +179,9 @@ func TestSingleNode_ReindexSuite(t *testing.T) {
 
 	// --- Subtest 11: DELETE-then-re-enable journey ---
 	// Pins the journey: DELETE /properties/{prop}/index/{indexName} followed
-	// by PUT enable-* must actually rebuild the bucket. Without the
-	// migration-dir cleanup + the stale-sentinel defense, the second enable
-	// short-circuits on the prior tidied sentinel, re-flips the schema flag
-	// to true, and silently leaves the customer with an empty index.
+	// by PUT enable-* must actually rebuild the bucket. Without cleanup of
+	// the first migration's leftovers, the second enable re-flips the schema
+	// flag to true and silently leaves the customer with an empty index.
 	t.Run("DeleteThenReEnable", func(t *testing.T) {
 		testDeleteThenReEnable(t, restURI)
 	})
@@ -191,8 +190,7 @@ func TestSingleNode_ReindexSuite(t *testing.T) {
 	// Structural sibling of DeleteThenReEnable on the CANCEL→retry axis.
 	// Submits an enable-*, cancels it mid-flight, re-submits. The second
 	// submit MUST actually build the index — not silently no-op on the
-	// stale started.mig / progress.mig / partial __reindex sidecars left
-	// behind by the cancelled run.
+	// record and partial __reindex sidecars the cancelled run left behind.
 	t.Run("CancelThenRetry", func(t *testing.T) {
 		testCancelThenRetry(t, restURI)
 	})

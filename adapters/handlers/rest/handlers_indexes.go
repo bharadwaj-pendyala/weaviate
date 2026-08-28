@@ -718,14 +718,10 @@ func logCancelCleanupOutcome(entry *logrus.Entry, failures []staleSweepFailure, 
 // Most migration types target exactly one index. change-tokenization (both
 // indexes) targets TWO — it spawns one ShardReindexTaskGeneric per index
 // (searchable + filterable) via createReindexTasks, and each leaves its own
-// .migrations/<prefix>_<prop>/ directory on disk. Pre-submit cleanup must
-// wipe BOTH dirs; cleaning only one of them was the root cause of the Sev 1
-// data-loss bug fixed alongside this change (see Journey 7 in
-// change_tok_delete_journeys_test.go): a prior filterable-only retokenize
-// left its completed state on disk, the next change-tokenization-both submit
-// did not clean it, and its FilterableRetokenize sub-task short-circuited on
-// that state while OnMigrationComplete still flipped the schema's
-// Tokenization. Schema and on-disk state then disagreed.
+// .migrations/<prefix>_<prop>/ directory and staging buckets on disk.
+// Cleaning only one of them leaves the sibling's behind for the next run,
+// which is how the schema's Tokenization ends up flipped over a bucket that
+// still holds the old one (Journey 7 in change_tok_delete_journeys_test.go).
 //
 // Callers run the sweep from db.DB.NewStalePartialReindexSweep once per
 // indexType returned. Safe when no stale state exists — missing

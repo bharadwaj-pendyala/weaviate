@@ -69,7 +69,7 @@ func newRebuildSearchableTestClass(className string, propNames []string) *models
 // newFilterableRetokenizeTask but the strategy only carries propNames +
 // generation (no targetTokenization, no bucketStrategy — rebuild is
 // schema-stable). Config mirrors blockmaxSearchableTaskConfig with
-// selection enabled so getPropsToReindex picks up the requested
+// selection enabled so selectedProps picks up the requested
 // property even though discovery-by-strategy would also find it.
 func newRebuildSearchableTask(t *testing.T, idx *Index, className, propName string) (*ShardReindexTaskGeneric, *testRebuildSearchableStrategyWrapper) {
 	t.Helper()

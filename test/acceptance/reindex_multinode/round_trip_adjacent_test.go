@@ -58,9 +58,9 @@ import (
 //  5. SearchableOnly_RoundTrip: same bug shape on searchable=true,
 //     filterable=false (change-tok-both is impossible here, only the
 //     searchable change-tokenization applies)?
-//  6. EnableFilterableThenChangeTok: does enable-filterable's
-//     tidied.mig poison the subsequent change-tokenization migration
-//     dir state?
+//  6. EnableFilterableThenChangeTok: does enable-filterable's completed
+//     migration state poison the subsequent change-tokenization
+//     migration dir state?
 //  7. EnableSearchableThenChangeTok: same idea for enable-searchable.
 //
 // Cluster sharing: every AJ top-level Test* spins up a single 3-node
@@ -212,8 +212,8 @@ func TestMultiNode_ChangeTokenization_AJ_EnableThenChange(t *testing.T) {
 // TestMultiNode_ChangeTokenization_RestartThenRoundTrip pins journey 8:
 // T1 word→field, RESTART every node (graceful), then T2 field→word.
 // Hypothesis: a node restart between rounds triggers
-// reconciliation on shard init, which cleans up the
-// completed-but-not-tidied migration directory for the first migration.
+// reconciliation on shard init, which cleans up the first migration's
+// completed-but-unswept directories.
 // If that cleanup is what's missing from the in-process round-trip path,
 // a restart-between should produce CONSISTENT replicas where the
 // in-process version produces empty ones.

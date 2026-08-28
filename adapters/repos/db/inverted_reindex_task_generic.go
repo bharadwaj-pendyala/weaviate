@@ -131,9 +131,9 @@ import (
 )
 
 // ShardReindexTaskGeneric is a strategy-parameterized reindex task. All
-// lifecycle logic (state machine, merge/swap/tidy, object iteration,
-// progress tracking) lives here, with strategy-specific behavior
-// delegated to a MigrationStrategy.
+// lifecycle logic (state machine, merge/swap, object iteration, progress
+// tracking) lives here, with strategy-specific behavior delegated to a
+// MigrationStrategy.
 //
 // See the file-level phase-contract godoc above for the prep / atomic
 // swap / deferred-rename invariants that every code path in this file
@@ -333,7 +333,7 @@ func (t *ShardReindexTaskGeneric) RunOnShard(ctx context.Context, shard ShardLik
 	return t.runShardLifecycle(ctx, shard, false)
 }
 
-// RunReindexOnlyOnShard runs the reindex iteration WITHOUT swap/tidy.
+// RunReindexOnlyOnShard runs the reindex iteration only — no merge, no swap.
 // After this returns, the shard has:
 //   - ingest bucket with double-written data
 //   - reindex bucket with reindexed data
@@ -684,7 +684,7 @@ func (t *ShardReindexTaskGeneric) finalizeMigrationAfterRecovery(
 // disk until the next open. Idempotent.
 //
 // A rebuild failure degrades to disk serving (WARN-and-continue) instead of
-// failing the migration: data work (prepend, swap, tidy) has already
+// failing the migration: data work (prepend, swap) has already
 // committed, disk serving is always correct, and only the in-memory
 // acceleration is deferred to next restart. Every degrade still logs at
 // ERROR and increments a metric so it stays visible.

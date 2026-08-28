@@ -44,8 +44,8 @@ import (
 // so the RAFT-applied schema carries the in-progress migration's flag as
 // false. On apply, Migrator.UpdateProperty → Shard.updatePropertyBuckets
 // cleans the migration dirs for any index whose flag is now false —
-// which removes the in-flight migration's working directory and the
-// next markProgress fails with ENOENT.
+// which removes the in-flight migration's working directory out from
+// under it.
 //
 // The fix gates this at submit time: any two reindex migrations on the
 // same (collection, property) tuple conflict and the second submit gets

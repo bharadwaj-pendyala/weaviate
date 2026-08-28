@@ -33,7 +33,7 @@ import (
 
 // MigrationStrategy encapsulates the parts that differ per migration type
 // (e.g., Map→Blockmax, Set→RoaringSet). The lifecycle logic (state machine,
-// merge/swap/tidy, object iteration, progress tracking) lives in
+// merge/swap, object iteration, progress tracking) lives in
 // ShardReindexTaskGeneric.
 type MigrationStrategy interface {
 	// StrategyCode identifies this strategy in a migration record's key.

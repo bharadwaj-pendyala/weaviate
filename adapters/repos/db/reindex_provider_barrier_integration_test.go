@@ -175,8 +175,8 @@ func TestReindexProviderBarrierIntegration_OnSwapRequestedSwap(t *testing.T) {
 	// Stage 1: drive to the Iterated record.
 	task, strategy := barrierIntegrationDrivenToReindexed(t, ctx, shard, idx.logger)
 
-	// Stage 2: run PREP to advance to IsMerged (what the cluster-wide
-	// barrier observes via PreparationCompleteAck).
+	// Stage 2: run PREP to advance to the Merged record (what the
+	// cluster-wide barrier observes via PreparationCompleteAck).
 	p, _ := barrierIntegrationProvider(t)
 	ok, prepRes := p.runShardPrepPhase(ctx, "unit-1", shard,
 		[]*ShardReindexTaskGeneric{task}, false, p.logger)
@@ -275,7 +275,7 @@ func TestReindexProviderBarrierIntegration_CrashAfterPersistRecoveryRecord(t *te
 	}
 
 	// Call persistRecoveryRecord ALONE — simulating a crash immediately
-	// after this write but before markStarted / iteration.
+	// after this write but before the migration record or any iteration.
 	p, _ := barrierIntegrationProvider(t)
 	require.NoError(t, p.persistRecoveryRecord(dtmTask, payload, "unit-1",
 		shard, []*ShardReindexTaskGeneric{task}))

@@ -326,8 +326,8 @@ func plantTornMigrationAcrossRestart(
 
 // findShardPathInContainer locates the on-disk path for the first shard
 // of the named class inside the running container. Returns
-// /data/<class-lowercase>/<shard-uuid>. Used for direct sentinel
-// manipulation in tests.
+// /data/<class-lowercase>/<shard-uuid>. Used for planting on-disk migration
+// state in tests.
 func findShardPathInContainer(t *testing.T, container testcontainers.Container, class string) string {
 	t.Helper()
 	ctx := context.Background()

@@ -56,8 +56,8 @@ func testDeleteThenReEnableSearchable(t *testing.T, restURI string) {
 		Class: class,
 		Properties: []*models.Property{
 			// Start with searchable=false so the first enable goes through
-			// the reindex pipeline and lays down the .migrations sentinel
-			// whose stale survival across DELETE we are guarding against.
+			// the reindex pipeline and leaves the migration state whose
+			// stale survival across DELETE we are guarding against.
 			{Name: "body", DataType: []string{"text"}, IndexSearchable: &falseVal, Tokenization: "word"},
 		},
 		Vectorizer: "none",
@@ -72,8 +72,8 @@ func testDeleteThenReEnableSearchable(t *testing.T, restURI string) {
 		}), "object %d", i)
 	}
 
-	// Step 1: first enable via the reindex API — lays down the
-	// .migrations/enable_searchable_body/ tidied sentinel on disk.
+	// Step 1: first enable via the reindex API — leaves its completed
+	// migration record and .migrations/enable_searchable_body/ on disk.
 	taskID := reindexhelpers.SubmitIndexUpsert(t, restURI, class, "body", "searchable",
 		`{"tokenization":"word"}`)
 	reindexhelpers.AwaitReindexFinished(t, restURI, taskID)

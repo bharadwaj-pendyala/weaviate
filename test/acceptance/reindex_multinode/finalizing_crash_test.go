@@ -41,7 +41,7 @@ import (
 // commit before its OnGroupCompleted has returned and its ack has
 // landed in RAFT. A node that goes down between local swap and ack
 // emission either:
-//   - already finished the swap (sentinels present on disk; the
+//   - already finished the swap (the flip is recorded on disk; the
 //     post-restart reconciliation + RecoveryAwareProvider
 //     path re-emits the ack on the next scheduler tick), OR
 //   - died mid-swap (LocalCallbacksDone reports false; OnGroupCompleted

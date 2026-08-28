@@ -425,8 +425,8 @@ type Shard struct {
 	// Read on every range-filter query plan, so kept under a fast
 	// RWMutex rather than a sync.Map. Default value (missing key)
 	// returns true via IsRangeableLocallyReady — at shard init we
-	// pessimistically set false for any in-flight migration tracker
-	// found on disk, and the post-tidy hook flips it back to true.
+	// pessimistically set false for any migration whose flip is not yet
+	// durable, and OnMigrationComplete flips it back to true.
 	rangeableLocalReadyMu sync.RWMutex
 	rangeableLocalReady   map[string]bool
 

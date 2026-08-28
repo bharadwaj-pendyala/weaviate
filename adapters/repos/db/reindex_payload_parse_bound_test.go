@@ -58,16 +58,16 @@ func tenantScalePayload(tb testing.TB, props []string, tenants int) []byte {
 // to open payload.mig.
 var multiPropTrackerProps = []string{"a", "b", "c", "d"}
 
-// ambiguousTrackerAt writes one such tracker dir, with no properties.mig —
-// the population the parse bound and the shared memo are both for.
+// ambiguousTrackerAt writes one such tracker dir — the population the parse
+// bound and the shared memo are both for.
 func ambiguousTrackerAt(tb testing.TB, lsm string, gen int, doc []byte) string {
 	tb.Helper()
 	name := migrationDirWithProps(MigrationDirPrefixEnableFilterable, multiPropTrackerProps) + genSuffix(gen)
 	return writeTrackerWithPayload(tb, lsm, name, doc)
 }
 
-// writeTrackerWithPayload materializes one started-but-unfinished tracker dir
-// carrying doc as its payload.mig, and no properties.mig.
+// writeTrackerWithPayload materializes one unfinished tracker dir carrying
+// doc as its payload.mig.
 func writeTrackerWithPayload(tb testing.TB, lsm, dirName string, doc []byte) string {
 	tb.Helper()
 	dir := filepath.Join(lsm, ".migrations", dirName)

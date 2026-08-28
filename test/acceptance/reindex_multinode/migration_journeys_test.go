@@ -208,7 +208,7 @@ func TestMultiNode_BackToBackChangeTokenization_RoundTripCounts(t *testing.T) {
 // 8-final (post-restart-then-re-apply). Same family as Issue G
 // (post_restart_test.go) but the multi-generation pre-restart state
 // stresses different code paths: the recovery + finalize flow has to
-// resolve a deeper stack of merged-but-not-tidied trackers.
+// resolve a deeper stack of migrations merged but not yet promoted.
 //
 // What this test does differently than
 // TestMultiNode_PostRestartReapplyMigrations_ExactCountsAcrossReplicas:

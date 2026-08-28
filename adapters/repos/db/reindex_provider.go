@@ -1882,8 +1882,8 @@ func (p *ReindexProvider) OnTaskCompleted(task *distributedtask.Task) error {
 // gate consults — closing the cleanup-vs-status-visibility gap the
 // DTM-only lookup leaves open.
 //
-// Tracker generations a swap already merged or tidied survive this: they
-// are live deferred-finalize state, not the partial state it wipes.
+// Directories a record marks merged or beyond survive this: they are live
+// deferred-finalize state, not the partial state it wipes.
 func (p *ReindexProvider) autoCleanupAfterTerminal(task *distributedtask.Task, payload *ReindexTaskPayload, logger logrus.FieldLogger) {
 	drainCtx, drainCancel := context.WithTimeout(p.serverCtx, reindexTerminalCleanupDrainTimeout)
 	defer drainCancel()
@@ -2067,10 +2067,10 @@ func (p *ReindexProvider) probeLocalPostMergeState(payload *ReindexTaskPayload) 
 	return p.hasLocalPostMergeState(ctx, payload)
 }
 
-// hasLocalPostMergeState reports whether any shard of the task on this
-// node carries a tracker dir the migration already merged or tidied.
-// Reads shards without loading them — the tracker dir sits at a path this
-// node can join without a load, so a cold tenant stays cold.
+// hasLocalPostMergeState reports whether any shard of the task on this node
+// carries a record whose staged data is already complete. Reads shards
+// without loading them — the records sit at a path this node can join
+// without a load, so a cold tenant stays cold.
 //
 // Fires only for a semantic migration; skips the walk otherwise. Gives up
 // on a cancelled or expired ctx since the answer only feeds a log line.
@@ -2377,9 +2377,10 @@ func (p *ReindexProvider) LocalCallbacksDone(task *distributedtask.Task, localNo
 	// node can join, so nothing here loads a shard.
 	//
 	// The walk has to be the strict one. The lenient walker answers nil once
-	// the index is closing, which leaves every shard unvisited and reports an
-	// untidied tracker as a finished swap. A walk that could not reach the
-	// shards answers false: the scheduler re-fires the group and asks again,
+	// the index is closing, which leaves every shard unvisited and reports a
+	// record that still owes a swap as a finished one. A walk that could not
+	// reach the shards answers false: the scheduler re-fires the group and
+	// asks again,
 	// which is recoverable, while a false "done" is not.
 	hosted := map[string]bool{}
 	for unitID, nodeName := range payload.UnitToNode {

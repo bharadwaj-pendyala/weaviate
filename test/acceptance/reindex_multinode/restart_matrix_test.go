@@ -389,7 +389,7 @@ func TestMultiNode_RollingRestartBetweenMigrations(t *testing.T) {
 
 	// Roll all pods between migrations. Some nodes' T1 state was
 	// finalized by their restart (canonical bucket on disk); others
-	// rolled later when T1 was already tidied. Per-node disk states
+	// rolled later when T1 was already promoted. Per-node disk states
 	// diverge.
 	rollingRestartCluster(ctx, t, compose)
 

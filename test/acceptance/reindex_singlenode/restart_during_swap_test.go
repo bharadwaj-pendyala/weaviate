@@ -304,8 +304,8 @@ func restartSwapFilterQuery(t *testing.T, className, property, operator, value s
 	return ids
 }
 
-// dumpShardState lists the LSM dir, .migrations dir, and the sentinel files
-// inside it for the first shard of the given class. Used as a diagnostic aid
+// dumpShardState lists the LSM dir, the .migrations dir and the files inside
+// it, for the first shard of the given class. Used as a diagnostic aid
 // when the swap fails to fire.
 func dumpShardState(ctx context.Context, t *testing.T, c testcontainers.Container, className string) {
 	t.Helper()

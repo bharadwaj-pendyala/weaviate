@@ -211,9 +211,9 @@ func TestOnTaskCompleted_CancelledLogsRepairGuidanceOnlyWhenASwapRan(t *testing.
 	}{
 		{name: "no node acked anything", wantGuidance: false},
 		{name: "one node acked a swap", postAcks: acked, wantGuidance: true},
-		// PREP writes merged.mig, which arms the next restart to promote
-		// the ingest dir to the canonical bucket name — the tear is
-		// already possible before any swap ack exists.
+		// PREP writes the Merged record, which lets the next shard load
+		// commit the flip and rename the staged dir onto the canonical
+		// name — the tear is already possible before any swap ack exists.
 		{name: "one node acked PREP only", prepAcks: acked, wantGuidance: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
