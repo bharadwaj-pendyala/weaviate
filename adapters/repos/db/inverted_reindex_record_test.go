@@ -35,7 +35,6 @@ func testMigrationSubject(version uint64, code MigrationStrategyCode, props ...s
 		TargetTokenization:   models.PropertyTokenizationLowercase,
 		OriginalTokenization: models.PropertyTokenizationWord,
 		TrackerDir:           fmt.Sprintf("m_%d_tracker", version),
-		SidecarDirs:          []string{fmt.Sprintf("m_%d_sidecar", version)},
 		// A real past horizon: with a zero one, an assertion that a horizon
 		// was kept or raised compares zero against zero and cannot fail.
 		IterationCutoff: time.Date(2026, 8, 21, 9, 0, 0, 0, time.UTC),
@@ -46,9 +45,11 @@ func testMigrationSubject(version uint64, code MigrationStrategyCode, props ...s
 
 	subject.StagedDirs = map[string]string{}
 	subject.CanonicalDirs = map[string]string{}
+	subject.SidecarDirs = map[string]string{}
 	for _, prop := range props {
 		subject.StagedDirs[prop] = fmt.Sprintf("m_%d_%s", version, prop)
 		subject.CanonicalDirs[prop] = "property_" + prop
+		subject.SidecarDirs[prop] = fmt.Sprintf("m_%d_sidecar", version)
 	}
 	return subject
 }
@@ -735,8 +736,10 @@ func TestDecodeMigrationRecordRejectsEscapingHandles(t *testing.T) {
 			handle: "../sibling_shard/property_title", wantErr: true,
 		},
 		{
-			name:   "sidecar directory",
-			place:  func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) { s.SidecarDirs = []string{h} },
+			name: "sidecar directory",
+			place: func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) {
+				s.SidecarDirs = map[string]string{"title": h}
+			},
 			handle: "..", wantErr: true,
 		},
 		{
@@ -757,8 +760,10 @@ func TestDecodeMigrationRecordRejectsEscapingHandles(t *testing.T) {
 			// No writer emits a nested handle: every one is a strategy prefix
 			// plus sorted property names, none of which can carry a separator.
 			// Accepting one is what lets the rest of this table be evaded.
-			name:   "a nested handle names no directory a writer can produce",
-			place:  func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) { s.SidecarDirs = []string{h} },
+			name: "a nested handle names no directory a writer can produce",
+			place: func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) {
+				s.SidecarDirs = map[string]string{"title": h}
+			},
 			handle: "m_42_tracker/searchable/title", wantErr: true,
 		},
 		{
@@ -770,8 +775,10 @@ func TestDecodeMigrationRecordRejectsEscapingHandles(t *testing.T) {
 		// which is then what os.RemoveAll is handed. filepath.IsLocal accepts
 		// every one of them.
 		{
-			name:   "the current directory",
-			place:  func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) { s.SidecarDirs = []string{h} },
+			name: "the current directory",
+			place: func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) {
+				s.SidecarDirs = map[string]string{"title": h}
+			},
 			handle: ".", wantErr: true,
 		},
 		{
@@ -877,7 +884,7 @@ func TestTheWriterRefusesWhatTheLoaderWouldReject(t *testing.T) {
 		},
 		{
 			name:    "a sidecar directory carrying a separator",
-			mangle:  func(s *MigrationSubject) { s.SidecarDirs = []string{"a/b"} },
+			mangle:  func(s *MigrationSubject) { s.SidecarDirs = map[string]string{"title": "a/b"} },
 			because: "a sidecar directory is removed by name",
 		},
 		{

@@ -76,13 +76,13 @@ func mkMigrationRecordAt(t *testing.T, lsmPath, trackerName string,
 		TrackerDir:    trackerName,
 		StagedDirs:    staged,
 		CanonicalDirs: canonical,
+		SidecarDirs:   map[string]string{},
 	}
 	for prop, dir := range staged {
 		subject.Properties = append(subject.Properties, prop)
-		subject.SidecarDirs = append(subject.SidecarDirs, fixtureSidecarFor(dir))
+		subject.SidecarDirs[prop] = fixtureSidecarFor(dir)
 	}
 	sort.Strings(subject.Properties)
-	sort.Strings(subject.SidecarDirs)
 
 	var rec MigrationRecord
 	switch state {

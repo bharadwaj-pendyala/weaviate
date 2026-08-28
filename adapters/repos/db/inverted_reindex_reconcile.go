@@ -719,8 +719,10 @@ func migrationOwnedDirs(subject MigrationSubject) []string {
 		if dir := subject.StagedDirs[prop]; dir != "" {
 			dirs = append(dirs, dir)
 		}
+		if dir := subject.SidecarDirs[prop]; dir != "" {
+			dirs = append(dirs, dir)
+		}
 	}
-	dirs = append(dirs, subject.SidecarDirs...)
 	return dirs
 }
 

@@ -11,8 +11,6 @@
 
 package db
 
-import "slices"
-
 // The questions every passive reader may ask a record; a reader needing
 // something finer switches on the variant instead.
 //
@@ -47,8 +45,10 @@ func (b migrationRecordBase) OwnsBucket(dir string) bool {
 	if dir == "" {
 		return false
 	}
-	if slices.Contains(b.subject.SidecarDirs, dir) {
-		return true
+	for _, sidecar := range b.subject.SidecarDirs {
+		if sidecar == dir {
+			return true
+		}
 	}
 	for _, staged := range b.subject.StagedDirs {
 		if staged == dir {

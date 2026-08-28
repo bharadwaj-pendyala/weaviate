@@ -335,7 +335,7 @@ func (s *Shard) ShutdownStagedBuckets(ctx context.Context, key MigrationRecordKe
 	}
 
 	subject := rec.Subject()
-	for _, dir := range append([]string{subject.StagedDirs[prop]}, subject.SidecarDirs...) {
+	for _, dir := range []string{subject.StagedDirs[prop], subject.SidecarDirs[prop]} {
 		if dir == "" || s.store.Bucket(dir) == nil {
 			continue
 		}

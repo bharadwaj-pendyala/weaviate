@@ -142,7 +142,11 @@ type MigrationSubject struct {
 	// promotion renames it onto CanonicalDirs.
 	StagedDirs    map[string]string `json:"stagedDirs,omitempty"`
 	CanonicalDirs map[string]string `json:"canonicalDirs,omitempty"`
-	SidecarDirs   []string          `json:"sidecarDirs,omitempty"`
+
+	// SidecarDirs is keyed by property like its two siblings, so a caller
+	// acting on one property can name that property's sidecar without
+	// touching the ones the record's other properties are still using.
+	SidecarDirs map[string]string `json:"sidecarDirs,omitempty"`
 }
 
 // migrationHorizonEverything is the horizon of a rebuild that skips nothing.
@@ -430,6 +434,7 @@ func validateMigrationHandles(e migrationRecordEnvelope) error {
 	}
 	stagedProps, staged := byProperty(e.Subject.StagedDirs)
 	canonicalProps, canonical := byProperty(e.Subject.CanonicalDirs)
+	sidecarProps, sidecars := byProperty(e.Subject.SidecarDirs)
 	var flipped, displacedProps, displaced []string
 	if e.Flip != nil {
 		flipped = e.Flip.Flipped
@@ -441,9 +446,9 @@ func validateMigrationHandles(e migrationRecordEnvelope) error {
 		handles []string
 	}{
 		{"tracker directory", []string{e.Subject.TrackerDir}},
-		{"sidecar directory", e.Subject.SidecarDirs},
+		{"sidecar directory", sidecars},
 		{"property", slices.Concat(
-			e.Subject.Properties, stagedProps, canonicalProps, displacedProps, flipped)},
+			e.Subject.Properties, stagedProps, canonicalProps, sidecarProps, displacedProps, flipped)},
 		{"staged directory", staged},
 		{"canonical directory", canonical},
 		{"displaced directory", displaced},

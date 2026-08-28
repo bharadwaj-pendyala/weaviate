@@ -87,8 +87,8 @@ func plantRecordOfSize(t *testing.T, store *MigrationRecordStore, size int64) Mi
 
 	const dirLen = 200
 	for i := 0; int64(i)*(dirLen+8) < size; i++ {
-		subject.SidecarDirs = append(subject.SidecarDirs,
-			fmt.Sprintf("m_42_pad_%06d%s", i, strings.Repeat("x", dirLen)))
+		pad := fmt.Sprintf("m_42_pad_%06d%s", i, strings.Repeat("x", dirLen))
+		subject.SidecarDirs[fmt.Sprintf("pad_%06d", i)] = pad
 	}
 
 	data, err := encodeMigrationRecord(NewMigrationRecordMerged(subject))
