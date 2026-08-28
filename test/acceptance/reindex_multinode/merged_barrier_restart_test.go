@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/weaviate/weaviate/entities/models"
 	reindexhelpers "github.com/weaviate/weaviate/test/acceptance/helpers/reindex"
@@ -70,7 +71,7 @@ func TestMultiNode_RestartInsideMergedBarrier_CommitsAndServes(t *testing.T) {
 		return map[string]interface{}{"path": paths[i%len(paths)]}
 	})
 
-	requireEveryReplicaServes(t, compose, className, paths[0], expectedPerPath, "pre-migration")
+	requireEveryReplicaServes(t, compose, className, "path", paths[0], expectedPerPath, "pre-migration")
 
 	uri := restURIOf(compose, 1)
 	taskID := reindexhelpers.SubmitIndexUpsert(t, uri, className, "path", "searchable",
@@ -100,30 +101,40 @@ func TestMultiNode_RestartInsideMergedBarrier_CommitsAndServes(t *testing.T) {
 	// The schema now says field, so the query tokenizes the whole value as one
 	// term. A replica still serving its pre-migration word-tokenized bucket has
 	// no such term and answers zero.
-	requireEveryReplicaServes(t, compose, className, paths[0], expectedPerPath, "after the task finished")
+	requireEveryReplicaServes(t, compose, className, "path", paths[0], expectedPerPath, "after the task finished")
 
 	// The promotion of the staged directory onto the canonical name happens at
 	// a load, because a live bucket's directory cannot be renamed underneath
 	// it. This restart is where a node that never decided runs out of chances:
 	// it re-reads the same records with the same task map.
 	rollingRestartCluster(ctx, t, compose)
-	requireEveryReplicaServes(t, compose, className, paths[0], expectedPerPath, "after a second restart")
+	requireEveryReplicaServes(t, compose, className, "path", paths[0], expectedPerPath, "after a second restart")
 
 	// Each node's own schema, not the leader's answer three times over.
 	awaitTokenizationOnAllNodes(t, compose, className, "path", "field")
 }
 
-// requireEveryReplicaServes asks each node directly rather than the cluster,
-// because a cluster-level read is answered by whichever replica responds and
-// one stranded node hides behind the two that did the work.
-func requireEveryReplicaServes(t *testing.T, compose *docker.DockerCompose, className, value string, want int, phase string) {
+// requireEveryReplicaServes asks each node for its own answer. A filtered
+// Aggregate runs on the local replica of every shard the node holds, and at
+// replication factor 3 on 3 nodes that is all of them — so a stranded node
+// answers zero here instead of hiding behind the two that did the work.
+//
+// The assertions run inside the poll so the failure says which of the two it
+// was: a node serving 0 from its pre-migration bucket is the bug, a node that
+// cannot be reached at all is a broken fixture.
+func requireEveryReplicaServes(t *testing.T, compose *docker.DockerCompose,
+	className, propName, value string, want int, phase string,
+) {
 	t.Helper()
 	for nodeIdx := 1; nodeIdx <= 3; nodeIdx++ {
 		node := nodeIdx
-		require.Eventuallyf(t, func() bool {
-			got, err := equalCount(restURIOf(compose, node), className, "path", value)
-			return err == nil && got == want
+		require.EventuallyWithTf(t, func(ct *assert.CollectT) {
+			got, err := equalCount(restURIOf(compose, node), className, propName, value)
+			if !assert.NoErrorf(ct, err, "node %d could not be queried", node) {
+				return
+			}
+			assert.Equalf(ct, want, got, "node %d serves the wrong count for %s=%q", node, propName, value)
 		}, 90*time.Second, 200*time.Millisecond,
-			"node %d must serve %d objects for %q %s", node, want, value, phase)
+			"node %d must serve %d objects for %s=%q %s", node, want, propName, value, phase)
 	}
 }
