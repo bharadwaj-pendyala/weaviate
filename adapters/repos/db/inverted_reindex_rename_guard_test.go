@@ -245,6 +245,40 @@ func readsPayloadAfter(body *ast.BlockStmt, pos token.Pos) bool {
 	return found
 }
 
+// A record is published by renaming a fully written temp file over it, so the
+// bytes have to reach the disk before the name does: a machine crash between
+// the two publishes a name over content that never landed, and the record then
+// names directories no reader can account for.
+//
+// Ordering is the pin because the outcome is the same either way without a
+// fault-injecting filesystem, which this repo does not have — the same reason
+// the rename guard above is a guard.
+func TestRecordWritesReachDiskBeforeTheNameDoes(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "inverted_reindex_record_store.go", nil, 0)
+	require.NoError(t, err)
+
+	var fn *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if decl, ok := decl.(*ast.FuncDecl); ok && decl.Name.Name == "writeFileAtomic" {
+			fn = decl
+		}
+	}
+	require.NotNil(t, fn, "the one writer that publishes a record by rename")
+
+	write := firstUse(fn.Body, "Write")
+	sync := firstUse(fn.Body, "Sync")
+	publish := firstUse(fn.Body, "RenameAndSync")
+
+	require.NotEqual(t, token.NoPos, write, "writeFileAtomic must write the temp file")
+	require.NotEqual(t, token.NoPos, publish, "writeFileAtomic must publish by renaming it")
+	require.NotEqualf(t, token.NoPos, sync,
+		"writeFileAtomic publishes %s without syncing the temp file first",
+		fset.Position(publish))
+	require.Greater(t, sync, write, "the sync has to follow the write it makes durable")
+	require.Greater(t, publish, sync, "the name may only be published once the bytes are on disk")
+}
+
 // identsIn collects every identifier named in n, which is all this guard needs:
 // it asks whether a function mentions a helper, not where.
 func identsIn(n ast.Node) map[string]bool {
