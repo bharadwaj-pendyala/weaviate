@@ -209,17 +209,16 @@ func disabledIndexTypes(prop *models.Property) []string {
 	return types
 }
 
-// cleanStaleMigrationDirs removes the per-property runtime-reindex
-// migration directories whose record would still claim the (propName,
-// indexType) bucket is live now that it has been removed. Without this a
-// subsequent re-enable short-circuits on that record, re-flips the schema
-// flag to true, and reports success against an empty bucket.
+// cleanStaleMigrationDirs removes the per-property runtime-reindex migration
+// directories whose record would still claim the (propName, indexType) bucket
+// is live now that it has been removed. Without this a subsequent re-enable
+// short-circuits on that record, re-flips the schema flag to true, and reports
+// success against an empty bucket.
 //
-// Errors are logged but not propagated: the bucket has already been
-// removed by the time we get here, so the user's DELETE has succeeded
-// at the only level that matters for correctness. A failure here only
-// affects the next re-enable, which will trigger the defense-in-depth
-// check in OnAfterLsmInitAsync and fail with a clear operator error.
+// Errors are logged, not propagated: the bucket is already gone, so the user's
+// DELETE has succeeded at the level that matters. A failure only affects the
+// next re-enable, which trips the defense-in-depth check in OnAfterLsmInitAsync
+// and fails with a clear operator error.
 //
 // The read count accrues into the caller's memo instead of being logged per
 // call, since a 10k-tenant class would otherwise emit 30k lines inside one RAFT
@@ -462,32 +461,20 @@ func mainBucketForPropertyIndex(propName, indexType string) (string, bool) {
 }
 
 // cleanStaleSidecarDirs removes leftover __reindex / __ingest sidecar
-// directories that share the just-removed bucket's name as their prefix. A
-// successful migration moves the new data into the main bucket dir at runtime
-// but leaves the ingest dir under its own name; reconciliation renames it at
-// the next shard load. Between completion and restart these sidecars live on
-// disk, and a DELETE followed by a re-enable in the same process lifetime
-// would otherwise collide with them.
+// directories that share the just-removed bucket's name as their prefix, and
+// drops their entries from [lsmkv.GlobalBucketRegistry].
+//
+// A completed migration leaves both stores of truth pointing at the ingest
+// name: the on-disk dir keeps it until reconciliation renames it at the next
+// load, and the registry keeps it because the live ingest bucket is never shut
+// down — SwapBucketPointer only moves the pointer onto the main name. A DELETE
+// followed by a re-enable in the same process lifetime would otherwise collide
+// with both: NewBucket's TryAdd fails with "bucket already registered" and the
+// follow-up migration reports FAILED with no clear remediation.
 //
 // Sidecar names are <mainBucket>__<strategy>_<role>[_<gen>]; see
-// [isSidecarDirOf] for why matching on the role word (not the whole suffix)
-// avoids reading a property's own name as a sidecar.
-//
-// In addition to removing the on-disk dirs, this function ALSO drops the
-// dir's entry from [lsmkv.GlobalBucketRegistry]. Background: a successful
-// runtime swap moves the in-memory bucket pointer from the ingest name to
-// the main name (Store.SwapBucketPointer), but leaves the on-disk dir
-// under the ingest name (reconciliation renames it at the
-// next startup) AND leaves the registry entry under the ingest dir path
-// (Bucket.Shutdown is never called on the live ingest bucket — it just
-// becomes the main bucket). When a follow-up migration tries to load a
-// fresh ingest bucket at the same path, NewBucket's TryAdd fails with
-// "bucket already registered" and the migration fails. Removing the
-// registry entry alongside the dir keeps the two stores of truth aligned.
-// This is the same Sev 1 family as the DELETE-handler cleanup (which has
-// the same hazard if any ShutdownBucket call along the way was skipped);
-// belt-and-suspenders is the right posture for a leak that produces
-// "FAILED" status on a follow-up migration with no clear remediation.
+// [isSidecarDirOf] for why matching on the role word rather than the whole
+// suffix avoids reading a property's own name as a sidecar.
 func (s *Shard) cleanStaleSidecarDirs(mainBucketName string) {
 	// Nothing is preserved: the caller has just removed the property's main
 	// bucket, so a migration still staging data for it has nothing left to
