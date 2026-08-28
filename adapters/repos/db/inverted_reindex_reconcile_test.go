@@ -1158,6 +1158,70 @@ func TestReconcileWithClusterTasksSettlesWhatTheLoadWithheld(t *testing.T) {
 	}
 }
 
+// TestReconcileWithClusterTasksLeavesADecidedFlipAlone pins the one record the
+// off-load pass may not act on. Discard is what a task absent everywhere
+// licenses, and it reclaims the record's directories and drops the record —
+// which is safe only before the flip, where the canonical bucket is still
+// primary. Past it, the staged directory is the property's live data and the
+// record is what accounts for it.
+func TestReconcileWithClusterTasksLeavesADecidedFlipAlone(t *testing.T) {
+	tests := []struct {
+		name    string
+		record  func(MigrationSubject) MigrationRecord
+		planted []string
+		// liveAt is the directory that must still hold the migrated data,
+		// identified by the marker mkdirs planted in it.
+		liveAt    string
+		wantState MigrationState
+	}{
+		{
+			name: "swapped: the staged directory holds what the next load promotes",
+			record: func(subject MigrationSubject) MigrationRecord {
+				return NewMigrationRecordSwapped(subject, []string{"title"},
+					map[string]string{"title": "property_title"})
+			},
+			planted:   []string{"m_42_title", "m_42_sidecar", "property_title"},
+			liveAt:    "m_42_title",
+			wantState: MigrationStateSwapped,
+		},
+		{
+			name: "promoted: the record is what answers for the property until its effect lands",
+			record: func(subject MigrationSubject) MigrationRecord {
+				return NewMigrationRecordPromoted(subject, []string{"title"},
+					map[string]string{"title": "property_title"})
+			},
+			planted:   []string{"m_42_sidecar", "property_title"},
+			liveAt:    "property_title",
+			wantState: MigrationStatePromoted,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newReconcileFixture(t)
+			// Neither map has the task and the schema does not show its
+			// effect: exactly the verdict a pre-flip record is discarded on.
+			f.class = testClassWithTokenization(models.PropertyTokenizationWord, "title")
+
+			subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
+			f.mkdirs(tt.planted...)
+			f.put(tt.record(subject))
+
+			f.reconcileWithClusterTasks()
+
+			state, present := f.state(subject.Key)
+			require.True(t, present, "a flip this pass did not decide is not one it may undo")
+			require.Equal(t, tt.wantState, state)
+			require.Equal(t, tt.liveAt, f.contentOf(tt.liveAt),
+				"the flip's data must still be where the record says it is")
+			require.True(t, f.migrationDirExists(subject),
+				"the recovery payload outlives a pass that decided nothing")
+			require.Empty(t, f.mirror.disarmed, "nothing was torn down, so no mirror was disarmed")
+			f.requireMigrationDirsTrackRecords()
+		})
+	}
+}
+
 // TestReconcilePerShardDivergentStatesConverge pins that one collection's
 // shards settle independently. A migration reaches each shard at its own pace
 // and a restart can catch them at different points, so the same load has to
