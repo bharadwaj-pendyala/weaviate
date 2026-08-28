@@ -286,8 +286,7 @@ func TestRecoveryConvergence_RebuildSearchable_FromEachState(t *testing.T) {
 
 			// Simulated restart: graceful shutdown, fresh task, then
 			// idx.initShard reconciles the records → LSM init →
-			// OnAfterLsmInit. Same restart primitive PR #11415 uses for
-			// the searchable half.
+			// OnAfterLsmInit.
 			shardName := shard.Name()
 			require.NoError(t, shard.Shutdown(ctx))
 

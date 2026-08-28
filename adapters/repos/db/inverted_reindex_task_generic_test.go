@@ -302,8 +302,7 @@ func TestMapToBlockmaxMigration_RuntimeSwap_ThenRestart(t *testing.T) {
 }
 
 // TestRunSwapOnShard_RecordAwareDispatch pins the recovery branches in
-// [ShardReindexTaskGeneric.RunSwapOnShard] added for
-// weaviate/0-weaviate-issues#214 Phase 7c: a rehydrate after restart must
+// [ShardReindexTaskGeneric.RunSwapOnShard]: a rehydrate after restart must
 // dispatch from Merged/Swapped state rather than always running full
 // prep+swap. Each row drives a real migration to one state, then calls
 // RunSwapOnShard through a fresh task/strategy — the shape rehydrate

@@ -28,8 +28,8 @@ import (
 
 // Full [ShardReindexTaskGeneric.RunSwapOnShard] dispatch matrix: 8 strategies
 // × every recorded state the dispatch resumes from. Extends
-// [TestRunSwapOnShard_RecordAwareDispatch] (MapToBlockmax only) to pin
-// weaviate/0-weaviate-issues#214 Phase 7c across every strategy.
+// [TestRunSwapOnShard_RecordAwareDispatch] (MapToBlockmax only) across every
+// strategy.
 //
 // Promoted has no row: the dispatch branches on PointerSwapped, which
 // Promoted answers exactly as Swapped does, and Promoted is only ever

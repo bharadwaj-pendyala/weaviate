@@ -260,8 +260,7 @@ func (t *ShardReindexTaskGeneric) processOneSwapProp(ctx context.Context, store 
 	mainName := t.strategy.SourceBucketName(propName)
 
 	// A property already flipped in this process has no ingest-name entry
-	// left. Reading the bucket map keeps the loop free of I/O, which the
-	// per-property marker file this replaces could not.
+	// left. Reading the bucket map keeps the loop free of I/O.
 	if store.Bucket(ingestName) == nil {
 		return nil, nil
 	}

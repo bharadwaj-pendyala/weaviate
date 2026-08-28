@@ -297,8 +297,7 @@ func TestLocalCallbacksDoneLeavesUnloadedShardsAlone(t *testing.T) {
 // later load can attribute.
 func TestBuildRecoveryTasksStampsTheIdentity(t *testing.T) {
 	// Every type the recovery switch dispatches. ReindexTypeRebuildSearchable
-	// is absent because that switch has no arm for it, here as on the base
-	// this branch started from.
+	// is absent because that switch has no arm for it.
 	recoverable := []createReindexTasksEnumerationCase{
 		{mt: ReindexTypeChangeAlgorithm, payload: &ReindexTaskPayload{Collection: "MyClass", Properties: []string{"title"}}, wantNTasks: 1},
 		{mt: ReindexTypeRepairFilterable, payload: &ReindexTaskPayload{Collection: "MyClass", Properties: []string{"tag"}}, wantNTasks: 1},

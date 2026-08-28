@@ -44,7 +44,7 @@ import (
 // T3: Crash before the first record write — discover must skip the dir;
 //     payload.mig survives intact for retry.
 // T4: Record durability at Iterated — the record survives process death
-//     without the test fsyncing (foundation of issue #214).
+//     without the test fsyncing.
 
 // barrierIntegrationProvider builds the minimal ReindexProvider these
 // tests need — runShardPrepPhase / runShardSwapPhase only touch
