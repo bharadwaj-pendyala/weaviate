@@ -209,12 +209,10 @@ func (s *MigrationRecordStore) Load() error {
 //
 // It has to be a fault rather than a preference, because a teardown seals the
 // unit its record names. A foreign unit is one no local worker ever claims, so
-// that seal is always granted, and the teardown then removes directories a
-// live local worker may be writing into.
-//
-// The whole store is frozen rather than the foreign records dropped: dropping
-// them would leave the directories they name attributed to nothing, which is
-// what the reclaimers delete.
+// that seal is always granted, and the teardown then removes directories a live
+// local worker may be writing into. Dropping the foreign records instead would
+// leave the directories they name attributed to nothing, which is what the
+// reclaimers delete — hence freezing the whole store.
 func refuseRecordsOfSeveralUnits(records map[MigrationRecordKey]MigrationRecord) []MigrationRecordUnreadable {
 	units := map[string]struct{}{}
 	for key := range records {
