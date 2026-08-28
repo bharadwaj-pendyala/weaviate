@@ -99,65 +99,36 @@ type MigrationStrategy interface {
 	// map→blockmax, roaring-set refresh) should return nil.
 	AnalyzerOverlay(props []string) map[string]inverted.PropertyOverlay
 
-	// OnMigrationComplete is called once this shard's flip is durable.
-	// Implementations can read the shard's current bucket state
-	// to decide whether collection-level finalization (e.g. flipping the
-	// UsingBlockMaxWAND class flag) is safe — important for per-property
-	// migrations, where the flag must only flip once every searchable property
-	// has been migrated.
+	// OnMigrationComplete is called once this shard's flip is durable, in
+	// Phase 2c of the runtime swap (see the phase contract at the top of
+	// inverted_reindex_task_generic.go). Implementations can read the shard's
+	// current bucket state to decide whether collection-level finalization is
+	// safe — for per-property migrations the class-level flag (e.g.
+	// UsingBlockMaxWAND) must only flip once every searchable property has been
+	// migrated.
 	//
-	// Phase contract (see inverted_reindex_task_generic.go file-level
-	// godoc): OnMigrationComplete fires in Phase 2c — AFTER the per-prop
-	// SwapBucketPointer tight loop (Phase 2a) and AFTER the inline
-	// oldMain.Shutdown + removal of the displaced dirs (Phase 2b), but still
-	// INSIDE the per-shard tokenization-overlay window for migrations
-	// that use one (change-tokenization-{searchable,filterable},
-	// enable-filterable, enable-searchable). The overlay is cleared
-	// later by the cluster-wide schema flip in
-	// [ReindexProvider.OnTaskCompleted].
+	// The per-shard tokenization overlay is still active here for migrations
+	// that use one; [ReindexProvider.OnTaskCompleted] clears it later, together
+	// with the cluster-wide schema flip.
 	//
-	// Allowed work in this position:
+	// Allowed: in-memory mutation of shard-local query-path state that must
+	// match the cluster-wide flip before that flip propagates
+	// ([Shard.setRangeableLocallyReady] is the canonical case), and, for
+	// strategies whose flip is not batched into OnTaskCompleted, the RAFT call
+	// that performs it. RAFT here is correctness-safe — the overlay covers the
+	// per-shard window — but costs hundreds of milliseconds of FINALIZING time,
+	// more than the per-shard atomic contract intends. Splitting this hook into
+	// a local-in-memory half and a cluster-wide half would fix that.
 	//
-	//   - In-memory mutation of shard-local query-path state that MUST
-	//     match the cluster-wide schema flip before that flip
-	//     propagates. The canonical example is
-	//     [Shard.setRangeableLocallyReady] in
-	//     [FilterableToRangeableStrategy.OnMigrationComplete] — it
-	//     ensures THIS shard's queries observe ready=true at the same
-	//     moment they could observe the new schema flag. The overlay
-	//     is the equivalent mechanism for tokenization changes; this
-	//     hook is the equivalent for per-shard ready flags.
+	// Forbidden: heavy disk I/O on the new main bucket. It is live, and anything
+	// that stalls its compaction or flush pipeline shows up as query latency.
+	// (I/O on the old bucket is safe — it was shut down in Phase 2b — but
+	// belongs in Phase 2b by convention.)
 	//
-	//   - RAFT calls (per-property schema updates) for non-semantic
-	//     strategies whose schema flip is NOT batched in
-	//     OnTaskCompleted: e.g. [MapToBlockmaxStrategy]'s
-	//     updateToBlockMaxInvertedIndexConfig (class-level
-	//     UsingBlockMaxWAND), [FilterableToRangeableStrategy]'s
-	//     applyPerPropertySchemaUpdate (per-property IndexRangeFilters).
-	//     These are slow (hundreds of ms) — correctness is preserved by
-	//     the overlay covering the per-shard window — but they widen
-	//     the FINALIZING duration beyond what the per-shard atomic
-	//     contract intends. The long-term fix is to split this hook
-	//     into "local-in-memory (atomic-safe)" and "cluster-wide-RAFT
-	//     (outside-atomic)" callbacks.
-	//
-	// Forbidden work in this position:
-	//
-	//   - Heavy disk I/O on the new main bucket (the LIVE post-swap
-	//     bucket). The bucket is being queried — any operation that
-	//     stalls its compaction or flush pipeline propagates as query
-	//     latency. Disk I/O on the OLD bucket is fine (it's been
-	//     shut down in Phase 2b) but conventionally also moved to
-	//     Phase 2b.
-	//
-	//   - Anything that requires the cluster-wide schema flip to have
-	//     already happened. For semantic migrations the flip lives in
-	//     OnTaskCompleted (after every shard's OnMigrationComplete);
-	//     for non-semantic, this hook may itself drive the flip but
-	//     must not assume it has already propagated to other replicas.
-	//     A per-property index flag flipped from here must land before the
-	//     task reaches FINISHED, or GET /v1/schema/{class}/indexes drops
-	//     that index from the response.
+	// Do not assume the cluster-wide schema flip has already happened; this hook
+	// may itself drive it. A per-property index flag flipped from here must land
+	// before the task reaches FINISHED, or GET /v1/schema/{class}/indexes drops
+	// that index from the response.
 	OnMigrationComplete(ctx context.Context, shard ShardLike) error
 }
 
