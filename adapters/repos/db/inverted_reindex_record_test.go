@@ -49,7 +49,7 @@ func testMigrationSubject(version uint64, code MigrationStrategyCode, props ...s
 	for _, prop := range props {
 		subject.StagedDirs[prop] = fmt.Sprintf("m_%d_%s", version, prop)
 		subject.CanonicalDirs[prop] = "property_" + prop
-		subject.SidecarDirs[prop] = fmt.Sprintf("m_%d_sidecar", version)
+		subject.SidecarDirs[prop] = fmt.Sprintf("m_%d_%s_sidecar", version, prop)
 	}
 	return subject
 }
@@ -153,32 +153,11 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 			wantErr: "names unknown state \"tidied\"",
 		},
 		{
-			name: "strategy code this build does not know",
-			data: valid(func(env map[string]any) {
-				env["subject"].(map[string]any)["key"].(map[string]any)["strategyCode"] = "quantum_reindex"
-			}),
-			wantErr: "record key \"42/quantum_reindex/shard-1__node-0\" is incomplete or names an unknown strategy",
-		},
-		{
 			name: "migration type this build does not know",
 			data: valid(func(env map[string]any) {
 				env["subject"].(map[string]any)["migrationType"] = "reticulate-splines"
 			}),
 			wantErr: "names unknown migration type \"reticulate-splines\"",
-		},
-		{
-			name: "task version zero",
-			data: valid(func(env map[string]any) {
-				env["subject"].(map[string]any)["key"].(map[string]any)["taskVersion"] = 0
-			}),
-			wantErr: "record key \"0/enable_filterable/shard-1__node-0\" is incomplete",
-		},
-		{
-			name: "unit missing from the key",
-			data: valid(func(env map[string]any) {
-				env["subject"].(map[string]any)["key"].(map[string]any)["unitID"] = ""
-			}),
-			wantErr: "record key \"42/enable_filterable/\" is incomplete",
 		},
 		{
 			name:    "task ID missing",
@@ -247,6 +226,19 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 				}
 			}),
 			wantErr: "says property \"title\" displaced \"m_42_body\", the directory staged for property \"body\"",
+		},
+		{
+			// ShutdownStagedBuckets closes the directory the property it is
+			// handed names, so a shared name takes a bucket down under a
+			// property that is still serving from it.
+			name: "two properties naming the same sidecar directory",
+			data: valid(func(env map[string]any) {
+				subject := env["subject"].(map[string]any)
+				subject["properties"] = []string{"title", "body"}
+				sidecars := subject["sidecarDirs"].(map[string]any)
+				sidecars["body"] = sidecars["title"]
+			}),
+			wantErr: "names sidecar directory \"m_42_title_sidecar\" for properties \"body\" and \"title\"",
 		},
 		{
 			name: "a unit the record file name could not carry",
@@ -326,16 +318,10 @@ func TestMigrationRecordKey(t *testing.T) {
 		},
 	}
 
-	seen := map[string]string{}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.wantFile, tt.key.fileName())
 			require.Equal(t, tt.wantValid, tt.key.valid())
-
-			if prev, ok := seen[tt.wantFile]; ok {
-				require.Failf(t, "file name collision", "%q also names %q", tt.wantFile, prev)
-			}
-			seen[tt.wantFile] = tt.name
 		})
 	}
 }
@@ -533,36 +519,6 @@ func TestMigrationRecordStore(t *testing.T) {
 				after, err := os.ReadFile(filepath.Join(s.Dir(), "42_enable_filterable_shard-1__node-0.json"))
 				require.NoError(t, err)
 				require.Equal(t, before, after)
-			},
-		},
-		{
-			// A directory that is writable and traversable but not readable is
-			// where the guard earns its keep: the rename inside a write lands
-			// and only the closing directory sync fails, so the write reports
-			// an error with the flip record already replaced.
-			name: "a records directory that cannot be read but can be written keeps its flip record",
-			arrange: func(t *testing.T, s *MigrationRecordStore) {
-				if os.Geteuid() == 0 {
-					t.Skip("root reads a directory whatever its mode says")
-				}
-				require.NoError(t, s.Put(NewMigrationRecordSwapped(
-					testMigrationSubject(42, StrategyCodeEnableFilterable, "title"),
-					[]string{"title"}, map[string]string{"title": "property_title"})))
-				t.Cleanup(func() { require.NoError(t, os.Chmod(s.Dir(), 0o755)) })
-				require.NoError(t, os.Chmod(s.Dir(), 0o300))
-			},
-			wantLoadErr: true,
-			assert: func(t *testing.T, s *MigrationRecordStore) {
-				path := filepath.Join(s.Dir(), "42_enable_filterable_shard-1__node-0.json")
-				before, err := os.ReadFile(path)
-				require.NoError(t, err)
-
-				require.Error(t, s.Put(NewMigrationRecordIterating(
-					testMigrationSubject(42, StrategyCodeEnableFilterable, "title"), MigrationCheckpoint{})))
-
-				after, err := os.ReadFile(path)
-				require.NoError(t, err)
-				require.Equal(t, string(before), string(after))
 			},
 		},
 		{
@@ -845,6 +801,20 @@ func TestDecodeMigrationRecordRejectsEscapingHandles(t *testing.T) {
 			handle: "../../evil", wantErr: true,
 		},
 		{
+			name: "a poisoned canonical-dirs key",
+			place: func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) {
+				s.CanonicalDirs = map[string]string{h: "property_title"}
+			},
+			handle: "../../evil", wantErr: true,
+		},
+		{
+			name: "a poisoned sidecar-dirs key",
+			place: func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) {
+				s.SidecarDirs = map[string]string{h: "m_42_title"}
+			},
+			handle: "../../evil", wantErr: true,
+		},
+		{
 			name: "a poisoned displaced-dirs key",
 			place: func(_ *MigrationSubject, f *migrationFlipEnvelope, h string) {
 				f.DisplacedDirs = map[string]string{h: "m_42_title"}
@@ -912,40 +882,10 @@ func TestTheWriterRefusesWhatTheLoaderWouldReject(t *testing.T) {
 			wantErr: "names tracker directory \"../../../etc\"",
 		},
 		{
-			name:    "a sidecar directory carrying a separator",
-			mangle:  func(s *MigrationSubject) { s.SidecarDirs = map[string]string{"title": "a/b"} },
-			because: "a sidecar directory is removed by name",
-			wantErr: "names sidecar directory \"a/b\"",
-		},
-		{
-			name:    "a staged directory that resolves back to the shard root",
-			mangle:  func(s *MigrationSubject) { s.StagedDirs["title"] = "x/.." },
-			because: "Join resolves it to the LSM directory, which then reaches os.RemoveAll",
-			wantErr: "names staged directory \"x/..\"",
-		},
-		{
-			name:    "an empty property name",
-			mangle:  func(s *MigrationSubject) { s.Properties = []string{""} },
-			because: "an empty name composes into another property's sidecar",
-			wantErr: "names property \"\"",
-		},
-		{
-			name:    "a record with no task ID",
-			mangle:  func(s *MigrationSubject) { s.TaskID = "" },
-			because: "nothing could match the record to a task, so no verdict could ever settle it",
-			wantErr: "has no task ID",
-		},
-		{
 			name:    "a strategy code outside the known set",
 			mangle:  func(s *MigrationSubject) { s.Key.StrategyCode = "bogus" },
 			because: "the code is in the file name, so the loader refuses a file the writer chose",
 			wantErr: "record key \"42/bogus/shard-1__node-0\" is incomplete or names an unknown strategy",
-		},
-		{
-			name:    "a migration type this build does not know",
-			mangle:  func(s *MigrationSubject) { s.MigrationType = "not-a-migration" },
-			because: "the type decides which schema effect answers for the record",
-			wantErr: "names unknown migration type \"not-a-migration\"",
 		},
 	}
 

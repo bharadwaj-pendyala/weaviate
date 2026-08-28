@@ -44,7 +44,7 @@ func TestReconcileSupersession(t *testing.T) {
 		{
 			name: "a swapped successor retires its predecessor on the shared property",
 			arrange: func(f *reconcileFixture) {
-				f.mkdirs("m_10_title", "m_10_sidecar", "m_20_title", "m_20_sidecar", "property_title")
+				f.mkdirs("m_10_title", "m_10_title_sidecar", "m_20_title", "m_20_title_sidecar", "property_title")
 				f.put(NewMigrationRecordMerged(testMigrationSubject(10, StrategyCodeSearchableRetokenize, "title")))
 				f.put(swappedOn(20, "title"))
 			},
@@ -52,7 +52,7 @@ func TestReconcileSupersession(t *testing.T) {
 				_, present := f.state(MigrationRecordKey{TaskVersion: 10, StrategyCode: StrategyCodeSearchableRetokenize, UnitID: "shard-1__node-0"})
 				require.False(t, present, "the superseded record is retired")
 				require.False(t, f.exists("m_10_title"))
-				require.False(t, f.exists("m_10_sidecar"))
+				require.False(t, f.exists("m_10_title_sidecar"))
 				require.Equal(t, "m_20_title", f.contentOf("property_title"), "the successor's data is now canonical")
 			},
 		},
@@ -100,7 +100,7 @@ func TestReconcileSupersession(t *testing.T) {
 		{
 			name: "a partial overlap retires only the shared property, and the record survives for the rest",
 			arrange: func(f *reconcileFixture) {
-				f.mkdirs("m_10_title", "m_10_body", "m_10_sidecar", "m_20_title", "property_title", "property_body")
+				f.mkdirs("m_10_title", "m_10_body", "m_10_title_sidecar", "m_20_title", "property_title", "property_body")
 				f.put(NewMigrationRecordMerged(testMigrationSubject(10, StrategyCodeSearchableRetokenize, "title", "body")))
 				f.put(swappedOn(20, "title"))
 			},
@@ -204,7 +204,7 @@ func TestReconcileSupersession(t *testing.T) {
 				// one, which 20 already covers.
 				predecessor := testMigrationSubject(10, StrategyCodeSearchableRetokenize, "title", "body")
 				successor := testMigrationSubject(20, StrategyCodeSearchableRetokenize, "title")
-				f.mkdirs("m_10_title", "m_10_sidecar", "property_body")
+				f.mkdirs("m_10_title", "m_10_title_sidecar", "property_body")
 				f.put(NewMigrationRecordPromoted(predecessor, []string{"title", "body"},
 					map[string]string{"title": "property_title", "body": "property_body"}))
 				f.put(NewMigrationRecordSwapped(successor, []string{"title"},
@@ -276,7 +276,7 @@ func TestReconcileSupersession(t *testing.T) {
 func TestReconcileRetirementDisarmsBeforeRemoving(t *testing.T) {
 	f := newReconcileFixture(t)
 	f.class = testClassWithTokenization(models.PropertyTokenizationWord, "title")
-	f.mkdirs("m_10_title", "m_10_sidecar", "m_20_title", "property_title")
+	f.mkdirs("m_10_title", "m_10_title_sidecar", "m_20_title", "property_title")
 
 	predecessor := testMigrationSubject(10, StrategyCodeSearchableRetokenize, "title")
 	f.put(NewMigrationRecordMerged(predecessor))
@@ -321,7 +321,7 @@ func TestShutdownFailureHoldsBackRemoval(t *testing.T) {
 			arrange: func(f *reconcileFixture) {
 				subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 				subject.TaskID = taskID
-				f.mkdirs("m_42_title", "m_42_sidecar", "property_title")
+				f.mkdirs("m_42_title", "m_42_title_sidecar", "property_title")
 				f.put(NewMigrationRecordMerged(subject))
 				f.tasks = []*distributedtask.Task{testTask(taskID, 42, distributedtask.TaskStatusCancelled)}
 			},
@@ -332,7 +332,7 @@ func TestShutdownFailureHoldsBackRemoval(t *testing.T) {
 		{
 			name: "the supersession edge keeps the predecessor that still names it",
 			arrange: func(f *reconcileFixture) {
-				f.mkdirs("m_10_title", "m_10_sidecar", "m_20_title", "property_title")
+				f.mkdirs("m_10_title", "m_10_title_sidecar", "m_20_title", "property_title")
 				f.put(NewMigrationRecordMerged(testMigrationSubject(10, StrategyCodeSearchableRetokenize, "title")))
 				f.put(swappedOn(20, "title"))
 			},
@@ -393,7 +393,7 @@ func TestRetirementAsksWhatIsSupersededBeforeItSeals(t *testing.T) {
 		{
 			name: "a superseded predecessor is retired from inside the successor's unit",
 			arrange: func(f *reconcileFixture) {
-				f.mkdirs("m_10_title", "m_10_sidecar", "m_20_title", "property_title")
+				f.mkdirs("m_10_title", "m_10_title_sidecar", "m_20_title", "property_title")
 				f.put(NewMigrationRecordMerged(predecessor))
 				f.put(swappedOn(20, "title"))
 			},
@@ -407,7 +407,7 @@ func TestRetirementAsksWhatIsSupersededBeforeItSeals(t *testing.T) {
 			// its own worker is still writing into what retirement removes.
 			name: "the superseded record's own worker is still running",
 			arrange: func(f *reconcileFixture) {
-				f.mkdirs("m_10_title", "m_10_sidecar", "m_20_title", "property_title")
+				f.mkdirs("m_10_title", "m_10_title_sidecar", "m_20_title", "property_title")
 				f.put(NewMigrationRecordMerged(predecessor))
 				f.put(swappedOn(20, "title"))
 			},

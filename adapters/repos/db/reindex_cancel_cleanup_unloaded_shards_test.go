@@ -224,9 +224,9 @@ func TestIndexCleanStalePartialReindexStateReclaimsDeferredFinalizeResidue(t *te
 		tracker   string
 		ingestDir string
 		canonical string
-		// legacyDir is a backup copy of the displaced bucket, which releases
-		// before this one left behind and no record names. Reclaiming it is
-		// this sweep's job alone.
+		// legacyDir is the backup copy of the displaced main bucket that
+		// every swap writes. What makes it legacy here is that no record
+		// names it, so reclaiming it is this sweep's job alone.
 		legacyDir string
 	}{
 		{
@@ -1523,18 +1523,27 @@ func TestEverySidecarSuffixIsASidecar(t *testing.T) {
 
 	// Generation 0 is the canonical post-finalize bucket, which carries no
 	// sidecar suffix at all; live migrations start at 1 (see genSuffix).
+	roles := map[string]struct{}{}
 	for _, gen := range []int{1, 7} {
 		strategies := strategiesByMigrationDir(gen)
 		for prefix, strategy := range strategies {
 			require.Truef(t, strings.HasPrefix(strategy.MigrationDirName(), prefix),
 				"%T is filed under %q but names its tracker dir %q",
 				strategy, prefix, strategy.MigrationDirName())
-			for _, suffix := range []string{strategy.ReindexSuffix(), strategy.IngestSuffix()} {
+			for _, suffix := range []string{
+				strategy.ReindexSuffix(), strategy.IngestSuffix(), strategy.BackupSuffix(),
+			} {
 				assert.Truef(t, isSidecarDirOf(main+suffix, main),
 					"%T's %q is not recognized as a sidecar suffix", strategy, suffix)
+				roles[sidecarRoleWord(strings.TrimPrefix(suffix, "__"))] = struct{}{}
 			}
 		}
 	}
+
+	// Set equality, both directions: a word missing from the list leaves a
+	// live sidecar that nothing reclaims, and a word no strategy produces is
+	// a claim about disk that nothing on this build backs.
+	require.ElementsMatch(t, sidecarRoleWords, slices.Collect(maps.Keys(roles)))
 }
 
 // The names that are NOT sidecars of the swept property, and that the sweep
@@ -1555,11 +1564,11 @@ func TestIsSidecarDirOfRejectsOtherPropertiesBuckets(t *testing.T) {
 		{name: "category__reindex's own bucket, wrongly accepted", dir: main + "__reindex", want: true},
 		{name: "category__ingest_0's own bucket, wrongly accepted", dir: main + "__ingest_0", want: true},
 		{name: "a property named after a number", dir: main + "__12", want: false},
-		// A backup copy an earlier release left on disk. This build produces
-		// no such directory, and no record names one, so this sweep is the
-		// only thing that can ever reclaim it.
-		{name: "a blockmax backup dir from an earlier release", dir: main + "__blockmax_map_3", want: true},
-		{name: "a filterable backup dir from an earlier release", dir: main + "__enable_filterable_backup_1", want: true},
+		// The backup copy of the displaced main bucket, which every swap
+		// writes ([ShardReindexTaskGeneric.runtimeSwap]). No record names it,
+		// so this sweep is the only thing that reclaims it.
+		{name: "a blockmax backup dir", dir: main + "__blockmax_map_3", want: true},
+		{name: "a filterable backup dir", dir: main + "__enable_filterable_backup_1", want: true},
 		{name: "a property whose name extends a role word", dir: main + "__ingest_x", want: false},
 		// An empty tail is not a generation, so this is property
 		// "category__ingest_"'s own main bucket.

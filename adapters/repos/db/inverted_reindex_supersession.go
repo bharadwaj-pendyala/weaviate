@@ -133,7 +133,7 @@ func (r *migrationReconciler) retireSuperseded(ctx context.Context, all []Migrat
 			// Deferred, not called after: a leaked seal would refuse this
 			// unit for the life of the process.
 			defer release()
-			r.retireOneSealed(ctx, all, rec, subject, superseded)
+			r.retireOneSealed(ctx, all, subject, superseded)
 		}()
 	}
 }
@@ -152,7 +152,7 @@ func supersededProperties(all []MigrationRecord, subject MigrationSubject) []str
 
 // retireOneSealed retires one superseded record, under its unit's seal.
 func (r *migrationReconciler) retireOneSealed(ctx context.Context, all []MigrationRecord,
-	rec MigrationRecord, subject MigrationSubject, superseded []string,
+	subject MigrationSubject, superseded []string,
 ) {
 	retired := true
 	for _, prop := range superseded {
@@ -164,11 +164,7 @@ func (r *migrationReconciler) retireOneSealed(ctx context.Context, all []Migrati
 	}
 	// A directory whose removal failed must keep the record naming it, or
 	// nothing can attribute it; the next load retries.
-	// Fully superseded is the condition for removing the record itself rather
-	// than just some of its directories, and the caller already computed which
-	// properties a successor took over.
-	if !retired || len(subject.Properties) == 0 ||
-		len(superseded) != len(subject.Properties) || !rec.StagedDataComplete() {
+	if !retired || len(superseded) != len(subject.Properties) {
 		return
 	}
 

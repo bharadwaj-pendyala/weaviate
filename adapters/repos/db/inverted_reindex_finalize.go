@@ -89,14 +89,9 @@ func maxMigrationGeneration(lsmPath, migrationDirPrefix, propNamesSuffix string)
 // dirs are LIVE data pointed at by the in-memory bucket pointers, awaiting
 // next-restart finalize to be promoted to canonical names.
 //
-// Called from the submit-handler and cancel-handler pre-submit cleanup
-// path ([Shard.CleanStalePartialReindexState]) so the cleanup can skip
-// tracker and sidecar dirs that belong to a completed-but-deferred
-// migration on the same property. Without this gate, a back-to-back
-// submit-without-restart sequence wipes the prior completed migration's
-// live ingest dir out from under its in-memory bucket pointer → the
-// canonical bucket becomes empty → silent #10675-shape data loss on the
-// submitting node.
+// [hasCompletedMigrationTracker] is what asks: a non-empty answer means a
+// swap got far enough to arm the next restart's finalize, so a task that then
+// ends CANCELLED or FAILED leaves the bucket and the schema disagreeing.
 //
 // `scope` is the tracker dirs of the (propName, indexType) tuple; see
 // [migrationDirScope].

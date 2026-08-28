@@ -1071,13 +1071,19 @@ func TestCopySegmentFilesSyncsTheDirectoryItPublishedInto(t *testing.T) {
 	const segment = "segment-2000000000000000000"
 
 	tests := []struct {
-		name     string
-		syncErr  error
-		wantErr  bool
-		wantSync bool
+		name    string
+		syncErr error
+		// blockCopy plants a directory where the first .tmp file has to land,
+		// so the copy fails before anything is renamed into place.
+		blockCopy bool
+		wantErr   bool
+		wantSync  bool
 	}{
 		{name: "the publish is synced", wantSync: true},
 		{name: "a sync that fails fails the copy", syncErr: errors.New("no space"), wantErr: true, wantSync: true},
+		// Nothing was published, so there is nothing to make durable — the
+		// column is only a column if some row does not sync.
+		{name: "a copy that fails publishes nothing", blockCopy: true, wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -1090,6 +1096,11 @@ func TestCopySegmentFilesSyncsTheDirectoryItPublishedInto(t *testing.T) {
 			for _, suffix := range []string{".db", ".bloom"} {
 				require.NoError(t, os.WriteFile(
 					filepath.Join(srcDir, segment+suffix), []byte("data"), 0o644))
+			}
+
+			if tt.blockCopy {
+				require.NoError(t, os.MkdirAll(
+					filepath.Join(dstDir, "segment-1000000000000000000.db.tmp"), 0o755))
 			}
 
 			var synced []string
@@ -1111,6 +1122,10 @@ func TestCopySegmentFilesSyncsTheDirectoryItPublishedInto(t *testing.T) {
 				require.NoError(t, err)
 			}
 
+			if !tt.wantSync {
+				require.Empty(t, synced, "a copy that published nothing has nothing to make durable")
+				return
+			}
 			require.Equal(t, []string{dstDir}, synced,
 				"the directory the renames publish into is the one that has to be synced")
 			slices.Sort(atSync)

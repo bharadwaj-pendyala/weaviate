@@ -12,6 +12,7 @@
 package diskio
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -158,11 +159,10 @@ func TestSanitizeFilePathJoin(t *testing.T) {
 	}
 }
 
-// TestRenameAndSync covers what a rename does and does not leave behind. The
-// fsync it adds has no outcome a test can tell apart from a plain rename
-// without a fault-injecting filesystem, so what is asserted here is the rename
-// and the errors — the sync is covered only in the sense that it must not turn
-// a working rename into a failing one.
+// TestRenameAndSync covers what a rename leaves behind and which directories
+// it makes durable. A crash keeps the new name only once the directory holding
+// it is synced, so a caller that durably records the rename as done needs both
+// ends synced when they differ.
 func TestRenameAndSync(t *testing.T) {
 	tests := []struct {
 		name string
@@ -171,13 +171,22 @@ func TestRenameAndSync(t *testing.T) {
 		from, to string
 		// missingSource plants nothing at from.
 		missingSource bool
-		wantErr       bool
+		// wantSyncs are the directories the call must sync, in order, relative
+		// to the temp root.
+		wantSyncs []string
+		// syncFails makes every sync fail, which the caller has to surface.
+		syncFails bool
+		wantErr   bool
 	}{
-		{name: "within one directory", from: "a.tmp", to: "a"},
-		{name: "across two directories", from: "a.tmp", to: "d/a"},
-		{name: "over an existing name", from: "a.tmp", to: "taken"},
+		{name: "within one directory", from: "a.tmp", to: "a", wantSyncs: []string{"."}},
+		{name: "across two directories", from: "a.tmp", to: "d/a", wantSyncs: []string{"d", "."}},
+		{name: "over an existing name", from: "a.tmp", to: "taken", wantSyncs: []string{"."}},
 		{name: "source is not there", from: "gone.tmp", to: "a", missingSource: true, wantErr: true},
 		{name: "target directory is not there", from: "a.tmp", to: "absent/a", wantErr: true},
+		{
+			name: "a sync that fails fails the rename", from: "a.tmp", to: "a",
+			syncFails: true, wantSyncs: []string{"."}, wantErr: true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -190,12 +199,31 @@ func TestRenameAndSync(t *testing.T) {
 				require.NoError(t, os.WriteFile(from, []byte("new"), 0o600))
 			}
 
-			err := RenameAndSync(from, to)
+			var synced []string
+			publishedBeforeFirstSync := false
+			err := renameAndSync(from, to, func(dir string) error {
+				if len(synced) == 0 {
+					_, statErr := os.Stat(to)
+					publishedBeforeFirstSync = statErr == nil
+				}
+				rel, relErr := filepath.Rel(root, dir)
+				require.NoError(t, relErr)
+				synced = append(synced, rel)
+				if tc.syncFails {
+					return errors.New("no space")
+				}
+				return nil
+			})
+
+			require.Equal(t, tc.wantSyncs, synced,
+				"a rename is durable only once the directories holding its names are synced")
+			if len(tc.wantSyncs) > 0 {
+				require.True(t, publishedBeforeFirstSync,
+					"the sync has to follow the rename it makes durable")
+			}
 
 			if tc.wantErr {
 				require.Error(t, err)
-				_, statErr := os.Stat(to)
-				require.True(t, os.IsNotExist(statErr), "a failed rename must publish nothing")
 				return
 			}
 			require.NoError(t, err)

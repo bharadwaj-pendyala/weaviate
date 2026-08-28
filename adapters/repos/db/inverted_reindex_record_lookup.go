@@ -49,20 +49,22 @@ type migrationPreservedState struct {
 	trackers map[string]bool
 
 	// withholdEverything preserves the whole shard: a record this build
-	// cannot read, or a marker-era tracker whose payload could not be read,
-	// names directories nothing else accounts for.
+	// cannot read, or a tracker no record names whose payload could not be
+	// read, names directories nothing else accounts for.
 	withholdEverything bool
 	// recordSetUnreadable means no record here could be read at all, so no
 	// caller may report the shard clean. It implies withholdEverything.
 	recordSetUnreadable bool
 	// migrationsDirUnlistable is the same fault one level up: the tracker
-	// directory itself could not be enumerated. Kept apart from
-	// withholdEverything since an unlistable shard has not been read at all.
+	// directory itself could not be enumerated. It sets withholdEverything
+	// too, and is carried separately because a shard that was never read has
+	// to report differently from one that was read and withheld.
 	migrationsDirUnlistable bool
 }
 
-// migrationPreservedStateAt is the only way to build a migrationPreservedState,
-// so no sweep can learn about records but not about marker-era directories.
+// migrationPreservedStateAt is the only way to build a populated
+// migrationPreservedState, so no sweep can learn about records but not about
+// the trackers no record names. The zero value preserves nothing.
 func migrationPreservedStateAt(lsmPath string, logger logrus.FieldLogger) migrationPreservedState {
 	records, someRecordsUnreadable, recordSetUnreadable := migrationRecordsAt(lsmPath, logger)
 	state := migrationPreservedStateFromRecords(records, someRecordsUnreadable, recordSetUnreadable)
@@ -187,9 +189,10 @@ func migrationRecordForTracker(records []MigrationRecord, trackerDir string) (Mi
 	return nil, false
 }
 
-// migrationLegacyMarkerTracker is a tracker directory a pre-migration-records
-// release left behind, with a completion marker naming the property's live
-// data at that staged name; this build writes records instead.
+// migrationLegacyMarkerTracker is a tracker directory no record names, whose
+// completion marker names the property's live data at the staged name. Every
+// completed migration leaves one today, since no task writes a record yet;
+// so did every pre-migration-records release.
 type migrationLegacyMarkerTracker struct {
 	dirName string
 	marker  string
@@ -202,10 +205,10 @@ type migrationLegacyMarkerTracker struct {
 	sidecars   []string
 }
 
-// migrationLegacyMarkerTrackersAt finds legacy trackers on one shard; only a
-// record-less tracker can be marker-era. listed=false is distinct from
-// finding none: a fault hiding every marker-era tracker (fd exhaustion on a
-// many-tenant node) would otherwise free an upgraded property's only copy.
+// migrationLegacyMarkerTrackersAt finds the completed trackers no record
+// names on one shard. listed=false is distinct from finding none: a fault
+// hiding every one of them (fd exhaustion on a many-tenant node) would
+// otherwise free a property's only copy.
 func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord) (trackers []migrationLegacyMarkerTracker, listed bool) {
 	migsDir := filepath.Join(lsmPath, ".migrations")
 	entries, err := os.ReadDir(migsDir)
@@ -252,8 +255,9 @@ func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord) 
 }
 
 // servesEmpty reports properties whose data is still under this tracker's
-// staged name while the canonical directory is gone — the schema flip already
-// committed cluster-wide, and no path on this build renames it back.
+// staged name while the canonical directory is gone: the schema flip already
+// committed cluster-wide, and the load-time finalize promoted a different
+// generation, so nothing has renamed this one back.
 func (t migrationLegacyMarkerTracker) servesEmpty(lsmPath string) []string {
 	suffixes := migrationSuffixes(t.dirName)
 	if suffixes == nil {

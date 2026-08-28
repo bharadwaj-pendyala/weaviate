@@ -450,6 +450,56 @@ func TestAPropsSidecarNamingNoPropertyIsAnError(t *testing.T) {
 	require.Error(t, err)
 }
 
+// A sidecar may not stand in for an absent payload: "nothing recorded a
+// property list" is the state the unloaded-shard gate reads as clean, and the
+// sweep deletes an ambiguously-named tracker on it. The two rows differ only
+// in whether payload.mig is there, and the sweep's answer flips with it.
+func TestASidecarMayNotStandInForAnAbsentPayload(t *testing.T) {
+	logger, _ := test.NewNullLogger()
+	props := []string{"a", "b"}
+
+	tests := []struct {
+		name string
+		// payload is what lands beside the sidecar; nil writes no file.
+		payload []byte
+		// swept is whether the sweep for "a_b" removes the tracker.
+		swept bool
+	}{
+		{name: "no payload at all", swept: true},
+		{
+			// The guard tests existence, not health, so here the sidecar does
+			// answer ["a","b"] and takes the tracker out of "a_b"'s scope.
+			name:    "a payload too damaged to parse",
+			payload: []byte("{not json"),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lsm := t.TempDir()
+			dirName := migrationDirWithProps(MigrationDirPrefixEnableFilterable, props) + genSuffix(1)
+			mkTrackerDir(t, lsm, dirName, "started.mig")
+			migDir := filepath.Join(lsm, ".migrations", dirName)
+			require.NoError(t, os.WriteFile(filepath.Join(migDir, "properties.mig"),
+				[]byte(strings.Join(props, ",")), 0o644))
+			if tc.payload != nil {
+				require.NoError(t, os.WriteFile(
+					filepath.Join(migDir, reindexRecoveryPayloadFile), tc.payload, 0o644))
+			}
+
+			cleanStaleMigrationDirsAt(t.Context(), lsm, "a_b", "filterable", logger, &taskPropsCache{})
+
+			_, err := os.Stat(migDir)
+			if tc.swept {
+				require.Truef(t, os.IsNotExist(err),
+					"the sweep must remove a tracker no payload attributes; stat err=%v", err)
+				return
+			}
+			require.NoError(t, err, "the sidecar answers, so this tracker is out of scope")
+		})
+	}
+}
+
 // ambiguousSweepDirs is how many tracker dirs the hot cell carries.
 const ambiguousSweepDirs = 100
 

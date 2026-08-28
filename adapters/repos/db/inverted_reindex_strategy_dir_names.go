@@ -107,7 +107,7 @@ func migrationDirWithProps(prefix string, propNames []string) string {
 // computed per-node at task start by [nextMigrationGeneration]; the
 // previous live main bucket lives at `…_ingest_<N-1>` (the in-memory
 // pointer was already swapped to it; the on-disk rename onto the canonical
-// name is deferred to the next load's reconciliation), and the new migration
+// name is deferred to the next load's finalize), and the new migration
 // writes to `…_ingest_<N>`.
 //
 // Generation 0 is reserved for the canonical (post-promotion) bucket at
@@ -178,13 +178,9 @@ func migrationDirPrefixesForIndexType(indexType string) []string {
 // A dir name alone can be ambiguous (e.g. "enable_filterable_a_b_1" is both
 // a two-property tracker for "a"+"b" and a one-property tracker for "a_b"),
 // so an ambiguous name falls back to the task's recorded property list
-// ([readTaskProps]). Deletion trusts that list only where it rebuilds the
-// dir's own name, and with no list only an exact one-property name, since
-// guessing wider could remove another property's tracker; preservation also
-// matches on a name token alone, since guessing too narrow could delete a
-// live sidecar bucket. Preservation's over-matching (e.g. "cat" also keeps
-// "cat_x") only costs a recoverable rename collision on re-enable — cheaper
-// than deletion's under-matching, which loses data.
+// ([readTaskProps]). That list is trusted only where it rebuilds the dir's
+// own name, and with no list only an exact one-property name, since guessing
+// wider could remove another property's tracker.
 type migrationDirScope struct {
 	lsmPath  string
 	dirs     *dirNamesCache
@@ -197,9 +193,9 @@ type migrationDirScope struct {
 	// records answers for every directory a record names, which is what keeps
 	// payload.mig off this path. Set by [migrationDirScope.knownFrom].
 	records []MigrationRecord
-	// classDir is a whole tracker dir name matched as it is. Only the
-	// marker-era class-level scope carries it; it goes away with the last
-	// caller of [classLevelMigrationDirsOf].
+	// classDir is a whole tracker dir name matched as it is. Only
+	// [classLevelMigrationDirsOf] sets it, and it goes away with that
+	// function's last caller.
 	classDir string
 }
 
@@ -225,7 +221,8 @@ func (s migrationDirScope) cachingDirs(c *dirNamesCache) migrationDirScope {
 }
 
 // classLevelMigrationDirsOf returns the scope of a single class-level tracker
-// dir, which every property of the collection shares. Marker-era only.
+// dir, which every property of the collection shares. The per-property scope
+// omits it, so only a caller that names it explicitly ever sees it.
 func classLevelMigrationDirsOf(lsmPath, classDir string) migrationDirScope {
 	return migrationDirScope{lsmPath: lsmPath, classDir: classDir}
 }
@@ -570,10 +567,10 @@ func readTaskProps(migDir string) (answer taskProps, readPayload bool) {
 // the tracker dir's own name — an independent witness that catches a
 // truncated, deduped, or contradicting list for free.
 //
-// This is load-bearing: a rejected list makes
-// [migrationDirScope.inScopeFailingOpen] report not-in-scope, dropping a
-// completed migration from the preserve pass ([forEachCompletedMigration])
-// and letting the sweep delete live sidecar dirs still in use.
+// This is load-bearing: a wrong list accepted here decides the scope of a
+// deletion sweep ([migrationDirScope.inScopeFailingOpen]) and names the
+// sidecar dirs of a tracker no record names ([migrationLegacyMarkerTrackersAt])
+// — for a completed migration those dirs hold the property's only copy.
 func propsFromSidecar(migDir string, prefixes []string) ([]string, bool) {
 	if _, err := os.Stat(filepath.Join(migDir, reindexRecoveryPayloadFile)); err != nil {
 		return nil, false

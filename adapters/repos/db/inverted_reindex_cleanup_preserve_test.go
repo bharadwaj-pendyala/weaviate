@@ -96,10 +96,10 @@ func TestCleanStaleMigrationDirsAt_PreservesCompletedGens(t *testing.T) {
 			wantSurvivors: []string{"filterable_retokenize_text_1"},
 		},
 		{
-			// Upgrade path: a pre-migration-records release marked completion
-			// with a marker file instead of a record; its staged directory is
-			// the property's only copy.
-			name:          "a marker-era tracker no record names survives",
+			// The state every completed migration is in today: a marker file
+			// records the completion and no record names the directory, which
+			// holds the property's only copy.
+			name:          "a tracker only a marker attributes survives",
 			propName:      "text",
 			idxType:       "searchable",
 			trackers:      []plantedTracker{{dir: "searchable_retokenize_text_1", prop: "text", marker: "merged.mig"}},
@@ -113,8 +113,8 @@ func TestCleanStaleMigrationDirsAt_PreservesCompletedGens(t *testing.T) {
 			wantSurvivors: []string{"searchable_retokenize_text_1"},
 		},
 		{
-			// A record is this build's own claim on the directory, so the
-			// marker underneath it is a leftover and decides nothing.
+			// A record names the directory explicitly, so the marker
+			// underneath it is a leftover and decides nothing.
 			name:     "a record outranks a marker left in the same dir",
 			propName: "text",
 			idxType:  "searchable",

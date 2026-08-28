@@ -2285,11 +2285,11 @@ func (t *ShardReindexTaskGeneric) SaveSelectedProps(shard ShardLike) error {
 	return rt.saveProps(props)
 }
 
-// trackerRecordedProps reads the property list the tracker holds. HasProps only
+// recordedProps reads the property list the tracker holds. HasProps only
 // reports a file that has content, so a list that parses to nothing means that
 // content is corrupt — answering "no properties" would silently retire the
 // shard's reindex instead of reporting the file.
-func trackerRecordedProps(rt reindexTracker) ([]string, error) {
+func recordedProps(rt reindexTracker) ([]string, error) {
 	props, err := rt.GetProps()
 	if err != nil {
 		return nil, err
@@ -2302,7 +2302,7 @@ func trackerRecordedProps(rt reindexTracker) ([]string, error) {
 
 func (t *ShardReindexTaskGeneric) getPropsToReindex(shard ShardLike, rt reindexTracker) ([]string, error) {
 	if rt.HasProps() {
-		return trackerRecordedProps(rt)
+		return recordedProps(rt)
 	}
 	props, save := t.findPropsToReindex(shard)
 	if save {
@@ -2315,7 +2315,7 @@ func (t *ShardReindexTaskGeneric) getPropsToReindex(shard ShardLike, rt reindexT
 
 func (t *ShardReindexTaskGeneric) readPropsToReindex(rt reindexTracker) ([]string, error) {
 	if rt.HasProps() {
-		return trackerRecordedProps(rt)
+		return recordedProps(rt)
 	}
 	return []string{}, nil
 }

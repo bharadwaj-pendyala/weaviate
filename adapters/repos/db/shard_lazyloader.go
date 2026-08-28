@@ -1109,9 +1109,9 @@ func (l *LazyLoadShard) blockLoading() func() {
 // returning — the hydration that follows takes it itself.
 //
 // A completed migration's leftovers are the second reason not to skip: a load
-// runs reconciliation, so a shard whose data still sits under the ingest
-// sidecar name reclaims nothing until hydrated. One load per tenant per
-// completed migration settles it — reconciliation removes the directories it
+// runs [FinalizeCompletedMigrations], so a shard whose data still sits under
+// the ingest sidecar name reclaims nothing until hydrated. One load per tenant
+// per completed migration settles it — finalize removes the tracker dir it
 // answers from, so the next sweep skips the tenant again. A tenant with no
 // leftovers (this gate's actual population) is never loaded.
 //

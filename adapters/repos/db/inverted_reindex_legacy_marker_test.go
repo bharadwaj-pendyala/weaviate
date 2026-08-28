@@ -24,15 +24,15 @@ import (
 	enthnsw "github.com/weaviate/weaviate/entities/vectorindex/hnsw"
 )
 
-// TestLegacyMarkerMigrationSurvivesTheSweep pins the upgrade path: a
-// marker-era tracker (written by a pre-migration-records release) must
-// survive the sweep, since its staged directory may hold the property's only
-// copy.
+// TestLegacyMarkerMigrationSurvivesTheSweep pins the tracker no record names,
+// whose completion only a marker file records — what every completed
+// migration leaves today, and what a pre-migration-records release left. It
+// must survive the sweep: its staged directory may hold the only copy.
 func TestLegacyMarkerMigrationSurvivesTheSweep(t *testing.T) {
 	tests := []struct {
 		name string
-		// propName is the property the marker-era migration covers. Only
-		// classProp has a canonical bucket dir on disk.
+		// propName is the property the migration covers. Only "category" is
+		// declared on the class, so only it has a canonical bucket dir.
 		propName string
 		marker   string
 		// rawPayload replaces the well-formed payload.mig this tracker would
@@ -40,7 +40,7 @@ func TestLegacyMarkerMigrationSurvivesTheSweep(t *testing.T) {
 		rawPayload string
 		// unlistableMigrations takes the read bit off .migrations while
 		// leaving it traversable, so the records directory underneath still
-		// answers and only the marker-era scan fails.
+		// answers and only the tracker scan fails.
 		unlistableMigrations bool
 		wantDirs             bool
 		wantWarn             bool
@@ -143,7 +143,7 @@ func TestLegacyMarkerMigrationSurvivesTheSweep(t *testing.T) {
 
 			migrations := filepath.Join(lsm, migrationsDir)
 			if tc.unlistableMigrations {
-				// An upgrading shard has marker-era trackers and no records
+				// This shard has marker-only trackers and no records
 				// directory at all, so the record set stays clean and the
 				// listing is the only thing that fails.
 				makeMigrationsUnlistable(t, lsm)

@@ -433,8 +433,8 @@ type Shard struct {
 	// rangeableUndecidable records that this shard's migration records could
 	// not all be read at init, so the pessimistic entries above may be
 	// incomplete: an undecoded record could be exactly the in-flight
-	// migration whose empty bucket must not be queried as ready. Read once
-	// per shard load.
+	// migration whose empty bucket must not be queried as ready. Written once
+	// at init, read on every filter that asks.
 	rangeableUndecidable atomic.Bool
 
 	// tokenizationOverlayMu guards tokenizationOverlay. Holds the per-prop

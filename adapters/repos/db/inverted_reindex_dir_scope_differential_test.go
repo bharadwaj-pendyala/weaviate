@@ -113,12 +113,12 @@ var diffPropNames = []string{
 
 var diffIndexTypes = []string{"filterable", "searchable", "rangeable"}
 
-// The attribution modes a tracker dir can be in. Only recordedProps and
+// The attribution modes a tracker dir can be in. Only recordedMode and
 // consistentPayload are writer-producible; the rest are what a crash or a
 // damaged disk leaves behind, except contradictingPayload, which stores a
 // property list its own dir name disowns.
 const (
-	recordedProps        = "record"
+	recordedMode         = "record"
 	consistentPayload    = "consistent"
 	absentPayload        = "absent"
 	corruptPayload       = "corrupt"
@@ -128,7 +128,7 @@ const (
 )
 
 var diffAttributionModes = []string{
-	recordedProps, consistentPayload, absentPayload, corruptPayload,
+	recordedMode, consistentPayload, absentPayload, corruptPayload,
 	truncatedPayload, unreadablePayloadFx, contradictingPayload,
 }
 
@@ -141,7 +141,7 @@ func writeDiffTree(t *testing.T, mode string, committed bool) (string, []diffDir
 	dirs := diffDirs()
 	for i, d := range dirs {
 		mkTrackerDir(t, lsm, d.name)
-		if mode == recordedProps || committed {
+		if mode == recordedMode || committed {
 			writeDiffRecord(t, lsm, d, i, committed)
 			continue
 		}
@@ -217,7 +217,7 @@ func TestWidenedMatchesAgreesWithTheNarrowGate(t *testing.T) {
 
 	for _, mode := range diffAttributionModes {
 		for _, committed := range []bool{false, true} {
-			if committed && mode != recordedProps {
+			if committed && mode != recordedMode {
 				// Committed state is a record fact; the payload modes have no
 				// second shape here.
 				continue
@@ -299,7 +299,7 @@ func TestWidenedSweepLeavesTheSameDirsBehind(t *testing.T) {
 			continue
 		}
 		for _, committed := range []bool{false, true} {
-			if committed && mode != recordedProps {
+			if committed && mode != recordedMode {
 				continue
 			}
 			for _, propName := range diffPropNames {

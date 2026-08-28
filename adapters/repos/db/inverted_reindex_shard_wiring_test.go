@@ -125,20 +125,12 @@ func TestReconcileWithClusterWithholdsWhereItCannotAct(t *testing.T) {
 func TestReconcileWithoutADatabaseHandle(t *testing.T) {
 	const propName = "title"
 
-	// Only the three in-flight states consult the task map; the two flipped
-	// ones are decided by probing handles alone.
+	// Merged is the state whose disposition the task map decides; the others
+	// reach the same withhold through the same guard, so one row pins it.
 	tests := []struct {
 		name string
 		rec  func(MigrationSubject) MigrationRecord
 	}{
-		{
-			name: "iterating",
-			rec:  func(s MigrationSubject) MigrationRecord { return NewMigrationRecordIterating(s, MigrationCheckpoint{}) },
-		},
-		{
-			name: "iterated",
-			rec:  func(s MigrationSubject) MigrationRecord { return NewMigrationRecordIterated(s) },
-		},
 		{
 			name: "merged",
 			rec:  func(s MigrationSubject) MigrationRecord { return NewMigrationRecordMerged(s) },
@@ -202,11 +194,6 @@ func TestShutdownStagedBucketsClosesOnlyTheNamedProperty(t *testing.T) {
 			defer shard.Shutdown(context.Background())
 
 			subject := testMigrationSubject(42, StrategyCodeEnableFilterable, propA, propB)
-			sidecars := map[string]string{}
-			for _, prop := range subject.Properties {
-				sidecars[prop] = fixtureSidecarFor(subject.StagedDirs[prop])
-			}
-			subject.SidecarDirs = sidecars
 
 			for _, dir := range migrationOwnedDirs(subject) {
 				require.NoError(t, shard.store.CreateOrLoadBucket(ctx, dir,
@@ -220,11 +207,11 @@ func TestShutdownStagedBucketsClosesOnlyTheNamedProperty(t *testing.T) {
 
 			assert.Nil(t, shard.store.Bucket(subject.StagedDirs[tt.prop]),
 				"the staged bucket of the retired property")
-			assert.Nil(t, shard.store.Bucket(sidecars[tt.prop]),
+			assert.Nil(t, shard.store.Bucket(subject.SidecarDirs[tt.prop]),
 				"the sidecar bucket of the retired property")
 			assert.NotNil(t, shard.store.Bucket(subject.StagedDirs[tt.other]),
 				"the staged bucket of the property still in use")
-			assert.NotNil(t, shard.store.Bucket(sidecars[tt.other]),
+			assert.NotNil(t, shard.store.Bucket(subject.SidecarDirs[tt.other]),
 				"the sidecar bucket of the property still in use")
 		})
 	}

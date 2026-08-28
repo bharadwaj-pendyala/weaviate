@@ -234,7 +234,7 @@ func (s *Shard) cleanStaleMigrationDirs(ctx context.Context, propName, indexType
 // suffix (`_<N>`); a single (prop, indexType) tuple can have multiple
 // generations on disk simultaneously when the last migration's trim
 // hasn't run (e.g. a crash before the flip's retirement → the next
-// restart's reconciliation cleans up everything). Walk every entry, asking
+// restart's finalize cleans up everything). Walk every entry, asking
 // [migrationDirScope.inScope] about each, so we don't miss old
 // generations.
 //
@@ -459,14 +459,14 @@ func mainBucketForPropertyIndex(propName, indexType string) (string, bool) {
 	return "", false
 }
 
-// cleanStaleSidecarDirs removes leftover __reindex / __ingest sidecar
-// directories that share the just-removed bucket's name as their prefix, and
-// drops their entries from [lsmkv.GlobalBucketRegistry].
+// cleanStaleSidecarDirs removes leftover __reindex / __ingest / __backup
+// sidecar directories that share the just-removed bucket's name as their
+// prefix, and drops their entries from [lsmkv.GlobalBucketRegistry].
 //
 // A completed migration leaves both stores of truth — the on-disk dir (until
-// reconciliation renames it) and [lsmkv.GlobalBucketRegistry] (the live
-// ingest bucket is only pointer-swapped, never shut down) — under the ingest
-// name. A DELETE followed by a same-process re-enable would otherwise
+// [FinalizeCompletedMigrations] renames it) and [lsmkv.GlobalBucketRegistry]
+// (the live ingest bucket is only pointer-swapped, never shut down) — under the
+// ingest name. A DELETE followed by a same-process re-enable would otherwise
 // collide with both: TryAdd fails "bucket already registered" and the
 // follow-up migration reports FAILED with no clear remediation.
 //
@@ -520,14 +520,8 @@ func (s *Shard) cleanStaleSidecarDirsWithPreserved(mainBucketName string, commit
 
 // sidecarRoleWords are the words every migration sidecar suffix ends in, once
 // the numeric generation tail is off. Keep in lockstep with the strategies'
-// ReindexSuffix / IngestSuffix; [TestEverySidecarSuffixIsASidecar] pins that a
-// new strategy either reuses one of these or extends the list.
-//
-// "backup" is live: the swap renames the displaced main directory aside
-// ([ShardReindexTaskGeneric.runtimeSwap]) rather than removing it. "map" names
-// no suffix this build produces; it stays because every cluster upgrading into
-// this build brings those directories with it, and no record names them, so
-// this sweep is the only thing that can reclaim them.
+// ReindexSuffix / IngestSuffix / BackupSuffix; [TestEverySidecarSuffixIsASidecar]
+// pins that a new strategy either reuses one of these or extends the list.
 var sidecarRoleWords = []string{"reindex", "ingest", "backup", "map"}
 
 // isSidecarDirOf reports whether name is a per-property sidecar of

@@ -754,22 +754,16 @@ func cleanUnloadedShardOrphans(lsmPath string, orphans []orphanReindexTracker, l
 // removeUnloadedSidecarsForOrphan removes per-property sidecar bucket
 // directories owned by the orphan tracker. Routes through the strategy
 // registry (migrationSuffixes) keyed by the orphan's tracker dirName
-// — the strategy's MigrationDirName() and IngestSuffix/BackupSuffix/
-// ReindexSuffix methods are the single source of truth for the on-disk
-// dir layout (S3 fix). Falls back to no-op if the tracker dirName does
-// not match any registered strategy: defensive, but it also means a
-// future strategy added to migrationSuffixes will be picked up here
+// — the strategy's MigrationDirName() and IngestSuffix/ReindexSuffix
+// methods are the single source of truth for the on-disk dir layout
+// (S3 fix). Falls back to no-op if the tracker dirName does not match
+// any registered strategy: defensive, but it also means a future
+// strategy added to migrationSuffixes will be picked up here
 // automatically.
 //
-// Sidecar dir names that this consults:
-//   - <main>__<ingestSuffix>_<gen>      (ingest sidecar)
-//   - <main>__<backupSuffix>_<gen>      (backup sidecar)
-//   - <main>__<reindexSuffix>_<gen>     (reindex sidecar)
-//
-// where `<main>` is the strategy's sourceBucketName(propName) for the
-// canonical bucket the migration writes back to. The strategy decides
-// what those names are — the audit MUST NOT re-derive them by string
-// prefix.
+// [migrationSidecarDirsFor] composes the names and its godoc says which
+// directory it deliberately leaves behind. The audit MUST NOT re-derive
+// them by string prefix.
 func removeUnloadedSidecarsForOrphan(lsmPath string, o *orphanReindexTracker, logger logrus.FieldLogger) {
 	for _, sidecar := range sidecarDirsForOrphan(o) {
 		path := filepath.Join(lsmPath, sidecar)
@@ -784,8 +778,8 @@ func removeUnloadedSidecarsForOrphan(lsmPath string, o *orphanReindexTracker, lo
 }
 
 // migrationCompletionMarker reports the completed-migration marker a tracker
-// directory carries, if any. The record store reads it to tell a marker-era
-// tracker apart from one this build wrote.
+// directory carries, if any. [migrationLegacyMarkerTrackersAt] reads it to
+// tell a migration that completed from one abandoned mid-run.
 func migrationCompletionMarker(trackerPath string) (string, bool) {
 	for _, marker := range []string{"tidied.mig", "merged.mig"} {
 		if fileExistsInDir(trackerPath, marker) {

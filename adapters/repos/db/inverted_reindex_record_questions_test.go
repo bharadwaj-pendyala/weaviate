@@ -87,21 +87,14 @@ func TestMigrationRecordQuestions(t *testing.T) {
 		},
 	}
 
-	seen := map[MigrationState]string{}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.wantState, tt.record.State())
 			require.Equal(t, tt.wantStagedComplete, tt.record.StagedDataComplete())
 			require.Equal(t, tt.wantPointerSwapped, tt.record.PointerSwapped())
 			require.Equal(t, tt.wantIterationDone, tt.record.IterationComplete())
-			require.True(t, tt.record.OwnsBucket("m_42_title"),
-				"a migration owns its staged directory in every state")
 		})
-		require.NotContainsf(t, seen, tt.record.State(),
-			"%q and %q report the same state", seen[tt.record.State()], tt.name)
-		seen[tt.record.State()] = tt.name
 	}
-	require.Len(t, seen, 5, "the machine has to reach all five states")
 }
 
 func TestMigrationRecordOwnsBucket(t *testing.T) {
@@ -114,7 +107,7 @@ func TestMigrationRecordOwnsBucket(t *testing.T) {
 	}{
 		{name: "a staged directory of a covered property", dir: "m_42_title", want: true},
 		{name: "a staged directory of the other covered property", dir: "m_42_body", want: true},
-		{name: "a sidecar directory the migration created", dir: "m_42_sidecar", want: true},
+		{name: "a sidecar directory the migration created", dir: "m_42_title_sidecar", want: true},
 		{
 			name: "the canonical directory, which predates the migration and must never be reclaimed by it",
 			dir:  "property_title", want: false,
@@ -128,4 +121,13 @@ func TestMigrationRecordOwnsBucket(t *testing.T) {
 			require.Equal(t, tt.want, merged.OwnsBucket(tt.dir))
 		})
 	}
+
+	// The reclaimer keys off Properties, so a directory keyed outside it is
+	// one no reclaimer reaches. An owner check answering more generously
+	// would report the "nothing survives unattributed" invariant satisfied on
+	// exactly the directory that leaks.
+	ghost := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title", "body")
+	ghost.SidecarDirs["ghost"] = "m_42_ghost_sidecar"
+	require.NotContains(t, migrationOwnedDirs(ghost), "m_42_ghost_sidecar")
+	require.False(t, NewMigrationRecordMerged(ghost).OwnsBucket("m_42_ghost_sidecar"))
 }

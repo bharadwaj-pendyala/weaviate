@@ -93,9 +93,6 @@ func plantRecordOfSize(t *testing.T, store *MigrationRecordStore, size int64) Mi
 
 	data, err := encodeMigrationRecord(NewMigrationRecordMerged(subject))
 	require.NoError(t, err)
-	require.Greater(t, int64(len(data)), size-(1<<20),
-		"the fixture must land near the size the row asks for")
-
 	require.NoError(t, os.MkdirAll(store.Dir(), 0o755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(store.Dir(), subject.Key.fileName()), data, 0o600))

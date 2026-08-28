@@ -72,15 +72,21 @@ func Fsync(path string) error {
 // which is what a caller needs when something else durably records the rename
 // as done.
 func RenameAndSync(from, to string) error {
+	return renameAndSync(from, to, Fsync)
+}
+
+// renameAndSync takes the sync as a parameter so a test can record which
+// directories were synced and when; production always passes [Fsync].
+func renameAndSync(from, to string, sync func(string) error) error {
 	if err := os.Rename(from, to); err != nil {
 		return err
 	}
 	toDir := filepath.Dir(to)
-	if err := Fsync(toDir); err != nil {
+	if err := sync(toDir); err != nil {
 		return err
 	}
 	if fromDir := filepath.Dir(from); fromDir != toDir {
-		return Fsync(fromDir)
+		return sync(fromDir)
 	}
 	return nil
 }

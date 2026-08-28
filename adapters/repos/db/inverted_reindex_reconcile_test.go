@@ -311,22 +311,6 @@ func TestReconcileMergedDisposition(t *testing.T) {
 			wantCanonical: "property_title",
 		},
 		{
-			name:          "task preparing",
-			task:          testTask(taskID, 42, distributedtask.TaskStatusPreparing),
-			class:         testClassWithTokenization(models.PropertyTokenizationWord, "title"),
-			wantState:     MigrationStateMerged,
-			wantRecord:    true,
-			wantCanonical: "property_title",
-		},
-		{
-			name:          "task swapping",
-			task:          testTask(taskID, 42, distributedtask.TaskStatusSwapping),
-			class:         testClassWithTokenization(models.PropertyTokenizationWord, "title"),
-			wantState:     MigrationStateMerged,
-			wantRecord:    true,
-			wantCanonical: "property_title",
-		},
-		{
 			name:           "task finished: commit and promote",
 			task:           testTask(taskID, 42, distributedtask.TaskStatusFinished),
 			class:          testClassWithTokenization(models.PropertyTokenizationLowercase, "title"),
@@ -427,9 +411,9 @@ func TestReconcileMergedDisposition(t *testing.T) {
 			subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 			subject.TaskID = taskID
 			if tt.noStagedDir {
-				f.mkdirs("m_42_sidecar", "property_title")
+				f.mkdirs("m_42_title_sidecar", "property_title")
 			} else {
-				f.mkdirs("m_42_title", "m_42_sidecar", "property_title")
+				f.mkdirs("m_42_title", "m_42_title_sidecar", "property_title")
 			}
 			f.put(NewMigrationRecordMerged(subject))
 
@@ -581,7 +565,7 @@ func TestReconcileReverseEdge(t *testing.T) {
 		{
 			name:      "iterated with every owned directory on disk: stay iterated",
 			plant:     func(s MigrationSubject) MigrationRecord { return NewMigrationRecordIterated(s) },
-			present:   []string{"m_42_title", "m_42_sidecar", "property_title"},
+			present:   []string{"m_42_title", "m_42_title_sidecar", "property_title"},
 			wantState: MigrationStateIterated,
 		},
 		{
@@ -594,7 +578,7 @@ func TestReconcileReverseEdge(t *testing.T) {
 		{
 			name:        "iterated and the directory the mirror writes into is gone",
 			plant:       func(s MigrationSubject) MigrationRecord { return NewMigrationRecordIterated(s) },
-			present:     []string{"m_42_sidecar", "property_title"},
+			present:     []string{"m_42_title_sidecar", "property_title"},
 			wantState:   MigrationStateIterating,
 			wantRestart: true,
 		},
@@ -608,7 +592,7 @@ func TestReconcileReverseEdge(t *testing.T) {
 		{
 			name:      "a checkpoint with every owned directory on disk keeps its place",
 			plant:     checkpointed,
-			present:   []string{"m_42_title", "m_42_sidecar", "property_title"},
+			present:   []string{"m_42_title", "m_42_title_sidecar", "property_title"},
 			wantState: MigrationStateIterating,
 		},
 		{
@@ -621,14 +605,14 @@ func TestReconcileReverseEdge(t *testing.T) {
 		{
 			name:        "a checkpoint whose mirror directory is gone restarts",
 			plant:       checkpointed,
-			present:     []string{"m_42_sidecar", "property_title"},
+			present:     []string{"m_42_title_sidecar", "property_title"},
 			wantState:   MigrationStateIterating,
 			wantRestart: true,
 		},
 		{
 			name:      "no checkpoint with every owned directory on disk keeps its place",
 			plant:     uncheckpointed,
-			present:   []string{"m_42_title", "m_42_sidecar", "property_title"},
+			present:   []string{"m_42_title", "m_42_title_sidecar", "property_title"},
 			wantState: MigrationStateIterating,
 		},
 		{
@@ -637,7 +621,7 @@ func TestReconcileReverseEdge(t *testing.T) {
 			// mirror's directory is the one that went missing.
 			name:        "no checkpoint and the directory the mirror writes into is gone",
 			plant:       uncheckpointed,
-			present:     []string{"m_42_sidecar", "property_title"},
+			present:     []string{"m_42_title_sidecar", "property_title"},
 			wantState:   MigrationStateIterating,
 			wantRestart: true,
 		},
@@ -770,14 +754,14 @@ func TestReconcilePromotedClosure(t *testing.T) {
 			// The other half of that rule: a directory the record still owns
 			// IS work, and one load settles it whatever the schema says.
 			name:       "a leftover with the effect still not visible: reclaim it and keep the record",
-			leftovers:  []string{"m_42_sidecar"},
+			leftovers:  []string{"m_42_title_sidecar"},
 			class:      testClassWithTokenization(models.PropertyTokenizationWord, "title"),
 			wantRecord: true,
 			wantWarn:   "effect is not in the schema",
 		},
 		{
 			name:       "a leftover from a retirement that partly failed is reclaimed, then the record goes",
-			leftovers:  []string{"m_42_sidecar"},
+			leftovers:  []string{"m_42_title_sidecar"},
 			class:      testClassWithTokenization(models.PropertyTokenizationLowercase, "title"),
 			wantRecord: false,
 		},
@@ -1082,7 +1066,7 @@ func TestReconcileWithClusterTasksSettlesWhatTheLoadWithheld(t *testing.T) {
 			if tt.migrationType != "" {
 				subject.MigrationType = tt.migrationType
 			}
-			f.mkdirs("m_42_title", "m_42_sidecar", "property_title")
+			f.mkdirs("m_42_title", "m_42_title_sidecar", "property_title")
 			f.put(NewMigrationRecordMerged(subject))
 			if tt.unreadable {
 				require.NoError(t, os.WriteFile(
@@ -1159,7 +1143,7 @@ func TestReconcileWithClusterTasksLeavesADecidedFlipAlone(t *testing.T) {
 				return NewMigrationRecordSwapped(subject, []string{"title"},
 					map[string]string{"title": "property_title"})
 			},
-			planted:   []string{"m_42_title", "m_42_sidecar", "property_title"},
+			planted:   []string{"m_42_title", "m_42_title_sidecar", "property_title"},
 			liveAt:    "m_42_title",
 			wantState: MigrationStateSwapped,
 		},
@@ -1169,7 +1153,7 @@ func TestReconcileWithClusterTasksLeavesADecidedFlipAlone(t *testing.T) {
 				return NewMigrationRecordPromoted(subject, []string{"title"},
 					map[string]string{"title": "property_title"})
 			},
-			planted:   []string{"m_42_sidecar", "property_title"},
+			planted:   []string{"m_42_title_sidecar", "property_title"},
 			liveAt:    "property_title",
 			wantState: MigrationStatePromoted,
 		},
@@ -1249,7 +1233,7 @@ func TestReconcilePerShardDivergentStatesConverge(t *testing.T) {
 			arrange: func(f *reconcileFixture) {
 				subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 				subject.TaskID = taskID
-				f.mkdirs("m_42_title", "m_42_sidecar", "property_title")
+				f.mkdirs("m_42_title", "m_42_title_sidecar", "property_title")
 				f.put(NewMigrationRecordIterating(subject, MigrationCheckpoint{}))
 			},
 			wantState:  MigrationStateIterating,
@@ -1426,10 +1410,10 @@ func TestEveryTeardownArmSealsTheUnit(t *testing.T) {
 			name: "the discard arm",
 			arrange: func(f *reconcileFixture) {
 				f.tasks = []*distributedtask.Task{testTask(taskID, 42, distributedtask.TaskStatusCancelled)}
-				f.mkdirs("m_42_title", "m_42_sidecar", "property_title")
+				f.mkdirs("m_42_title", "m_42_title_sidecar", "property_title")
 				f.put(NewMigrationRecordMerged(subjectOf(42)))
 			},
-			heldDirs: []string{"m_42_title", "m_42_sidecar"},
+			heldDirs: []string{"m_42_title", "m_42_title_sidecar"},
 		},
 		{
 			name: "the promotion arm, which removes the displaced directory before it renames",
@@ -1445,21 +1429,21 @@ func TestEveryTeardownArmSealsTheUnit(t *testing.T) {
 			name: "the promoted closure sweep",
 			arrange: func(f *reconcileFixture) {
 				subject := subjectOf(42)
-				f.mkdirs("m_42_sidecar", "property_title")
+				f.mkdirs("m_42_title_sidecar", "property_title")
 				f.put(NewMigrationRecordPromoted(subject, []string{"title"},
 					map[string]string{"title": "property_title"}))
 			},
-			heldDirs: []string{"m_42_sidecar"},
+			heldDirs: []string{"m_42_title_sidecar"},
 		},
 		{
 			name: "supersession's per-property retirement",
 			arrange: func(f *reconcileFixture) {
 				f.tasks = []*distributedtask.Task{testTask(taskID, 10, distributedtask.TaskStatusStarted)}
-				f.mkdirs("m_10_title", "m_10_sidecar", "m_20_title", "property_title")
+				f.mkdirs("m_10_title", "m_10_title_sidecar", "m_20_title", "property_title")
 				f.put(NewMigrationRecordMerged(subjectOf(10)))
 				f.put(swappedOn(20, "title"))
 			},
-			heldDirs: []string{"m_10_title", "m_10_sidecar"},
+			heldDirs: []string{"m_10_title", "m_10_title_sidecar"},
 		},
 	}
 

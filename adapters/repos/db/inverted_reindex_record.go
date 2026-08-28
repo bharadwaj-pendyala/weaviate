@@ -330,7 +330,31 @@ func validateMigrationEnvelope(e migrationRecordEnvelope) error {
 	if err := validateMigrationHandles(e); err != nil {
 		return err
 	}
+	if err := validateOneSidecarPerProperty(e); err != nil {
+		return err
+	}
 	return validateDisplacedAreNotStaged(e)
+}
+
+// validateOneSidecarPerProperty refuses a record where two properties name the
+// same sidecar directory: ShutdownStagedBuckets is given one property and
+// closes the directory that property names, so a shared name takes down a
+// bucket another property is still serving from. (A restored archive may
+// carry any handle.)
+func validateOneSidecarPerProperty(e migrationRecordEnvelope) error {
+	owner := make(map[string]string, len(e.Subject.SidecarDirs))
+	for _, prop := range slices.Sorted(maps.Keys(e.Subject.SidecarDirs)) {
+		dir := e.Subject.SidecarDirs[prop]
+		if dir == "" {
+			continue
+		}
+		if other, taken := owner[dir]; taken {
+			return fmt.Errorf("record %q names sidecar directory %q for properties %q and %q",
+				e.Subject.Key, dir, other, prop)
+		}
+		owner[dir] = prop
+	}
+	return nil
 }
 
 // validateDisplacedAreNotStaged refuses a record whose flip displaced a

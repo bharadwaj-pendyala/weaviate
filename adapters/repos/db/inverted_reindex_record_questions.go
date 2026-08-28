@@ -41,17 +41,16 @@ type migrationRecordQuestions interface {
 // OwnsBucket is a subject fact, not a state fact: a migration owns directories
 // it created from creation until they are gone. The canonical directory is
 // deliberately not among them — it predates the migration and outlives it.
+//
+// Keyed by Properties, like [migrationOwnedDirs]: the one caller is the
+// invariant check that no directory survives unattributed, and an answer more
+// generous than the reclaimer's would pass on a state the reclaimer leaks.
 func (b migrationRecordBase) OwnsBucket(dir string) bool {
 	if dir == "" {
 		return false
 	}
-	for _, sidecar := range b.subject.SidecarDirs {
-		if sidecar == dir {
-			return true
-		}
-	}
-	for _, staged := range b.subject.StagedDirs {
-		if staged == dir {
+	for _, prop := range b.subject.Properties {
+		if b.subject.SidecarDirs[prop] == dir || b.subject.StagedDirs[prop] == dir {
 			return true
 		}
 	}
