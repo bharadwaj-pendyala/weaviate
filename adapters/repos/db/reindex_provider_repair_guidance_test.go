@@ -283,11 +283,12 @@ func mkMigrationRecordFor(t *testing.T, lsmPath, trackerDir, taskID string, task
 		TrackerDir:    trackerDir,
 		StagedDirs:    map[string]string{},
 		CanonicalDirs: map[string]string{},
+		SidecarDirs:   map[string]string{},
 	}
 	for _, prop := range props {
 		subject.StagedDirs[prop] = "staged_" + prop + "_" + trackerDir
 		subject.CanonicalDirs[prop] = "property_" + prop + "_searchable"
-		subject.SidecarDirs = append(subject.SidecarDirs, fixtureSidecarFor(subject.StagedDirs[prop]))
+		subject.SidecarDirs[prop] = fixtureSidecarFor(subject.StagedDirs[prop])
 	}
 
 	var rec MigrationRecord

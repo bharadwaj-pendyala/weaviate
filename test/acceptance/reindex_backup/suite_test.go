@@ -372,7 +372,7 @@ func testPostRestartOrphanAuditClearsTracker(t *testing.T, ctx context.Context, 
 		TrackerDir:           orphanDir,
 		StagedDirs:           map[string]string{"body": stagedBucket},
 		CanonicalDirs:        map[string]string{"body": "property_body_searchable"},
-		SidecarDirs:          []string{sidecarBucket},
+		SidecarDirs:          map[string]string{"body": sidecarBucket},
 	}, db.MigrationCheckpoint{}))
 	injectOrphanTrackerOnDisk(t, ctx, container, lsmPath, orphanDir, sidecarBucket,
 		`{"taskID":"orphan-from-prefix-backup","taskVersion":1,"unitID":"u0","payload":{"collection":"`+className+`","migrationType":"change-tokenization","properties":["body"],"targetTokenization":"lowercase","bucketStrategy":"map_collection"}}`,
