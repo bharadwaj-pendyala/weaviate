@@ -312,6 +312,46 @@ func mkMigrationRecordFor(t *testing.T, lsmPath, trackerDir, taskID string, task
 	return filepath.Join(lsmPath, ".migrations", trackerDir)
 }
 
+// The probe reads each shard's records once, not once per (index type,
+// property). A change-tokenization of three properties runs six tuples, and a
+// regression that reads per tuple pays six directory reads and six sets of
+// record parses per shard — on a path that runs for every shard a cancelled
+// task touched. migrationRecordsAt logs one line per read for exactly this
+// reason: the cost has no other observable.
+func TestHasLocalPostMergeStateReadsEachShardsRecordsOnce(t *testing.T) {
+	ctx := context.Background()
+	shard, idx := testShard(t, ctx, "C")
+	concrete, err := unwrapShard(ctx, shard)
+	require.NoError(t, err)
+
+	// Iterating, so nothing short-circuits the walk and every property is
+	// visited: a probe that answered on the first one would read once by luck.
+	mkMigrationRecordFor(t, concrete.pathLSM(), postMergeTrackerDir(t, "title"),
+		"T_cancel", 1, "u1__n1", ReindexTypeChangeTokenization, MigrationStateIterating, "title")
+
+	logger, hook := logrustest.NewNullLogger()
+	logger.SetLevel(logrus.DebugLevel)
+	p := NewReindexProvider(
+		&DB{indices: map[string]*Index{indexID(entschema.ClassName("C")): idx}},
+		nil, nil, logger, "n1", nil, ctx)
+
+	require.False(t, p.hasLocalPostMergeState(ctx, &ReindexTaskPayload{
+		MigrationType: ReindexTypeChangeTokenization,
+		Collection:    "C",
+		Properties:    []string{"title", "author", "isbn"},
+		UnitToShard:   map[string]string{"u1": shard.Name(), "u2": shard.Name()},
+	}))
+
+	reads := 0
+	for _, entry := range hook.AllEntries() {
+		if strings.Contains(entry.Message, "read migration records") {
+			reads++
+		}
+	}
+	require.Equal(t, 1, reads,
+		"one read for the one shard the payload names, whatever the property count")
+}
+
 // postMergeEvidenceFixture stands up a one-shard collection carrying the
 // on-disk signature of a swap this node got far enough into: a migration whose
 // data is committed.
