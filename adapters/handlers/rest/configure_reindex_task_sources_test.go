@@ -89,11 +89,14 @@ func TestMigrationClusterTaskSourceReadsTheLeader(t *testing.T) {
 	}}
 
 	tests := []struct {
-		name      string
-		raft      *fakeMigrationTaskRaft
-		wantErr   bool
-		wantTasks []*distributedtask.Task
-		because   string
+		name    string
+		raft    *fakeMigrationTaskRaft
+		wantErr bool
+		// wantErrText keeps the two failing rows apart: without it a build
+		// that returned one error for both would keep them green.
+		wantErrText string
+		wantTasks   []*distributedtask.Task
+		because     string
 	}{
 		{
 			name: "caught up, leader answers",
@@ -104,18 +107,20 @@ func TestMigrationClusterTaskSourceReadsTheLeader(t *testing.T) {
 			wantTasks: tasks,
 		},
 		{
-			name:    "the leader is unreachable",
-			raft:    &fakeMigrationTaskRaft{caughtUp: true, listErr: errors.New("leader unreachable")},
-			wantErr: true,
-			because: "an unreachable leader must not read as an empty task map",
+			name:        "the leader is unreachable",
+			raft:        &fakeMigrationTaskRaft{caughtUp: true, listErr: errors.New("leader unreachable")},
+			wantErr:     true,
+			wantErrText: "leader unreachable",
+			because:     "an unreachable leader must not read as an empty task map",
 		},
 		{
 			name: "still applying its tail: this node must not answer for the cluster",
 			raft: &fakeMigrationTaskRaft{
 				list: map[string][]*distributedtask.Task{db.ReindexNamespace: tasks},
 			},
-			wantErr: true,
-			because: "a partial map must not be served as the cluster's list",
+			wantErr:     true,
+			wantErrText: "still applying its RAFT log",
+			because:     "a partial map must not be served as the cluster's list",
 		},
 	}
 
@@ -124,6 +129,7 @@ func TestMigrationClusterTaskSourceReadsTheLeader(t *testing.T) {
 			got, err := newMigrationClusterTaskSource(tt.raft)(context.Background())
 			if tt.wantErr {
 				require.Error(t, err, tt.because)
+				require.Contains(t, err.Error(), tt.wantErrText, tt.because)
 				return
 			}
 			require.NoError(t, err)

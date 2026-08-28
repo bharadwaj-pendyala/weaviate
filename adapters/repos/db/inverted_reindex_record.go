@@ -373,27 +373,27 @@ func decodeMigrationRecord(data []byte) (MigrationRecord, error) {
 
 	switch env.State {
 	case MigrationStateIterating:
-		if err := env.requireBlocks(true, false); err != nil {
+		if err := env.requireBlocks(migrationBlocks{checkpoint: true}); err != nil {
 			return nil, err
 		}
 		return NewMigrationRecordIterating(env.Subject, *env.Checkpoint), nil
 	case MigrationStateIterated:
-		if err := env.requireBlocks(false, false); err != nil {
+		if err := env.requireBlocks(migrationBlocks{}); err != nil {
 			return nil, err
 		}
 		return NewMigrationRecordIterated(env.Subject), nil
 	case MigrationStateMerged:
-		if err := env.requireBlocks(false, false); err != nil {
+		if err := env.requireBlocks(migrationBlocks{}); err != nil {
 			return nil, err
 		}
 		return NewMigrationRecordMerged(env.Subject), nil
 	case MigrationStateSwapped:
-		if err := env.requireBlocks(false, true); err != nil {
+		if err := env.requireBlocks(migrationBlocks{flip: true}); err != nil {
 			return nil, err
 		}
 		return NewMigrationRecordSwapped(env.Subject, env.Flip.Flipped, env.Flip.DisplacedDirs), nil
 	case MigrationStatePromoted:
-		if err := env.requireBlocks(false, true); err != nil {
+		if err := env.requireBlocks(migrationBlocks{flip: true}); err != nil {
 			return nil, err
 		}
 		return NewMigrationRecordPromoted(env.Subject, env.Flip.Flipped, env.Flip.DisplacedDirs), nil
@@ -470,14 +470,21 @@ func validateMigrationHandles(e migrationRecordEnvelope) error {
 	return nil
 }
 
-func (e migrationRecordEnvelope) requireBlocks(checkpoint, flip bool) error {
-	if (e.Checkpoint != nil) != checkpoint {
+// migrationBlocks names which optional blocks a state carries, so the call
+// sites read as the states they decode rather than as two bare booleans.
+type migrationBlocks struct {
+	checkpoint bool
+	flip       bool
+}
+
+func (e migrationRecordEnvelope) requireBlocks(want migrationBlocks) error {
+	if (e.Checkpoint != nil) != want.checkpoint {
 		return fmt.Errorf("record %q in state %q: checkpoint block present=%v, wanted=%v",
-			e.Subject.Key, e.State, e.Checkpoint != nil, checkpoint)
+			e.Subject.Key, e.State, e.Checkpoint != nil, want.checkpoint)
 	}
-	if (e.Flip != nil) != flip {
+	if (e.Flip != nil) != want.flip {
 		return fmt.Errorf("record %q in state %q: flip block present=%v, wanted=%v",
-			e.Subject.Key, e.State, e.Flip != nil, flip)
+			e.Subject.Key, e.State, e.Flip != nil, want.flip)
 	}
 	return nil
 }

@@ -338,20 +338,15 @@ const unboundedRecoveryPayload = 0
 // parsed, so a refusal is not counted as a read: it cost a stat.
 var errRecoveryPayloadTooLarge = errors.New("recovery payload exceeds the parse bound")
 
-// readRecoveryPropertyNames extracts the `Properties` slice from a
-// migration tracker dir's payload.mig sentinel file (see
-// ShardReindexTaskGeneric.SaveRecoveryPayload). The error keeps a missing
-// payload (os.IsNotExist) distinguishable from an unreadable or unparseable
-// one: [migrationDirScope.inScopeFailingOpen] treats only the former as "the task recorded
-// nothing", while the latter makes the unloaded-shard gate and the recovery
-// probe ([hasUntidiedTracker]) fail open.
-//
-// maxBytes refuses a larger payload before opening it;
-// [unboundedRecoveryPayload] reads any size.
 // refuseOversizedRecoveryPayload reports a payload.mig too large to read where
 // it is being read. The bound travels with the caller because the two readers
 // bound for opposite reasons; see the constants above.
+// [unboundedRecoveryPayload] refuses nothing, so the unbounded reader calls
+// this too rather than carrying its own copy of the check.
 func refuseOversizedRecoveryPayload(path string, bound int64) error {
+	if bound <= unboundedRecoveryPayload {
+		return nil
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -413,17 +408,18 @@ func readRecoveryPayloadFacts(migDir string) (recoveryPayloadFacts, error) {
 	}, nil
 }
 
+// readRecoveryPropertyNames extracts the `Properties` slice from a migration
+// tracker dir's payload.mig sentinel file (see
+// [ShardReindexTaskGeneric.SaveRecoveryPayload]). The error keeps a missing
+// payload (os.IsNotExist) distinguishable from an unreadable or unparseable
+// one: only the former reads as "the task recorded nothing".
+//
+// maxBytes refuses a larger payload before opening it;
+// [unboundedRecoveryPayload] reads any size.
 func readRecoveryPropertyNames(migDir string, maxBytes int64) ([]string, error) {
 	path := filepath.Join(migDir, reindexRecoveryPayloadFile)
-	if maxBytes > unboundedRecoveryPayload {
-		info, err := os.Stat(path)
-		if err != nil {
-			return nil, err
-		}
-		if info.Size() > maxBytes {
-			return nil, fmt.Errorf("%w: %s holds %d bytes, bound is %d",
-				errRecoveryPayloadTooLarge, reindexRecoveryPayloadFile, info.Size(), maxBytes)
-		}
+	if err := refuseOversizedRecoveryPayload(path, maxBytes); err != nil {
+		return nil, err
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {

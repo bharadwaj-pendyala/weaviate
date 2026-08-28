@@ -29,6 +29,9 @@ func TestMigrationEffectStatus(t *testing.T) {
 		properties []string
 		class      *models.Class
 		want       migrationEffect
+		// wantMissing is the property list a pending effect names. It is only
+		// a log field, but nothing else pins which property the read blamed.
+		wantMissing []string
 	}{
 		{
 			name: "change-tokenization: the property carries the target tokenization", mtype: ReindexTypeChangeTokenization,
@@ -39,8 +42,9 @@ func TestMigrationEffectStatus(t *testing.T) {
 		{
 			name: "change-tokenization: the property still carries the old one", mtype: ReindexTypeChangeTokenization,
 			target: models.PropertyTokenizationLowercase, properties: []string{"title"},
-			class: &models.Class{Properties: []*models.Property{{Name: "title", Tokenization: models.PropertyTokenizationWord}}},
-			want:  migrationEffectPending,
+			class:       &models.Class{Properties: []*models.Property{{Name: "title", Tokenization: models.PropertyTokenizationWord}}},
+			want:        migrationEffectPending,
+			wantMissing: []string{"title"},
 		},
 		{
 			name: "change-tokenization: one of two properties has not flipped", mtype: ReindexTypeChangeTokenization,
@@ -49,7 +53,8 @@ func TestMigrationEffectStatus(t *testing.T) {
 				{Name: "title", Tokenization: models.PropertyTokenizationLowercase},
 				{Name: "body", Tokenization: models.PropertyTokenizationWord},
 			}},
-			want: migrationEffectPending,
+			want:        migrationEffectPending,
+			wantMissing: []string{"body"},
 		},
 		{
 			name: "change-tokenization-filterable", mtype: ReindexTypeChangeTokenizationFilterable,
@@ -64,8 +69,9 @@ func TestMigrationEffectStatus(t *testing.T) {
 		},
 		{
 			name: "enable-filterable: flag unset reads as not yet committed", mtype: ReindexTypeEnableFilterable, properties: []string{"title"},
-			class: &models.Class{Properties: []*models.Property{{Name: "title"}}},
-			want:  migrationEffectPending,
+			class:       &models.Class{Properties: []*models.Property{{Name: "title"}}},
+			want:        migrationEffectPending,
+			wantMissing: []string{"title"},
 		},
 		{
 			name: "enable-searchable: all three parts of the effect are visible", mtype: ReindexTypeEnableSearchable,
@@ -82,7 +88,8 @@ func TestMigrationEffectStatus(t *testing.T) {
 			class: &models.Class{Properties: []*models.Property{{
 				Name: "title", IndexSearchable: boolPtr(true), Tokenization: models.PropertyTokenizationWord,
 			}}},
-			want: migrationEffectPending,
+			want:        migrationEffectPending,
+			wantMissing: []string{"title"},
 		},
 		{
 			name: "change-algorithm: the per-property stamp", mtype: ReindexTypeChangeAlgorithm, properties: []string{"title"},
@@ -99,8 +106,9 @@ func TestMigrationEffectStatus(t *testing.T) {
 		},
 		{
 			name: "change-algorithm: neither", mtype: ReindexTypeChangeAlgorithm, properties: []string{"title"},
-			class: &models.Class{Properties: []*models.Property{{Name: "title"}}},
-			want:  migrationEffectPending,
+			class:       &models.Class{Properties: []*models.Property{{Name: "title"}}},
+			want:        migrationEffectPending,
+			wantMissing: []string{"title"},
 		},
 		{
 			name: "enable-rangeable", mtype: ReindexTypeEnableRangeable, properties: []string{"price"},
@@ -109,8 +117,9 @@ func TestMigrationEffectStatus(t *testing.T) {
 		},
 		{
 			name: "enable-rangeable: flag not set", mtype: ReindexTypeEnableRangeable, properties: []string{"price"},
-			class: &models.Class{Properties: []*models.Property{{Name: "price"}}},
-			want:  migrationEffectPending,
+			class:       &models.Class{Properties: []*models.Property{{Name: "price"}}},
+			want:        migrationEffectPending,
+			wantMissing: []string{"price"},
 		},
 		{
 			name: "repair-rangeable reads the same flag", mtype: ReindexTypeRepairRangeable, properties: []string{"price"},
@@ -134,8 +143,9 @@ func TestMigrationEffectStatus(t *testing.T) {
 		},
 		{
 			name: "one property deleted, the other still not flipped", mtype: ReindexTypeEnableFilterable, properties: []string{"title", "body"},
-			class: &models.Class{Properties: []*models.Property{{Name: "body"}}},
-			want:  migrationEffectPending,
+			class:       &models.Class{Properties: []*models.Property{{Name: "body"}}},
+			want:        migrationEffectPending,
+			wantMissing: []string{"body"},
 		},
 		{
 			name: "one property deleted, the other flipped: the survivor is the evidence", mtype: ReindexTypeEnableFilterable, properties: []string{"title", "body"},
@@ -173,9 +183,8 @@ func TestMigrationEffectStatus(t *testing.T) {
 			}
 			effect, missing := migrationEffectStatus(tt.class, subject)
 			require.Equal(t, tt.want, effect)
-			if tt.want != migrationEffectPending {
-				require.Empty(t, missing, "only a pending effect names properties")
-			}
+			require.Equal(t, tt.wantMissing, missing,
+				"the properties a pending read blamed")
 			// The split: an effect the schema cannot show is not evidence a
 			// task committed, even though it is enough to let the closure
 			// sweep retire the record.

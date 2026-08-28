@@ -151,11 +151,8 @@ func (db *DB) hasUndecidedMigrationRecords() bool {
 				// counting it as waiting would buy a round-trip nothing will use.
 				return nil
 			}
-			for _, rec := range store.Records() {
-				if !rec.PointerSwapped() {
-					undecided = true
-					return nil
-				}
+			if store.HasUndecided() {
+				undecided = true
 			}
 			return nil
 		})
@@ -278,8 +275,9 @@ func (s *Shard) warnAboutLegacyMarkerMigrations() {
 			WithField("marker", legacy.marker).
 			WithField("properties", props).
 			Warn("a migration completed on an older release holds these properties' only copy under its staged " +
-				"directory; this build preserves it but cannot promote it, so they serve empty until the data is " +
-				"restored or the node is downgraded")
+				"directory; the load-time finalize did not promote it, so they serve empty until it does. " +
+				"Check the finalize log for this tracker: its generation is likely not the highest one the " +
+				"directory carries a completion marker for")
 	}
 }
 

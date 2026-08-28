@@ -756,12 +756,12 @@ func (t *ShardReindexTaskGeneric) ensureReindexBucketsLoadedForSwap(
 	for _, propName := range props {
 		reindexName := t.reindexBucketName(propName)
 		if store.Bucket(reindexName) == nil &&
-			dirExistsAtPath(filepath.Join(lsmPath, reindexName)) {
+			dirExists(filepath.Join(lsmPath, reindexName)) {
 			missingReindex = append(missingReindex, propName)
 		}
 		ingestName := t.ingestBucketName(propName)
 		if store.Bucket(ingestName) == nil &&
-			dirExistsAtPath(filepath.Join(lsmPath, ingestName)) {
+			dirExists(filepath.Join(lsmPath, ingestName)) {
 			missingIngest = append(missingIngest, propName)
 		}
 	}
@@ -1889,7 +1889,7 @@ func (t *ShardReindexTaskGeneric) backupBucketName(propName string) string {
 func (t *ShardReindexTaskGeneric) firstMissingReindexBucketDir(lsmPath string, props []string) string {
 	for _, propName := range props {
 		dir := filepath.Join(lsmPath, t.reindexBucketName(propName))
-		if !dirExistsAtPath(dir) {
+		if !dirExists(dir) {
 			return dir
 		}
 	}
@@ -1950,9 +1950,9 @@ func (t *ShardReindexTaskGeneric) recoverRuntimeSwapBuckets(ctx context.Context,
 		ingestDir := filepath.Join(lsmPath, t.ingestBucketName(propName))
 		backupDir := filepath.Join(lsmPath, t.backupBucketName(propName))
 
-		mainExists := dirExistsAtPath(mainDir)
-		backupExists := dirExistsAtPath(backupDir)
-		ingestExists := dirExistsAtPath(ingestDir)
+		mainExists := dirExists(mainDir)
+		backupExists := dirExists(backupDir)
+		ingestExists := dirExists(ingestDir)
 
 		switch {
 		case mainExists && !backupExists:
@@ -2115,7 +2115,7 @@ func (t *ShardReindexTaskGeneric) removeBucketsDirs(ctx context.Context, logger 
 	return eg.Wait()
 }
 
-func dirExistsAtPath(path string) bool {
+func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
 }

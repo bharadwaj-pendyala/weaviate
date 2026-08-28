@@ -783,19 +783,6 @@ func removeUnloadedSidecarsForOrphan(lsmPath string, o *orphanReindexTracker, lo
 	}
 }
 
-// sidecarDirsForOrphan returns the lsm-relative sidecar bucket dir
-// names the strategy registry says are owned by this orphan's tracker
-// dir + property set + generation. Computed by consulting
-// [migrationSuffixes] keyed off the orphan's tracker dirName: the
-// strategy itself owns the IngestSuffix / BackupSuffix /
-// ReindexSuffix tail base, and the audit appends the matching
-// `_<gen>` to each. Returns an empty slice when the tracker dirName
-// does not match any registered strategy or when the orphan carries
-// no properties (class-level cleanup is handled by the caller via
-// direct tracker-dir removal).
-//
-// Closes S3 by routing through the strategy registry instead of
-// re-deriving sidecar names by hard-coded string prefix.
 // migrationCompletionMarker reports the completed-migration marker a tracker
 // directory carries, if any. The record store reads it to tell a marker-era
 // tracker apart from one this build wrote.
@@ -808,9 +795,24 @@ func migrationCompletionMarker(trackerPath string) (string, bool) {
 	return "", false
 }
 
-// migrationSidecarDirsFor names the sidecar bucket dirs one tracker owns.
-// Shared with the legacy-marker preserve pass so a directory the audit would
-// reclaim and a directory a sweep must keep are never derived two ways.
+// sidecarDirsForOrphan returns the lsm-relative sidecar bucket dir names the
+// strategy registry says this orphan's tracker owns. Returns an empty slice
+// when the tracker dirName matches no registered strategy, or when the orphan
+// carries no properties — class-level cleanup removes the tracker dir itself.
+func sidecarDirsForOrphan(o *orphanReindexTracker) []string {
+	return migrationSidecarDirsFor(o.dirName, o.prefix, o.generation, o.properties)
+}
+
+// migrationSidecarDirsFor names the sidecar bucket dirs one tracker owns:
+// <main><ingestSuffix>_<gen> and <main><reindexSuffix>_<gen>, composed through
+// [migrationSuffixes] keyed by the tracker's own dir name rather than matched
+// by string prefix. A new strategy is therefore picked up automatically.
+//
+// The reclaiming audit and the preserve pass both derive from here, so a
+// directory one would remove and one must keep are never derived two ways.
+// The displaced <main><backupSuffix>_<gen> is deliberately not among them: it
+// holds the pre-swap main bucket, and no reader here can tell a migration that
+// still needs it from one that does not.
 func migrationSidecarDirsFor(dirName, prefix string, generation int, properties []string) []string {
 	if len(properties) == 0 {
 		return nil
@@ -825,30 +827,6 @@ func migrationSidecarDirsFor(dirName, prefix string, generation int, properties 
 	for _, propName := range properties {
 		main := suffixes.sourceBucketName(propName)
 		out = append(out, main+suffixes.ingestSuffix+genTail)
-		if reindexSuffix != "" {
-			out = append(out, main+reindexSuffix+genTail)
-		}
-	}
-	return out
-}
-
-func sidecarDirsForOrphan(o *orphanReindexTracker) []string {
-	if len(o.properties) == 0 {
-		return nil
-	}
-	suffixes := migrationSuffixes(o.dirName)
-	if suffixes == nil {
-		return nil
-	}
-	reindexSuffix := reindexSuffixFor(o.prefix)
-	genTail := genSuffix(o.generation)
-	out := make([]string, 0, 3*len(o.properties))
-	for _, propName := range o.properties {
-		main := suffixes.sourceBucketName(propName)
-		out = append(out,
-			main+suffixes.ingestSuffix+genTail,
-			main+suffixes.backupSuffix+genTail,
-		)
 		if reindexSuffix != "" {
 			out = append(out, main+reindexSuffix+genTail)
 		}

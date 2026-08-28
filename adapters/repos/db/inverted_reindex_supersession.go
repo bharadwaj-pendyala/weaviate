@@ -91,22 +91,6 @@ func migrationDirClaimedAsDisplaced(all []MigrationRecord, subject MigrationSubj
 	return false
 }
 
-// migrationRecordFullySuperseded reports whether every property of rec has
-// been superseded, the condition for removing the record itself rather than
-// just some of its directories.
-func migrationRecordFullySuperseded(all []MigrationRecord, rec MigrationRecord) bool {
-	subject := rec.Subject()
-	if !rec.StagedDataComplete() || len(subject.Properties) == 0 {
-		return false
-	}
-	for _, prop := range subject.Properties {
-		if !migrationPropertySuperseded(all, subject, prop) {
-			return false
-		}
-	}
-	return true
-}
-
 // RetireSuperseded runs supersession in the process that flipped. An
 // unreadable record never retires anything and never supersedes anything, so
 // it withholds this pass exactly as it withholds reconciliation's.
@@ -180,7 +164,11 @@ func (r *migrationReconciler) retireOneSealed(ctx context.Context, all []Migrati
 	}
 	// A directory whose removal failed must keep the record naming it, or
 	// nothing can attribute it; the next load retries.
-	if !retired || !migrationRecordFullySuperseded(all, rec) {
+	// Fully superseded is the condition for removing the record itself rather
+	// than just some of its directories, and the caller already computed which
+	// properties a successor took over.
+	if !retired || len(subject.Properties) == 0 ||
+		len(superseded) != len(subject.Properties) || !rec.StagedDataComplete() {
 		return
 	}
 

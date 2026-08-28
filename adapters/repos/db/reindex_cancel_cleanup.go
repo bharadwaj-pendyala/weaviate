@@ -36,7 +36,7 @@ import (
 // Caller MUST ensure no local reindex goroutine is touching the tuple —
 // otherwise the cleanup races the worker's writes to the __reindex/__ingest
 // buckets. The cancel handler enforces this via
-// [ReindexProvider.SealLocalTaskDrain].
+// [ReindexProvider.WaitForLocalTaskDrain].
 type StalePartialReindexSweep func(ctx context.Context, collection, propName, indexType string) error
 
 // NewStalePartialReindexSweep returns the CANCEL→retry counterpart to the
@@ -348,7 +348,10 @@ func hasStalePartialReindexState(
 		matched, unreadablePayload := scope.inScopeFailingOpen(name)
 		if unreadablePayload {
 			// A payload this gate can't read could name this property; only
-			// hydrating and re-reading can tell, so this is not "clean".
+			// hydrating and re-reading can tell, so this is not "clean". The
+			// withholdEverything arm above answers the opposite way for a
+			// different population: there the unreadable state is already
+			// preserved, so a load would reclaim nothing.
 			return true, false
 		}
 		if !matched {

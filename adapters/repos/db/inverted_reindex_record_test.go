@@ -126,72 +126,93 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 		return out
 	}
 
+	// wantErr is what each row's refusal has to say. Without it a build that
+	// collapsed every validation into one error would keep all of these green.
 	tests := []struct {
-		name string
-		data []byte
+		name    string
+		data    []byte
+		wantErr string
 	}{
-		{name: "not json at all", data: []byte("this is not a record")},
-		{name: "truncated mid-write", data: []byte(`{"formatVersion":1,"state":"mer`)},
-		{name: "empty file", data: nil},
 		{
-			name: "format version from a future build",
-			data: valid(func(env map[string]any) { env["formatVersion"] = 99 }),
+			name: "not json at all", data: []byte("this is not a record"),
+			wantErr: "decode record:",
 		},
 		{
-			name: "state this build does not know",
-			data: valid(func(env map[string]any) { env["state"] = "tidied" }),
+			name: "truncated mid-write", data: []byte(`{"formatVersion":1,"state":"mer`),
+			wantErr: "unexpected end of JSON input",
+		},
+		{name: "empty file", data: nil, wantErr: "unexpected end of JSON input"},
+		{
+			name:    "format version from a future build",
+			data:    valid(func(env map[string]any) { env["formatVersion"] = 99 }),
+			wantErr: "unknown record format version 99",
+		},
+		{
+			name:    "state this build does not know",
+			data:    valid(func(env map[string]any) { env["state"] = "tidied" }),
+			wantErr: "names unknown state \"tidied\"",
 		},
 		{
 			name: "strategy code this build does not know",
 			data: valid(func(env map[string]any) {
 				env["subject"].(map[string]any)["key"].(map[string]any)["strategyCode"] = "quantum_reindex"
 			}),
+			wantErr: "record key \"42/quantum_reindex/shard-1__node-0\" is incomplete or names an unknown strategy",
 		},
 		{
 			name: "migration type this build does not know",
 			data: valid(func(env map[string]any) {
 				env["subject"].(map[string]any)["migrationType"] = "reticulate-splines"
 			}),
+			wantErr: "names unknown migration type \"reticulate-splines\"",
 		},
 		{
 			name: "task version zero",
 			data: valid(func(env map[string]any) {
 				env["subject"].(map[string]any)["key"].(map[string]any)["taskVersion"] = 0
 			}),
+			wantErr: "record key \"0/enable_filterable/shard-1__node-0\" is incomplete",
 		},
 		{
 			name: "unit missing from the key",
 			data: valid(func(env map[string]any) {
 				env["subject"].(map[string]any)["key"].(map[string]any)["unitID"] = ""
 			}),
+			wantErr: "record key \"42/enable_filterable/\" is incomplete",
 		},
 		{
-			name: "task ID missing",
-			data: valid(func(env map[string]any) { env["subject"].(map[string]any)["taskID"] = "" }),
+			name:    "task ID missing",
+			data:    valid(func(env map[string]any) { env["subject"].(map[string]any)["taskID"] = "" }),
+			wantErr: "has no task ID",
 		},
 		{
 			name: "checkpoint on a state that has none",
 			data: valid(func(env map[string]any) {
 				env["checkpoint"] = map[string]any{"processedCount": 1}
 			}),
+			wantErr: "in state \"merged\": checkpoint block present=true, wanted=false",
 		},
 		{
 			name: "flip block on a state that has none",
 			data: valid(func(env map[string]any) {
 				env["flip"] = map[string]any{"flipped": []string{"title"}}
 			}),
+			wantErr: "in state \"merged\": flip block present=true, wanted=false",
 		},
 		{
-			name: "iterating without its checkpoint",
-			data: valid(func(env map[string]any) { env["state"] = string(MigrationStateIterating) }),
+			name:    "iterating without its checkpoint",
+			data:    valid(func(env map[string]any) { env["state"] = string(MigrationStateIterating) }),
+			wantErr: "in state \"iterating\": checkpoint block present=false, wanted=true",
 		},
 		{
-			name: "swapped without its flip block",
-			data: valid(func(env map[string]any) { env["state"] = string(MigrationStateSwapped) }),
+			name:    "swapped without its flip block",
+			data:    valid(func(env map[string]any) { env["state"] = string(MigrationStateSwapped) }),
+			wantErr: "in state \"swapped\": flip block present=false, wanted=true",
 		},
 		{
-			name: "promoted without its flip block",
-			data: valid(func(env map[string]any) { env["state"] = string(MigrationStatePromoted) }),
+			name:    "promoted without its flip block",
+			data:    valid(func(env map[string]any) { env["state"] = string(MigrationStatePromoted) }),
+			wantErr: "in state \"promoted\": flip block present=false, wanted=true",
 		},
 		{
 			// Promotion removes the displaced directory and then renames the
@@ -206,6 +227,7 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 					"displacedDirs": map[string]any{"title": subject["stagedDirs"].(map[string]any)["title"]},
 				}
 			}),
+			wantErr: "says property \"title\" displaced \"m_42_title\", the directory staged for property \"title\"",
 		},
 		{
 			// Promoting title removes body's only staged copy, and body then
@@ -224,12 +246,14 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 					"displacedDirs": map[string]any{"title": staged["body"]},
 				}
 			}),
+			wantErr: "says property \"title\" displaced \"m_42_body\", the directory staged for property \"body\"",
 		},
 		{
 			name: "a unit the record file name could not carry",
 			data: valid(func(env map[string]any) {
 				env["subject"].(map[string]any)["key"].(map[string]any)["unitID"] = "../shard-2__node-0"
 			}),
+			wantErr: "record key \"42/enable_filterable/../shard-2__node-0\" is incomplete",
 		},
 	}
 
@@ -237,6 +261,7 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rec, err := decodeMigrationRecord(tt.data)
 			require.Error(t, err)
+			require.Contains(t, err.Error(), tt.wantErr)
 			require.Nil(t, rec)
 		})
 	}
@@ -872,45 +897,55 @@ func TestDecodeMigrationRecordRejectsEscapingHandles(t *testing.T) {
 // — it lands under a name the next load refuses, wedging that key and
 // withholding every removal on the shard until fixed by hand.
 func TestTheWriterRefusesWhatTheLoaderWouldReject(t *testing.T) {
+	// wantErr names the rule the row breaks. Without it a build that collapsed
+	// every validation into one error would keep all of these green.
 	tests := []struct {
 		name    string
 		mangle  func(*MigrationSubject)
 		because string
+		wantErr string
 	}{
 		{
 			name:    "a tracker directory that leaves the shard root",
 			mangle:  func(s *MigrationSubject) { s.TrackerDir = "../../../etc" },
 			because: "the tracker directory is joined onto the shard and handed to a recursive delete",
+			wantErr: "names tracker directory \"../../../etc\"",
 		},
 		{
 			name:    "a sidecar directory carrying a separator",
 			mangle:  func(s *MigrationSubject) { s.SidecarDirs = map[string]string{"title": "a/b"} },
 			because: "a sidecar directory is removed by name",
+			wantErr: "names sidecar directory \"a/b\"",
 		},
 		{
 			name:    "a staged directory that resolves back to the shard root",
 			mangle:  func(s *MigrationSubject) { s.StagedDirs["title"] = "x/.." },
 			because: "Join resolves it to the LSM directory, which then reaches os.RemoveAll",
+			wantErr: "names staged directory \"x/..\"",
 		},
 		{
 			name:    "an empty property name",
 			mangle:  func(s *MigrationSubject) { s.Properties = []string{""} },
 			because: "an empty name composes into another property's sidecar",
+			wantErr: "names property \"\"",
 		},
 		{
 			name:    "a record with no task ID",
 			mangle:  func(s *MigrationSubject) { s.TaskID = "" },
 			because: "nothing could match the record to a task, so no verdict could ever settle it",
+			wantErr: "has no task ID",
 		},
 		{
 			name:    "a strategy code outside the known set",
 			mangle:  func(s *MigrationSubject) { s.Key.StrategyCode = "bogus" },
 			because: "the code is in the file name, so the loader refuses a file the writer chose",
+			wantErr: "record key \"42/bogus/shard-1__node-0\" is incomplete or names an unknown strategy",
 		},
 		{
 			name:    "a migration type this build does not know",
 			mangle:  func(s *MigrationSubject) { s.MigrationType = "not-a-migration" },
 			because: "the type decides which schema effect answers for the record",
+			wantErr: "names unknown migration type \"not-a-migration\"",
 		},
 	}
 
@@ -922,6 +957,7 @@ func TestTheWriterRefusesWhatTheLoaderWouldReject(t *testing.T) {
 
 			_, err := encodeMigrationRecord(rec)
 			require.Error(t, err, tt.because)
+			require.Contains(t, err.Error(), tt.wantErr)
 
 			logger, _ := test.NewNullLogger()
 			store := NewMigrationRecordStore(t.TempDir(), logger)

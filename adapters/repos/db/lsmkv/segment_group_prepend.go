@@ -113,7 +113,7 @@ func (sg *SegmentGroup) PrependSegmentsFromBucket(ctx context.Context, srcDir st
 	if err != nil {
 		return fmt.Errorf("prepend segments: compute timestamp shift: %w", err)
 	}
-	copiedDBPaths, err := copySegmentFiles(srcDir, sg.dir, srcDBFiles, shift)
+	copiedDBPaths, err := copySegmentFiles(srcDir, sg.dir, srcDBFiles, shift, diskio.Fsync)
 	if err != nil {
 		return fmt.Errorf("prepend segments: copy files: %w", err)
 	}
@@ -187,13 +187,16 @@ func discoverDBFiles(dir string) ([]string, error) {
 // the suffix. A crash mid-copy leaves only .tmp files that are ignored by
 // newSegmentGroup on recovery.
 //
-// dstDir is fsynced before returning: the caller durably records the staged
-// data as complete, and without this sync a crash can drop the per-file
-// rename entries while keeping that record, so the next load promotes a
-// bucket missing segments.
+// syncDir syncs dstDir once every rename is done — production passes
+// [diskio.Fsync]. It is a parameter so a test can record what was synced and
+// when: the caller durably records the staged data as complete, and without
+// this sync a crash can drop the per-file rename entries while keeping that
+// record, so the next load promotes a bucket missing segments.
 //
 // Returns the list of final .db filenames (without .tmp) in dstDir.
-func copySegmentFiles(srcDir, dstDir string, dbFiles []string, shift int64) ([]string, error) {
+func copySegmentFiles(srcDir, dstDir string, dbFiles []string, shift int64,
+	syncDir func(string) error,
+) ([]string, error) {
 	copiedDBPaths := make([]string, 0, len(dbFiles))
 
 	for _, dbFile := range dbFiles {
@@ -239,7 +242,7 @@ func copySegmentFiles(srcDir, dstDir string, dbFiles []string, shift int64) ([]s
 		copiedDBPaths = append(copiedDBPaths, dstDBFile)
 	}
 
-	if err := diskio.Fsync(dstDir); err != nil {
+	if err := syncDir(dstDir); err != nil {
 		return nil, fmt.Errorf("sync %s: %w", dstDir, err)
 	}
 

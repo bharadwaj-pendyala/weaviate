@@ -178,6 +178,7 @@ func (s *MigrationRecordStore) Load() error {
 				unreadable = append(unreadable, MigrationRecordUnreadable{
 					FileName: name,
 					Reason:   fmt.Sprintf("content names record file %q", got),
+					Scope:    MigrationRecordFaultFile,
 				})
 				continue
 			}
@@ -185,7 +186,9 @@ func (s *MigrationRecordStore) Load() error {
 		case MigrationRecordAbsent:
 			continue
 		case MigrationRecordNotUnderstood:
-			unreadable = append(unreadable, MigrationRecordUnreadable{FileName: name, Reason: err.Error()})
+			unreadable = append(unreadable, MigrationRecordUnreadable{
+				FileName: name, Reason: err.Error(), Scope: MigrationRecordFaultFile,
+			})
 		}
 	}
 
@@ -331,6 +334,20 @@ func (s *MigrationRecordStore) Records() []MigrationRecord {
 		return cmp.Compare(ak.StrategyCode, bk.StrategyCode)
 	})
 	return out
+}
+
+// HasUndecided reports whether any understood record is still pre-swap. It
+// answers under the read lock without allocating, because the shard-wiring
+// probe asks once per shard per minute and wants only a yes or no.
+func (s *MigrationRecordStore) HasUndecided() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, rec := range s.records {
+		if !rec.PointerSwapped() {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *MigrationRecordStore) Unreadable() []MigrationRecordUnreadable {

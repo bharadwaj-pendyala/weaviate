@@ -568,7 +568,6 @@ func TestSidecarDirsForOrphan_StrategyRegistry(t *testing.T) {
 			properties: []string{"body"},
 			wantSidecar: []string{
 				"property_body_searchable__retokenize_ingest_2",
-				"property_body_searchable__retokenize_backup_2",
 				"property_body_searchable__retokenize_reindex_2",
 			},
 		},
@@ -580,7 +579,6 @@ func TestSidecarDirsForOrphan_StrategyRegistry(t *testing.T) {
 			properties: []string{"title"},
 			wantSidecar: []string{
 				"property_title__filt_retokenize_ingest_3",
-				"property_title__filt_retokenize_backup_3",
 				"property_title__filt_retokenize_reindex_3",
 			},
 		},
@@ -592,7 +590,6 @@ func TestSidecarDirsForOrphan_StrategyRegistry(t *testing.T) {
 			properties: []string{"alpha"},
 			wantSidecar: []string{
 				"property_alpha__enable_filterable_ingest_1",
-				"property_alpha__enable_filterable_backup_1",
 				"property_alpha__enable_filterable_reindex_1",
 			},
 		},
@@ -604,7 +601,6 @@ func TestSidecarDirsForOrphan_StrategyRegistry(t *testing.T) {
 			properties: []string{"beta"},
 			wantSidecar: []string{
 				"property_beta_searchable__enable_searchable_ingest_4",
-				"property_beta_searchable__enable_searchable_backup_4",
 				"property_beta_searchable__enable_searchable_reindex_4",
 			},
 		},
@@ -616,7 +612,6 @@ func TestSidecarDirsForOrphan_StrategyRegistry(t *testing.T) {
 			properties: []string{"gamma"},
 			wantSidecar: []string{
 				"property_gamma_searchable__rebuild_searchable_ingest_5",
-				"property_gamma_searchable__rebuild_searchable_backup_5",
 				"property_gamma_searchable__rebuild_searchable_reindex_5",
 			},
 		},
@@ -628,7 +623,6 @@ func TestSidecarDirsForOrphan_StrategyRegistry(t *testing.T) {
 			properties: []string{"delta"},
 			wantSidecar: []string{
 				"property_delta_searchable__blockmax_ingest_6",
-				"property_delta_searchable__blockmax_map_6",
 				"property_delta_searchable__blockmax_reindex_6",
 			},
 		},

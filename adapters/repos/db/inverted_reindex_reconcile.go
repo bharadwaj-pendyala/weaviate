@@ -89,6 +89,16 @@ const (
 	migrationVerdictDiscard
 )
 
+// migrationPassRecords is the one read of the record set every arm of a pass
+// decides against: the records themselves, plus whether any record on the
+// shard could not be read. An unreadable record's properties are exactly what
+// could not be read, so that withholding covers the whole shard rather than
+// some properties, and every arm has to consult it.
+type migrationPassRecords struct {
+	all            []MigrationRecord
+	someUnreadable bool
+}
+
 // Reconcile runs one pass over this shard's records.
 func (r *migrationReconciler) Reconcile(ctx context.Context) error {
 	if err := r.store.Load(); err != nil {
@@ -109,9 +119,10 @@ func (r *migrationReconciler) Reconcile(ctx context.Context) error {
 		r.retireSuperseded(ctx, records)
 		records = r.store.Records()
 	}
+	pass := migrationPassRecords{all: records, someUnreadable: someRecordsUnreadable}
 
 	for _, rec := range records {
-		if err := r.reconcileOne(ctx, rec, records, someRecordsUnreadable); err != nil {
+		if err := r.reconcileOne(ctx, rec, pass); err != nil {
 			// One migration must not be able to keep a shard from loading.
 			r.logger.WithField("record", rec.Subject().Key.String()).Errorf("reconcile migration record: %v", err)
 		}
@@ -120,19 +131,17 @@ func (r *migrationReconciler) Reconcile(ctx context.Context) error {
 }
 
 func (r *migrationReconciler) reconcileOne(ctx context.Context, rec MigrationRecord,
-	all []MigrationRecord, someRecordsUnreadable bool,
+	pass migrationPassRecords,
 ) error {
 	switch typed := rec.(type) {
-	case MigrationRecordIterating:
-		return r.reconcileUncommitted(ctx, typed, all, someRecordsUnreadable)
-	case MigrationRecordIterated:
-		return r.reconcileUncommitted(ctx, typed, all, someRecordsUnreadable)
+	case MigrationRecordIterating, MigrationRecordIterated:
+		return r.reconcileUncommitted(ctx, rec, pass)
 	case MigrationRecordMerged:
-		return r.reconcileMerged(ctx, typed, all, someRecordsUnreadable)
+		return r.reconcileMerged(ctx, typed, pass)
 	case MigrationRecordSwapped:
-		return r.reconcileSwapped(ctx, typed, all, someRecordsUnreadable)
+		return r.reconcileSwapped(ctx, typed, pass)
 	case MigrationRecordPromoted:
-		return r.reconcilePromoted(ctx, typed, all, someRecordsUnreadable)
+		return r.reconcilePromoted(ctx, typed, pass)
 	default:
 		return fmt.Errorf("no reconciliation for record variant %T", rec)
 	}
@@ -143,20 +152,20 @@ func (r *migrationReconciler) reconcileOne(ctx context.Context, rec MigrationRec
 // reverse edge: restarting a migration whose directories are gone would arm
 // a live mirror that nothing will ever recreate directories for.
 func (r *migrationReconciler) reconcileUncommitted(ctx context.Context, rec MigrationRecord,
-	all []MigrationRecord, someRecordsUnreadable bool,
+	pass migrationPassRecords,
 ) error {
 	subject := rec.Subject()
 
 	// Withholding covers destructive and promoting action only; the reverse
 	// edge takes back work nothing else covers, so it still runs.
-	if someRecordsUnreadable {
+	if pass.someUnreadable {
 		_, err := r.restartIfRebuiltDataGone(subject)
 		return err
 	}
 
 	verdict, why := r.localVerdict(subject)
 	if verdict == migrationVerdictDiscard {
-		return r.discard(ctx, all, subject, why)
+		return r.discard(ctx, pass.all, subject, why)
 	}
 
 	restarted, err := r.restartIfRebuiltDataGone(subject)
@@ -210,9 +219,9 @@ func (r *migrationReconciler) restartIfRebuiltDataGone(subject MigrationSubject)
 // is complete; whether it should go live is a cluster fact the record
 // deliberately does not hold.
 func (r *migrationReconciler) reconcileMerged(ctx context.Context, rec MigrationRecordMerged,
-	all []MigrationRecord, someRecordsUnreadable bool,
+	pass migrationPassRecords,
 ) error {
-	if someRecordsUnreadable {
+	if pass.someUnreadable {
 		return nil
 	}
 	subject := rec.Subject()
@@ -224,7 +233,7 @@ func (r *migrationReconciler) reconcileMerged(ctx context.Context, rec Migration
 	case migrationVerdictDiscard:
 		// Safe: the flip record is written before the first flip, so a
 		// Merged record proves the canonical bucket still has every write.
-		return r.discard(ctx, all, subject, why)
+		return r.discard(ctx, pass.all, subject, why)
 	case migrationVerdictCommit:
 	default:
 		return fmt.Errorf("unhandled verdict %d", verdict)
@@ -234,7 +243,7 @@ func (r *migrationReconciler) reconcileMerged(ctx context.Context, rec Migration
 	if err != nil {
 		return err
 	}
-	return r.reconcileSwapped(ctx, swapped, all, someRecordsUnreadable)
+	return r.reconcileSwapped(ctx, swapped, pass)
 }
 
 // commitMerged writes the flip decision and nothing else, before acting on it,
@@ -310,17 +319,17 @@ func (r *migrationReconciler) ReconcileWithClusterTasks(ctx context.Context, tas
 // removes the displaced and canonical directories before renaming, so it is
 // as destructive as discard and is sealed the same way.
 func (r *migrationReconciler) reconcileSwapped(ctx context.Context, rec MigrationRecordSwapped,
-	all []MigrationRecord, someRecordsUnreadable bool,
+	pass migrationPassRecords,
 ) error {
-	if someRecordsUnreadable {
+	if pass.someUnreadable {
 		return nil
 	}
 	return r.withSealedUnit(rec.Subject(), "its promotion", func() error {
-		return r.promoteSealed(ctx, rec, all)
+		return r.promoteSealed(rec, pass.all)
 	})
 }
 
-func (r *migrationReconciler) promoteSealed(_ context.Context, rec MigrationRecordSwapped,
+func (r *migrationReconciler) promoteSealed(rec MigrationRecordSwapped,
 	all []MigrationRecord,
 ) error {
 	subject := rec.Subject()
@@ -342,7 +351,8 @@ func (r *migrationReconciler) promoteSealed(_ context.Context, rec MigrationReco
 		}
 
 		displaced, _ := rec.DisplacedDir(prop)
-		promoted, err := r.promoteProperty(subject, prop, staged, canonical, displaced)
+		promoted, err := r.promoteProperty(subject, prop,
+			promotionDirs{staged: staged, canonical: canonical, displaced: displaced})
 		if err != nil {
 			settled = false
 			r.logger.WithField("record", subject.Key.String()).Errorf("promote property %q: %v", prop, err)
@@ -363,7 +373,10 @@ func (r *migrationReconciler) promoteSealed(_ context.Context, rec MigrationReco
 // presence: only the promotion rename removes it, so a missing one proves the
 // canonical name already holds the data. Directory contents are never
 // inspected — strategies pre-create an empty canonical bucket when arming.
-func (r *migrationReconciler) promoteProperty(subject MigrationSubject, prop, staged, canonical, displaced string) (bool, error) {
+func (r *migrationReconciler) promoteProperty(subject MigrationSubject, prop string,
+	dirs promotionDirs,
+) (bool, error) {
+	staged, canonical, displaced := dirs.staged, dirs.canonical, dirs.displaced
 	stagedThere, err := r.dirExists(staged)
 	if err != nil {
 		return false, err
@@ -405,23 +418,33 @@ func (r *migrationReconciler) promoteProperty(subject MigrationSubject, prop, st
 	}
 	if canonicalThere {
 		if err := os.RemoveAll(r.path(canonical)); err != nil {
-			return false, fmt.Errorf("remove displaced directory %q: %w", canonical, err)
+			return false, fmt.Errorf("remove canonical directory %q the promotion replaces: %w", canonical, err)
 		}
 	}
 	return true, r.rename(staged, canonical)
+}
+
+// promotionDirs are the three directories a promotion of one property acts on.
+// They are one value rather than three adjacent strings because two of them
+// reach os.RemoveAll and the third holds the only copy, so swapping any two at
+// a call site deletes live data.
+type promotionDirs struct {
+	staged    string
+	canonical string
+	displaced string
 }
 
 // reconcilePromoted is the closure sweep. The record outlives its data: its
 // owned-dirs list is what attributes a leftover from a partly failed
 // retirement step back to this record.
 func (r *migrationReconciler) reconcilePromoted(ctx context.Context, rec MigrationRecordPromoted,
-	all []MigrationRecord, someRecordsUnreadable bool,
+	pass migrationPassRecords,
 ) error {
-	if someRecordsUnreadable {
+	if pass.someUnreadable {
 		return nil
 	}
 	return r.withSealedUnit(rec.Subject(), "its closure sweep", func() error {
-		return r.reconcilePromotedSealed(rec, all)
+		return r.reconcilePromotedSealed(rec, pass.all)
 	})
 }
 
@@ -514,7 +537,7 @@ func (r *migrationReconciler) localVerdict(subject MigrationSubject) (migrationV
 	if !readable {
 		return migrationVerdictLeave, "this node's task map cannot be read yet"
 	}
-	return r.verdictFrom(subject, tasks, false)
+	return r.verdictFrom(subject, tasks, taskListMayLag)
 }
 
 // clusterVerdict decides what the load path withheld. It checks this node's
@@ -533,7 +556,7 @@ func (r *migrationReconciler) clusterVerdict(subject MigrationSubject, tasks []*
 	if task := findMigrationTask(subject, local); task != nil {
 		return migrationVerdictForTask(task)
 	}
-	return r.verdictFrom(subject, tasks, true)
+	return r.verdictFrom(subject, tasks, taskListIsComplete)
 }
 
 // sealUnit holds this migration's unit for the length of a teardown, or
@@ -551,7 +574,7 @@ func (r *migrationReconciler) sealUnit(subject MigrationSubject) (func(), bool) 
 // withSealedUnit runs a teardown under the unit's seal, declining (and
 // retrying next pass) if a worker is live — every arm here writes through
 // pointers taken before the worker's phase began. The per-unit orphan audit
-// and [ReindexProvider.SealLocalTaskDrain] take the same seal separately.
+// and [ReindexProvider.WaitForLocalTaskDrain] take the same seal separately.
 func (r *migrationReconciler) withSealedUnit(subject MigrationSubject, what string, run func() error) error {
 	release, sealed := r.sealUnit(subject)
 	if !sealed {
@@ -563,11 +586,20 @@ func (r *migrationReconciler) withSealedUnit(subject MigrationSubject, what stri
 	return run()
 }
 
+// taskListCompleteness says what a task's absence from a list means: with a
+// list this node built alone it can only mean "not seen yet", while the
+// leader's list is the cluster's, so absence there means gone.
+type taskListCompleteness bool
+
+const (
+	taskListMayLag     taskListCompleteness = false
+	taskListIsComplete taskListCompleteness = true
+)
+
 // verdictFrom consults the two external facts, in an order that skips the
-// second whenever the first is conclusive. absentTaskIsGone says whether this
-// list may conclude anything from a task it does not hold.
+// second whenever the first is conclusive.
 func (r *migrationReconciler) verdictFrom(subject MigrationSubject, tasks []*distributedtask.Task,
-	absentTaskIsGone bool,
+	completeness taskListCompleteness,
 ) (migrationVerdict, string) {
 	if task := findMigrationTask(subject, tasks); task != nil {
 		return migrationVerdictForTask(task)
@@ -591,7 +623,7 @@ func (r *migrationReconciler) verdictFrom(subject MigrationSubject, tasks []*dis
 		// replicas that saw the same cancel differently.
 		return migrationVerdictCommit, "owning task is gone and the schema shows its effect"
 	}
-	if !absentTaskIsGone {
+	if completeness == taskListMayLag {
 		return migrationVerdictLeave, "this node can see neither the owning task nor its effect, which a node still applying its log cannot tell from a task that is gone"
 	}
 	return migrationVerdictDiscard, "owning task is gone and the schema does not show its effect"

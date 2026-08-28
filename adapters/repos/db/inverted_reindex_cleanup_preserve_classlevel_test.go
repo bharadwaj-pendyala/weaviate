@@ -181,9 +181,9 @@ func makeMigrationsUnlistable(t *testing.T, lsmPath string) {
 	}
 }
 
-// dirExists fails the test on a stat it cannot interpret, so an assertion
+// dirIsThere fails the test on a stat it cannot interpret, so an assertion
 // never reads an unreadable directory as an absent one.
-func dirExists(t *testing.T, path string) bool {
+func dirIsThere(t *testing.T, path string) bool {
 	t.Helper()
 	there, err := migrationDirExists(path)
 	require.NoError(t, err)
@@ -192,7 +192,7 @@ func dirExists(t *testing.T, path string) bool {
 
 func dirExistsAt(t *testing.T, lsmPath, name string) bool {
 	t.Helper()
-	return dirExists(t, filepath.Join(lsmPath, name))
+	return dirIsThere(t, filepath.Join(lsmPath, name))
 }
 
 // TestCleanStalePartialReindexState_PreservesClassLevelDeferredFinalize pins

@@ -44,7 +44,6 @@ func TestMigrationRecordQuestions(t *testing.T) {
 		wantStagedComplete bool
 		wantPointerSwapped bool
 		wantIterationDone  bool
-		wantOwnsStagedDir  bool
 	}{
 		{
 			name:               "iterating: rebuilding into staging, canonical still primary",
@@ -53,7 +52,6 @@ func TestMigrationRecordQuestions(t *testing.T) {
 			wantStagedComplete: false,
 			wantPointerSwapped: false,
 			wantIterationDone:  false,
-			wantOwnsStagedDir:  true,
 		},
 		{
 			name:               "iterated: rebuild durable, still discardable",
@@ -62,7 +60,6 @@ func TestMigrationRecordQuestions(t *testing.T) {
 			wantStagedComplete: false,
 			wantPointerSwapped: false,
 			wantIterationDone:  true,
-			wantOwnsStagedDir:  true,
 		},
 		{
 			name:               "merged: the staged data is complete, the flip decision has not been made",
@@ -71,7 +68,6 @@ func TestMigrationRecordQuestions(t *testing.T) {
 			wantStagedComplete: true,
 			wantPointerSwapped: false,
 			wantIterationDone:  true,
-			wantOwnsStagedDir:  true,
 		},
 		{
 			name:               "swapped: the flip decision is durable, so the migration is irreversible",
@@ -80,7 +76,6 @@ func TestMigrationRecordQuestions(t *testing.T) {
 			wantStagedComplete: true,
 			wantPointerSwapped: true,
 			wantIterationDone:  true,
-			wantOwnsStagedDir:  true,
 		},
 		{
 			name:               "promoted: committed and swapped, same answers as swapped",
@@ -89,22 +84,24 @@ func TestMigrationRecordQuestions(t *testing.T) {
 			wantStagedComplete: true,
 			wantPointerSwapped: true,
 			wantIterationDone:  true,
-			wantOwnsStagedDir:  true,
 		},
 	}
 
-	require.Len(t, tests, 5,
-		"the representation admits five states, the machine reaches five, and no two variants report the same one")
-
+	seen := map[MigrationState]string{}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.wantState, tt.record.State())
 			require.Equal(t, tt.wantStagedComplete, tt.record.StagedDataComplete())
 			require.Equal(t, tt.wantPointerSwapped, tt.record.PointerSwapped())
 			require.Equal(t, tt.wantIterationDone, tt.record.IterationComplete())
-			require.Equal(t, tt.wantOwnsStagedDir, tt.record.OwnsBucket("m_42_title"))
+			require.True(t, tt.record.OwnsBucket("m_42_title"),
+				"a migration owns its staged directory in every state")
 		})
+		require.NotContainsf(t, seen, tt.record.State(),
+			"%q and %q report the same state", seen[tt.record.State()], tt.name)
+		seen[tt.record.State()] = tt.name
 	}
+	require.Len(t, seen, 5, "the machine has to reach all five states")
 }
 
 func TestMigrationRecordOwnsBucket(t *testing.T) {

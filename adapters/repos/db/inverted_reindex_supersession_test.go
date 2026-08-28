@@ -263,7 +263,7 @@ func TestReconcileSupersession(t *testing.T) {
 			// move anything: a crash between two retirements changes nothing.
 			before := f.store.Records()
 			f.reconcile()
-			require.Equal(t, before, f.store.Records(), "reconciliation is not idempotent")
+			require.Equal(t, before, f.store.Records(), "a second reconciliation moved something")
 			tt.assert(t, f)
 		})
 	}

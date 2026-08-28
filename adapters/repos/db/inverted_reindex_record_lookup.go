@@ -91,8 +91,9 @@ func migrationPreservedStateAt(lsmPath string, logger logrus.FieldLogger) migrat
 			state.withholdEverything = true
 			continue
 		}
-		// false: no load can promote marker-era state on this build, so
-		// hydrating the shard for it would do nothing.
+		// false: the tracker's own sidecars go into state.buckets below, and
+		// the gate already reports those as reclaimable-by-load, so nothing
+		// more is gained by asking for the load on the tracker's account.
 		state.trackers[legacy.dirName] = false
 		for _, dir := range legacy.sidecars {
 			state.buckets[dir] = struct{}{}

@@ -204,14 +204,14 @@ func TestMapToBlockmaxMigration_RuntimeSwap(t *testing.T) {
 	assert.Nil(t, shard.store.Bucket(ingestBucketName), "ingest bucket should not exist")
 
 	// Verify reindex dir is gone from disk (segments were prepended into ingest).
-	assert.False(t, dirExistsAtPath(filepath.Join(shard.pathLSM(), reindexBucketName)),
+	assert.False(t, dirExists(filepath.Join(shard.pathLSM(), reindexBucketName)),
 		"reindex dir should not exist on disk")
 	// Backup dir is removed at end of runtimeSwap by the per-migration
 	// trim (`trimOlderGenerationsLocked`), which deletes the current
 	// gen's backup along with any older generations. This is part of
 	// the bounded-depth invariant — at most one tidied gen + one
 	// in-flight gen on disk at any time. See `docs/runtime-reindex.md`.
-	assert.False(t, dirExistsAtPath(filepath.Join(shard.pathLSM(), backupBucketName)),
+	assert.False(t, dirExists(filepath.Join(shard.pathLSM(), backupBucketName)),
 		"backup dir should be removed by end-of-swap trim")
 
 	// New writes should still work after migration
