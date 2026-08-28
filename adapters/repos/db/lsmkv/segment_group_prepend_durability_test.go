@@ -20,18 +20,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// A prepend publishes each copied segment by renaming its .tmp away, and the
-// caller writes a durable record saying the staged data is complete. A rename
-// is a directory entry, which reaches disk only when the directory holding it
-// is synced — so without the sync a machine crash can take the segments while
-// leaving the claim behind, and the next load promotes a bucket that is
-// missing them.
-//
-// An fsync has no observable effect a test can assert, so this asserts the
-// call: every function that publishes a rename must sync the directory the
-// renamed entry lands in, after the last rename that puts one there. Syncing
-// the source directory instead would leave the publish undurable while
-// looking, to a call count, exactly like the real thing.
+// TestPrependPublishesEveryRenameDurably pins that every publishing rename's
+// directory gets synced: a rename only survives a crash once its directory is
+// synced, so a missed sync can drop segments while the caller's "staged
+// complete" record survives, promoting an incomplete bucket on the next load.
+// An fsync has no assertable effect, so this asserts the call itself —
+// syncing the source directory instead would look identical by call count
+// while leaving the publish undurable.
 func TestPrependPublishesEveryRenameDurably(t *testing.T) {
 	const fileName = "segment_group_prepend.go"
 

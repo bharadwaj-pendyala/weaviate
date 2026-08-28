@@ -24,19 +24,10 @@ import (
 	enthnsw "github.com/weaviate/weaviate/entities/vectorindex/hnsw"
 )
 
-// TestLegacyMarkerMigrationSurvivesTheSweep covers the upgrade path: a node
-// running the release before the migration records marked a completed
-// migration with a file in its tracker dir, and its staged directory is the
-// property's only copy. This build writes records instead, so without the
-// marker in the preserve predicate the first sweep deletes that copy.
-//
-// The Warn is the other half. This build cannot promote marker-era state, and
-// the schema flip it belongs to already committed cluster-wide, so the
-// property answers from an empty bucket and nothing else says so.
-//
-// The payload is the only thing that names those directories, so a payload
-// that cannot be read is the same loss with nothing left to name: the sweep
-// has to withhold on the whole shard instead.
+// TestLegacyMarkerMigrationSurvivesTheSweep pins the upgrade path: a
+// marker-era tracker (written by a pre-migration-records release) must
+// survive the sweep, since its staged directory may hold the property's only
+// copy.
 func TestLegacyMarkerMigrationSurvivesTheSweep(t *testing.T) {
 	tests := []struct {
 		name string
@@ -108,11 +99,8 @@ func TestLegacyMarkerMigrationSurvivesTheSweep(t *testing.T) {
 			wantUnreadableWarn: true,
 		},
 		{
-			// The scan that finds marker-era trackers reads .migrations; the
-			// sidecar sweep reads the LSM root and succeeds on the same
-			// fault. A listing nobody could read must therefore withhold, or
-			// the sweep takes the only copy on the evidence of an empty set
-			// it never built.
+			// A listing nobody could read must withhold the whole shard, not
+			// reclaim on the evidence of an empty set it never actually built.
 			name:                 "a migration directory that cannot be listed withholds the whole shard",
 			propName:             "gone",
 			marker:               "merged.mig",

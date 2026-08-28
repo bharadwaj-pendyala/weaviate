@@ -24,10 +24,9 @@ import (
 )
 
 // TestStoreListFilesMigrationDir pins what an active shard's backup takes from
-// .migrations: the migration state records and the recovery payloads beside
-// them, but none of the scratch files an interrupted atomic write leaves
-// behind. A backup that drops the records restores a shard whose directories
-// nothing can attribute.
+// .migrations: the migration state records and recovery payloads, but none of
+// the scratch files an interrupted atomic write leaves behind. A backup that
+// drops the records restores a shard whose directories nothing can attribute.
 func TestStoreListFilesMigrationDir(t *testing.T) {
 	ctx := context.Background()
 	logger, _ := test.NewNullLogger()

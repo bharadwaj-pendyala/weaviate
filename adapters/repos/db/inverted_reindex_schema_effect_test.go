@@ -18,12 +18,9 @@ import (
 	"github.com/weaviate/weaviate/entities/models"
 )
 
-// TestMigrationEffectStatus covers every migration type. The table is the
-// gate the design asks for: a new type lands here with its own row.
-//
-// It asserts the commit predicate alongside the answer, because the split
-// between them is what keeps a migration nothing can confirm from being
-// committed: only a visible effect is positive evidence.
+// TestMigrationEffectStatus covers every migration type; a new one must land
+// its own row here. Asserts the commit predicate alongside the answer, since
+// only a visible effect is positive evidence of commit.
 func TestMigrationEffectStatus(t *testing.T) {
 	tests := []struct {
 		name       string

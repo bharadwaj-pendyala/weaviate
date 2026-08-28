@@ -704,11 +704,10 @@ func TestMigrationRecordStoreConcurrentAccess(t *testing.T) {
 	require.Len(t, store.Records(), writers*8)
 }
 
-// TestDecodeMigrationRecordRejectsEscapingHandles pins the containment check.
-// Every path field is joined onto the shard root and the result reaches
-// os.RemoveAll, and a join cleans "../" without containing it. Backup restore
-// writes an archive's record bytes into the records directory untouched, so a
-// crafted handle is a reachable way to delete outside the shard.
+// TestDecodeMigrationRecordRejectsEscapingHandles pins the containment check:
+// every path field is joined onto the shard root and reaches os.RemoveAll,
+// and a join cleans "../" without refusing it, so a crafted handle (reachable
+// via backup restore) could otherwise delete outside the shard.
 func TestDecodeMigrationRecordRejectsEscapingHandles(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -862,10 +861,9 @@ func TestDecodeMigrationRecordRejectsEscapingHandles(t *testing.T) {
 }
 
 // TestTheWriterRefusesWhatTheLoaderWouldReject pins the two directions on one
-// predicate. A record only the writer accepts is worse than one neither does:
-// it lands under a name the next load refuses, and the store then declines to
-// write or remove that name ever again — a wedged key plus a shard-wide
-// withhold of every removal, clearable only by hand.
+// predicate: a record only the writer accepts is worse than one neither does
+// — it lands under a name the next load refuses, wedging that key and
+// withholding every removal on the shard until fixed by hand.
 func TestTheWriterRefusesWhatTheLoaderWouldReject(t *testing.T) {
 	tests := []struct {
 		name    string

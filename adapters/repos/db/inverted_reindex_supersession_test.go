@@ -296,12 +296,10 @@ func TestReconcileRetirementDisarmsBeforeRemoving(t *testing.T) {
 	require.False(t, f.exists("m_10_title"))
 }
 
-// TestShutdownFailureHoldsBackRemoval pins what the two edges that remove a
-// record's directories have in common: each shuts the staged buckets down
-// first, so a shutdown that failed means those buckets are still open.
-// Removing an open bucket's directory leaves mmaps, in-flight compactions and
-// a registry entry behind, and removing the record on top of that strands the
-// directory at a name nothing can attribute afterwards.
+// TestShutdownFailureHoldsBackRemoval pins what both removal edges share:
+// each shuts staged buckets down first, so a failed shutdown must block
+// removal — otherwise an open bucket's directory leaks mmaps and in-flight
+// compactions, and removing the record on top strands it unattributed.
 func TestShutdownFailureHoldsBackRemoval(t *testing.T) {
 	const taskID = "Books:change-tokenization:title:ab12"
 	key := func(version uint64) MigrationRecordKey {
@@ -360,16 +358,12 @@ func TestShutdownFailureHoldsBackRemoval(t *testing.T) {
 	}
 }
 
-// TestRetirementAsksWhatIsSupersededBeforeItSeals pins that this pass does not
-// seal a record it has no work for. It runs in the process that just flipped,
-// from inside that swap's own live unit, and it walks every record whose
-// staged data is complete — which includes the record the swap just wrote and
-// which nothing supersedes. Sealing before asking refuses against the very
-// worker running the pass, and reports a retirement waiting that was never
-// owed.
-//
-// The rows also separate the two things that look alike in a log: a seal
-// declined for a record that had nothing to retire, and one declined for a
+// TestRetirementAsksWhatIsSupersededBeforeItSeals pins that this pass, running
+// from inside the just-flipped swap's own live unit, must ask what's
+// superseded before sealing — sealing first would refuse against the very
+// worker running the pass, wrongly reporting a retirement wait that was never
+// owed. Rows also separate two things that look alike in a log: a seal
+// declined for a record with nothing to retire, versus one declined for a
 // record that did.
 func TestRetirementAsksWhatIsSupersededBeforeItSeals(t *testing.T) {
 	predecessor := testMigrationSubject(10, StrategyCodeSearchableRetokenize, "title")

@@ -20,17 +20,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestPutPublishesTheRecordByReplacingTheFile pins how Put writes, not just
-// what it writes. Every durability argument on this branch rests on a record
-// being published whole — the promotion rename, the flip decision and the
-// horizon are all vouched for by a record that is either the old one or the
-// new one and never half of either. An in-place write satisfies every other
-// test in the package.
-//
-// A hard link is the witness: it holds the inode the old record occupied, so
-// it reports what a replacing publisher left behind and what an in-place one
-// overwrote. The second row is the control — without a publisher that fails
-// these assertions, they could pass for the wrong reason.
+// TestPutPublishesTheRecordByReplacingTheFile pins that Put publishes records
+// whole via rename, never in-place: every durability argument in this package
+// depends on a reader seeing the old record or the new one, never half of
+// either. A hard link is the witness (it keeps the old inode); the second row
+// is the control, so a broken publisher can't pass by accident.
 func TestPutPublishesTheRecordByReplacingTheFile(t *testing.T) {
 	tests := []struct {
 		name string
@@ -105,10 +99,9 @@ func TestPutPublishesTheRecordByReplacingTheFile(t *testing.T) {
 }
 
 // TestPutLeavesTheOldRecordIntactWhenItCannotPublish is the other half: a
-// publish that cannot finish must leave the previous record readable rather
-// than a truncated one. A records directory it may not write into is the
-// portable way to stop it partway, and it stops it before the target is
-// touched at all — which is the property.
+// failed publish must leave the previous record readable, not truncated. An
+// unwritable records directory is the portable way to stop it before the
+// target is touched at all.
 func TestPutLeavesTheOldRecordIntactWhenItCannotPublish(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root writes into a directory whatever its mode says")

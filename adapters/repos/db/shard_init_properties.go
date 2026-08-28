@@ -209,11 +209,10 @@ func disabledIndexTypes(prop *models.Property) []string {
 	return types
 }
 
-// cleanStaleMigrationDirs removes the per-property runtime-reindex migration
-// directories whose record would still claim the (propName, indexType) bucket
-// is live now that it has been removed. Without this a subsequent re-enable
-// short-circuits on that record, re-flips the schema flag to true, and reports
-// success against an empty bucket.
+// cleanStaleMigrationDirs removes per-property runtime-reindex migration
+// directories whose record still claims the removed (propName, indexType)
+// bucket is live. Without this, a re-enable short-circuits on that record,
+// re-flips the schema flag, and reports success against an empty bucket.
 //
 // Errors are logged, not propagated: the bucket is already gone, so the user's
 // DELETE has succeeded at the level that matters. A failure only affects the
@@ -402,8 +401,8 @@ func (s *Shard) CleanStalePartialReindexState(ctx context.Context, propName, ind
 		if committed.preservesBucket(bucketName) {
 			continue
 		}
-		// A mirror aimed at a bucket that is about to go stops being useful
-		// work on every write until the process restarts.
+		// A mirror still aimed at this bucket would cost every write until
+		// the process restarts, so disarm it now that the bucket is gone.
 		if key, prop, ok := committed.mirrorFor(bucketName); ok {
 			s.DisarmMigrationMirror(key, prop)
 		}
@@ -464,12 +463,11 @@ func mainBucketForPropertyIndex(propName, indexType string) (string, bool) {
 // directories that share the just-removed bucket's name as their prefix, and
 // drops their entries from [lsmkv.GlobalBucketRegistry].
 //
-// A completed migration leaves both stores of truth pointing at the ingest
-// name: the on-disk dir keeps it until reconciliation renames it at the next
-// load, and the registry keeps it because the live ingest bucket is never shut
-// down — SwapBucketPointer only moves the pointer onto the main name. A DELETE
-// followed by a re-enable in the same process lifetime would otherwise collide
-// with both: NewBucket's TryAdd fails with "bucket already registered" and the
+// A completed migration leaves both stores of truth — the on-disk dir (until
+// reconciliation renames it) and [lsmkv.GlobalBucketRegistry] (the live
+// ingest bucket is only pointer-swapped, never shut down) — under the ingest
+// name. A DELETE followed by a same-process re-enable would otherwise
+// collide with both: TryAdd fails "bucket already registered" and the
 // follow-up migration reports FAILED with no clear remediation.
 //
 // Sidecar names are <mainBucket>__<strategy>_<role>[_<gen>]; see

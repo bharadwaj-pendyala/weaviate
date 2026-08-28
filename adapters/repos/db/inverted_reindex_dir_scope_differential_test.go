@@ -209,14 +209,10 @@ type divergence struct {
 }
 
 // Pins the widened name shortcut against the conservative gate it replaced,
-// over the dir-name, property-name and attribution shapes below. The shortcut
-// skips the record and the payload on the strength of the name alone, so a dir
-// it moves is a dir the sweep either deletes or spares differently.
-//
-// Narrower than the whole space a writer can produce: every record here
-// carries one strategy code and one index type whatever its directory's real
-// strategy is, and only the Iterating and Swapped states appear, so
-// migrationPreservedStateAt's promoted-tracker arm is never reached.
+// so a dir the shortcut moves is a dir the sweep would delete or spare
+// differently. Coverage gap: every record here uses one strategy/index-type
+// combination and only Iterating/Swapped states, so migrationPreservedStateAt's
+// promoted-tracker arm is never exercised.
 func TestWidenedMatchesAgreesWithTheNarrowGate(t *testing.T) {
 	logger, _ := test.NewNullLogger()
 
@@ -291,9 +287,9 @@ func propertySegmentOf(dir string) string {
 }
 
 // Pins that the real deletion sweep leaves the same dirs behind as a sweep
-// driven by the narrower gate. The predicate differential above compares one
-// question; this compares the whole sweep, where preservation, generation
-// parsing and the walk order all compose on top of it.
+// driven by the narrower gate: the differential above checks one predicate,
+// this checks the whole sweep, where preservation, generation parsing and
+// walk order all compose on top of it.
 func TestWidenedSweepLeavesTheSameDirsBehind(t *testing.T) {
 	logger, _ := test.NewNullLogger()
 

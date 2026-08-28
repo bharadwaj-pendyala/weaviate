@@ -202,11 +202,9 @@ type migrationLegacyMarkerTracker struct {
 }
 
 // migrationLegacyMarkerTrackersAt finds legacy trackers on one shard; only a
-// record-less tracker can be marker-era.
-//
-// listed=false is distinct from finding none: a fault hiding every
-// marker-era tracker (fd exhaustion on a many-tenant node) would otherwise
-// free an upgraded property's only surviving copy to be removed.
+// record-less tracker can be marker-era. listed=false is distinct from
+// finding none: a fault hiding every marker-era tracker (fd exhaustion on a
+// many-tenant node) would otherwise free an upgraded property's only copy.
 func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord) (trackers []migrationLegacyMarkerTracker, listed bool) {
 	migsDir := filepath.Join(lsmPath, ".migrations")
 	entries, err := os.ReadDir(migsDir)

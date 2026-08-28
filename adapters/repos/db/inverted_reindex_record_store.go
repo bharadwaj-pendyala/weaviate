@@ -108,11 +108,10 @@ func (s *MigrationRecordStore) path(key MigrationRecordKey) string {
 	return filepath.Join(s.dir, key.fileName())
 }
 
-// SweepTempFiles removes the scratch files a crash left behind. It is separate
-// from Load because Load also serves throwaway stores built over a directory
-// another store owns and is actively writing: deleting a scratch file there
-// makes the owner's rename fail. Only the owning shard calls this, once, before
-// it is loaded and while it is therefore the only writer.
+// SweepTempFiles removes the scratch files a crash left behind, separate
+// from Load since Load also serves throwaway stores over a directory another
+// store owns and is actively writing (deleting a scratch file there breaks
+// the owner's rename). Only the owning shard calls this, once, before load.
 func (s *MigrationRecordStore) SweepTempFiles() {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -202,17 +201,11 @@ func (s *MigrationRecordStore) Load() error {
 }
 
 // refuseRecordsOfSeveralUnits freezes a shard holding records from more than
-// one unit. A unit is "<shard>__<node>", so every record this node ever wrote
-// here carries the same one: a second means a backup restore or a shard copy
-// brought another node's record along, and nothing on this shard can say which
-// of the two is ours.
-//
-// It has to be a fault rather than a preference, because a teardown seals the
-// unit its record names. A foreign unit is one no local worker ever claims, so
-// that seal is always granted, and the teardown then removes directories a live
-// local worker may be writing into. Dropping the foreign records instead would
-// leave the directories they name attributed to nothing, which is what the
-// reclaimers delete — hence freezing the whole store.
+// one unit ("<shard>__<node>"): a second means a backup restore or shard copy
+// brought another node's record along, and this shard can't tell which is its
+// own. Must be a fault, not a preference — a teardown always seals a foreign
+// unit (no local worker claims it), so dropping foreign records would strand
+// their directories for reclaimers to delete.
 func refuseRecordsOfSeveralUnits(records map[MigrationRecordKey]MigrationRecord) []MigrationRecordUnreadable {
 	units := map[string]struct{}{}
 	for key := range records {
@@ -346,15 +339,14 @@ func (s *MigrationRecordStore) Unreadable() []MigrationRecordUnreadable {
 	return slices.Clone(s.unreadable)
 }
 
-// maxMigrationRecordBytes bounds what [loadMigrationRecordFile] reads, for the
-// reason [maxRecoveryPayloadBytes] gives: a Load sits inside the RAFT apply of
-// a property DELETE, which holds the FSM loop cluster-wide.
+// maxMigrationRecordBytes bounds what [loadMigrationRecordFile] reads: a
+// Load sits inside the RAFT apply of a property DELETE, which holds the FSM
+// loop cluster-wide (see [maxRecoveryPayloadBytes]).
 //
-// A record at [maxReindexPropertiesPerTask] properties is the ceiling to
-// clear. Each property costs its name, three directory-map entries, a sidecar
-// and a flipped entry — well under 4 KiB of JSON, so 1024 of them stay under
-// 4 MiB. The bound is twice that, because refusing a legitimate record freezes
-// migrations on the shard and reading a large file does not.
+// [maxReindexPropertiesPerTask] properties is the ceiling to clear — each
+// stays well under 4 KiB of JSON, so 1024 of them stay under 4 MiB. The
+// bound is doubled since refusing a legitimate record freezes migrations,
+// while reading a large file does not.
 const maxMigrationRecordBytes = 8 << 20
 
 func loadMigrationRecordFile(path string) (MigrationRecord, MigrationRecordLoadOutcome, error) {

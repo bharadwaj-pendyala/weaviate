@@ -44,17 +44,12 @@ func installTestMigrationTaskSources(ctx context.Context, database *DB, leaderEr
 }
 
 // TestReconcileWithClusterWithholdsWhereItCannotAct covers the two things the
-// off-load walk refuses to decide.
-//
-// It holds a shard pointer across a pass that removes directories, and a
-// tenant deactivation, a tenant delete or a collection delete can take that
-// shard down underneath it. The teardown then fails a memtable flush into a
-// directory this pass removed, and the failure latches on the shard: every
-// later activation of that tenant returns the teardown error rather than
-// serving it.
-//
-// And the whole pass rests on the leader's list, so a leader it could not
-// reach leaves every record where it was — the next pass asks again.
+// off-load walk refuses to decide. It holds a shard pointer across a pass
+// that removes directories, and a concurrent tenant/collection teardown can
+// pull that shard out from under it, failing a flush into a directory this
+// pass removed — a failure that latches and fails every later activation.
+// The whole pass also rests on the leader's list, so an unreachable leader
+// leaves every record where it was; the next pass asks again.
 func TestReconcileWithClusterWithholdsWhereItCannotAct(t *testing.T) {
 	const propName = "title"
 
@@ -121,10 +116,9 @@ func TestReconcileWithClusterWithholdsWhereItCannotAct(t *testing.T) {
 	}
 }
 
-// TestReconcileWithoutADatabaseHandle pins the startup window. An index is
-// given its database handle only after its constructor returns, and an eagerly
-// loaded shard reconciles inside that call — so a record whose disposition
-// needs the task map reconciles with no handle to read it from. The shard
+// TestReconcileWithoutADatabaseHandle pins the startup window: an index gets
+// its database handle only after its constructor returns, so an eagerly
+// loaded shard reconciles with no handle to read the task map from. The
 // constructor's recover swallows the resulting panic, the index never
 // registers, and every later submit fails against the whole collection.
 func TestReconcileWithoutADatabaseHandle(t *testing.T) {

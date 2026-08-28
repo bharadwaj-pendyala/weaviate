@@ -19,24 +19,18 @@ import (
 	"github.com/weaviate/weaviate/cluster/distributedtask"
 )
 
-// migrationTaskRaft is the slice of RAFT the two reindex task sources read.
-// Named so a test can reach them; as a literal inside the post-bootstrap
-// goroutine neither could be.
+// migrationTaskRaft is the RAFT slice the two reindex task sources below
+// read; an interface so tests can substitute it.
 type migrationTaskRaft interface {
 	LocalDistributedTasks() map[string][]*distributedtask.Task
 	FSMHasCaughtUp() bool
 	ListDistributedTasks(ctx context.Context) (map[string][]*distributedtask.Task, error)
 }
 
-// newMigrationLocalTaskSource answers from this node's own applied FSM, so it
-// costs no round-trip and cannot block a shard load.
-//
-// The gate covers the startup replay only: FSMHasCaughtUp compares against an
-// index frozen when the store opened, so it goes true for good once the tail
-// this node already held is applied. Before that a committed task really does
-// read as absent, which is what licenses reconciliation's discard. After it,
-// what stops a lagging map licensing one is reconciliation's own load-time
-// verdict, which does nothing when both the task and its effect are missing.
+// newMigrationLocalTaskSource reads this node's own applied FSM (no
+// round-trip, can't block a shard load). Gated on FSMHasCaughtUp: before
+// catch-up, a committed-but-not-yet-applied task would read as absent, which
+// reconciliation would wrongly treat as removed.
 func newMigrationLocalTaskSource(raft migrationTaskRaft) db.MigrationLocalTaskSource {
 	return func() ([]*distributedtask.Task, bool) {
 		if !raft.FSMHasCaughtUp() {
@@ -46,16 +40,10 @@ func newMigrationLocalTaskSource(raft migrationTaskRaft) db.MigrationLocalTaskSo
 	}
 }
 
-// newMigrationClusterTaskSource routes to the leader, whose list sees tasks
-// this node has not applied yet. Read once per reconciliation pass, off the
-// shard-load path.
-//
-// It is not a linearizable read: the query short-circuits into the local FSM
-// when this node is the leader, with no barrier, and no predicate here can
-// tell a freshly elected leader's map from a caught-up one. The gate below
-// only keeps the startup replay off the wire. What covers the rest is that
-// reconciliation asks this node's own applied map first, where the task is
-// bound to be: the record exists only because a unit started from that map.
+// newMigrationClusterTaskSource asks the leader for tasks this node hasn't
+// applied yet. Not linearizable (a freshly elected leader may answer from a
+// stale FSM); safe because reconciliation always checks this node's own
+// applied map first, and a task's record only exists if that map created it.
 func newMigrationClusterTaskSource(raft migrationTaskRaft) db.MigrationClusterTaskSource {
 	return func(ctx context.Context) ([]*distributedtask.Task, error) {
 		if !raft.FSMHasCaughtUp() {

@@ -377,10 +377,9 @@ type recoveryPayloadFacts struct {
 
 // readRecoveryPayloadFacts reads them from a migration tracker dir (see
 // ShardReindexTaskGeneric.SaveRecoveryPayload). The error keeps a missing
-// payload (os.IsNotExist) distinguishable from an unreadable or unparseable
-// one: [migrationDirScope.inScopeFailingOpen] treats only the former as "the
-// task recorded nothing", while the latter makes the unloaded-shard gate fail
-// open.
+// payload (os.IsNotExist) distinguishable from an unreadable one: only the
+// former reads as "recorded nothing" ([migrationDirScope.inScopeFailingOpen]);
+// the latter fails the unloaded-shard gate open.
 func readRecoveryPayloadFacts(migDir string) (recoveryPayloadFacts, error) {
 	path := filepath.Join(migDir, reindexRecoveryPayloadFile)
 	if err := refuseOversizedRecoveryPayload(path, maxRecoveryPayloadBytes); err != nil {

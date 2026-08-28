@@ -431,11 +431,10 @@ type Shard struct {
 	rangeableLocalReady   map[string]bool
 
 	// rangeableUndecidable records that this shard's migration records could
-	// not all be read at init, so the pessimistic entries above could not be
-	// derived. A record that does not decode may be exactly the in-flight
-	// rangeable migration whose empty bucket must not be queried, and the
-	// default below reads a pre-created empty bucket as ready. Load-time fact:
-	// the record set is read once per shard load.
+	// not all be read at init, so the pessimistic entries above may be
+	// incomplete: an undecoded record could be exactly the in-flight
+	// migration whose empty bucket must not be queried as ready. Read once
+	// per shard load.
 	rangeableUndecidable atomic.Bool
 
 	// tokenizationOverlayMu guards tokenizationOverlay. Holds the per-prop

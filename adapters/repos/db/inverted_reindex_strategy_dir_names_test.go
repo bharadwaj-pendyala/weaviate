@@ -136,10 +136,9 @@ func TestFinalizeMigrationSuffixesUnknown(t *testing.T) {
 
 // TestMigrationDirsForPropertyIndex_OmitsClassLevelMapToBlockmax pins the
 // per-property contract: the class-level MapToBlockmax tracker must NOT be
-// returned here (cleanStaleMigrationDirsAt + CleanStalePartialReindexState
-// would corrupt the class-level dir on single-property cleanup). What keeps a
-// completed class-level migration's directories alive is its own record, not
-// this list.
+// returned here, or single-property cleanup would corrupt the class-level
+// dir. What keeps a completed class-level migration alive is its own
+// record, not this list.
 func TestMigrationDirsForPropertyIndex_OmitsClassLevelMapToBlockmax(t *testing.T) {
 	got := migrationDirPrefixesForIndexType("searchable")
 	for _, p := range got {

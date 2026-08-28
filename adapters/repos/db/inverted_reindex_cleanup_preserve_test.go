@@ -36,12 +36,8 @@ type plantedTracker struct {
 }
 
 // TestCleanStaleMigrationDirsAt_PreservesCompletedGens pins the R2/R2b
-// regression (#10675): the pre-submit sweep wiped a completed migration's
-// directory out from under the in-memory bucket pointer, so the next
-// migration picked the same generation and overwrote the previous data.
-//
-// What may be removed is decided by the migration's record: only a migration
-// whose data is not yet committed leaves directories a sweep owns.
+// regression (#10675): the pre-submit sweep must not wipe a completed
+// migration's directory, or a same-generation resubmit overwrites live data.
 func TestCleanStaleMigrationDirsAt_PreservesCompletedGens(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -100,10 +96,9 @@ func TestCleanStaleMigrationDirsAt_PreservesCompletedGens(t *testing.T) {
 			wantSurvivors: []string{"filterable_retokenize_text_1"},
 		},
 		{
-			// Upgrade path: the release before the records said "this
-			// migration completed" with a marker file instead of a record,
-			// and its staged directory is the property's only copy. The
-			// record-less row above is the same fixture without the marker.
+			// Upgrade path: a pre-migration-records release marked completion
+			// with a marker file instead of a record; its staged directory is
+			// the property's only copy.
 			name:          "a marker-era tracker no record names survives",
 			propName:      "text",
 			idxType:       "searchable",

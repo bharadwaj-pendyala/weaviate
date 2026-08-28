@@ -81,13 +81,10 @@ type reconcileFixture struct {
 	// liveUnit, when set, is the one (task, unit) a worker is running on this
 	// node, so no teardown may seal that one. Nil means nothing is running.
 	liveUnit *liveUnitKey
-	// asked names every unit a teardown tried to seal and sealed the ones it
-	// was granted. Both are needed: what the registry granted is decided by
-	// liveUnit, so only what was asked for says which unit an arm believes it
-	// is tearing down. Named rather than counted, because one pass runs
-	// several arms over several records and only the arm under test is the
-	// subject. sealsReleased counts what was let go again; a seal that leaks
-	// refuses its unit for the life of the process.
+	// asked names every unit a teardown tried to seal, sealed the ones it was
+	// granted (liveUnit decides that). Named, not counted, since one pass runs
+	// several arms and only the arm under test matters. sealsReleased counts
+	// releases; a leaked seal refuses its unit for the life of the process.
 	asked         []liveUnitKey
 	sealed        []liveUnitKey
 	sealsReleased int
@@ -225,11 +222,10 @@ func (f *reconcileFixture) migrationDirExists(subject MigrationSubject) bool {
 	return err == nil && info.IsDir()
 }
 
-// requireMigrationDirsTrackRecords pins that no directory outlives every
-// record that can attribute it. The migration directory goes exactly when its
-// record does — earlier would take the recovery payload out from under a live
-// migration — and a bucket directory that survives must be owned or claimed as
-// displaced by a record that is still there, or nothing will ever reclaim it.
+// requireMigrationDirsTrackRecords pins that no directory outlives the record
+// attributing it: the migration dir goes exactly when its record does, and a
+// surviving bucket dir must be owned or claimed-as-displaced by a record
+// still there.
 func (f *reconcileFixture) requireMigrationDirsTrackRecords() {
 	f.t.Helper()
 	surviving := f.store.Records()
@@ -288,11 +284,10 @@ func testClassWithTokenization(tokenization string, props ...string) *models.Cla
 	return class
 }
 
-// TestReconcileMergedDisposition covers the machine's one external-fact edge
-// as a shard load sees it: the staged data is complete, and only the cluster
-// can say whether it should become live. A load answers from what this node
-// can see — a task in its own applied map, or the effect in its own schema —
-// and never from a round-trip, because a load must not wait on one.
+// TestReconcileMergedDisposition covers the machine's one external-fact edge:
+// staged data is complete, but only the cluster can say whether it should go
+// live. A load answers only from what this node already sees (its own task
+// map or schema), never from a round-trip.
 func TestReconcileMergedDisposition(t *testing.T) {
 	const taskID = "Books:change-tokenization:title:ab12"
 
@@ -829,11 +824,10 @@ func TestReconcilePromotedClosure(t *testing.T) {
 	}
 }
 
-// TestReconcilePromotedRepairsATornPromotion covers what a Promoted record can
-// find on disk. The record is durable the instant it is written and the rename
-// it vouches for reaches disk separately, so a crash can leave the data at the
-// staged name under a record that says otherwise — and the sweep that follows
-// would delete the only copy.
+// TestReconcilePromotedRepairsATornPromotion covers what a Promoted record
+// finds on disk: the record is durable before the rename it vouches for, so a
+// crash can leave data at the staged name under a record claiming otherwise —
+// and the next sweep would delete the only copy.
 func TestReconcilePromotedRepairsATornPromotion(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -909,11 +903,10 @@ func TestReconcilePromotedRepairsATornPromotion(t *testing.T) {
 	}
 }
 
-// TestReconcileCommitEdgeWritesItsVerdictFirst pins that the commit edge is
-// never one procedure whose delete-or-promote arm a disk probe chooses: the
-// Swapped variant is durable before any destructive step, so a crash between
-// the two resumes from Swapped instead of re-deciding on inputs that may have
-// changed in the meantime.
+// TestReconcileCommitEdgeWritesItsVerdictFirst pins that commit is never one
+// procedure choosing delete-or-promote from a disk probe: Swapped is written
+// durably before any destructive step, so a crash between the two resumes
+// from Swapped instead of re-deciding on inputs that may have changed.
 func TestReconcileCommitEdgeWritesItsVerdictFirst(t *testing.T) {
 	f := newReconcileFixture(t)
 	f.class = testClassWithTokenization(models.PropertyTokenizationLowercase, "title")
@@ -945,16 +938,10 @@ func TestReconcileCommitEdgeWritesItsVerdictFirst(t *testing.T) {
 }
 
 // TestReconcileWithClusterTasksSettlesWhatTheLoadWithheld pins the off-load
-// pass. A shard loaded during RAFT catch-up reads its own task map as
-// unavailable and leaves every merged record alone, and a shard that is not
-// multi-tenant is never loaded again in this process — so without this pass
-// the record stays at Merged and the property serves pre-migration data until
-// a restart that repeats the same ordering.
-//
-// It is also the only place a task that is absent everywhere licenses a
-// discard. Absence has to be established twice for that: in this node's own
-// applied map, and in a leader's list that may have been fetched before the
-// walk began.
+// pass: a shard loaded during RAFT catch-up leaves merged records undecided,
+// and (being non-multi-tenant) is never loaded again — so without this pass a
+// record stays at Merged forever. It's also the only place absence-everywhere
+// (neither this node's map nor the leader's list) licenses a discard.
 func TestReconcileWithClusterTasksSettlesWhatTheLoadWithheld(t *testing.T) {
 	const taskID = "Books:change-tokenization:title:ab12"
 
@@ -993,11 +980,9 @@ func TestReconcileWithClusterTasksSettlesWhatTheLoadWithheld(t *testing.T) {
 			wantState: MigrationStateMerged,
 		},
 		{
-			// Left to the next load the discard would never run at all: the
-			// sweeps preserve a committed record's directories, so nothing
-			// else reclaims the staged copy of an abandoned migration. Acting
-			// here touches a pre-flip record only, whose canonical bucket is
-			// still primary, so this removes a staged copy and nothing else.
+			// Left to the next load, this discard would never run: sweeps
+			// preserve a committed record's directories, so nothing else
+			// reclaims an abandoned migration's staged copy.
 			name:  "the task was cancelled: the staged copy goes",
 			task:  testTask(taskID, 42, distributedtask.TaskStatusCancelled),
 			class: testClassWithTokenization(models.PropertyTokenizationWord, "title"),
@@ -1019,11 +1004,9 @@ func TestReconcileWithClusterTasksSettlesWhatTheLoadWithheld(t *testing.T) {
 			wantState:  MigrationStateMerged,
 		},
 		{
-			// The leader's list is fetched once, before the walk, and served
-			// without a read barrier; this node's map is what its own unit
-			// ran from. A task found in it is positive evidence, and both
-			// statuses here are terminal, so they cannot both describe this
-			// run — the local one is the one this node applied.
+			// This node's own map is what its unit ran from, so a task found
+			// there wins: both statuses are terminal and can't both describe
+			// this run, and the leader's list may simply predate it.
 			name:       "this node reads the task as finished while the leader reports it cancelled",
 			task:       testTask(taskID, 42, distributedtask.TaskStatusFinished),
 			leaderTask: testTask(taskID, 42, distributedtask.TaskStatusCancelled),
@@ -1032,11 +1015,9 @@ func TestReconcileWithClusterTasksSettlesWhatTheLoadWithheld(t *testing.T) {
 			wantState:  MigrationStateSwapped,
 		},
 		{
-			// The window between fetching the leader's list and reaching this
-			// shard. A reindex started inside it is absent from a list that
-			// predates it, and absence is what licenses deleting staged data.
-			// The record exists here only because a unit started on this
-			// shard, and a unit starts from this node's own map.
+			// A reindex started after the leader's list was fetched is absent
+			// from it, but the record here proves a unit started on this
+			// shard from this node's own map — so absence must not delete it.
 			name:      "a migration started after the leader's list was fetched is not read as gone",
 			task:      testTask(taskID, 42, distributedtask.TaskStatusStarted),
 			leaderSet: true,
@@ -1158,12 +1139,10 @@ func TestReconcileWithClusterTasksSettlesWhatTheLoadWithheld(t *testing.T) {
 	}
 }
 
-// TestReconcileWithClusterTasksLeavesADecidedFlipAlone pins the one record the
-// off-load pass may not act on. Discard is what a task absent everywhere
-// licenses, and it reclaims the record's directories and drops the record —
-// which is safe only before the flip, where the canonical bucket is still
-// primary. Past it, the staged directory is the property's live data and the
-// record is what accounts for it.
+// TestReconcileWithClusterTasksLeavesADecidedFlipAlone pins the one record
+// the off-load pass may not act on: discard reclaims directories and drops
+// the record, safe only pre-flip (canonical bucket still primary). Past the
+// flip, the staged directory is the property's live data.
 func TestReconcileWithClusterTasksLeavesADecidedFlipAlone(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1223,11 +1202,9 @@ func TestReconcileWithClusterTasksLeavesADecidedFlipAlone(t *testing.T) {
 }
 
 // TestReconcilePerShardDivergentStatesConverge pins that one collection's
-// shards settle independently. A migration reaches each shard at its own pace
-// and a restart can catch them at different points, so the same load has to
-// promote one shard, discard another and touch a third not at all — reading
-// each shard's own records and its own directories, and never one shard's
-// answer for another.
+// shards settle independently: a migration reaches each at its own pace, so
+// one load can promote one shard, discard another, and touch a third not at
+// all — each reading only its own records and directories.
 func TestReconcilePerShardDivergentStatesConverge(t *testing.T) {
 	const taskID = "Books:change-tokenization:title:ab12"
 	root := t.TempDir()
@@ -1328,13 +1305,11 @@ func TestReconcilePerShardDivergentStatesConverge(t *testing.T) {
 	}
 }
 
-// TestPromotionWithholdsOnADirectoryItCannotStat pins the presence probe's one
-// blind spot. Every destructive arm of promotion is guarded by a directory's
-// absence, so a stat that fails for any reason other than "not there" must
-// stop the decision: read as absence, an unstattable staged directory is taken
-// as proof the promotion rename already ran, and the record advances to
-// Promoted while the pointer never moved. The staged data is then reclaimed as
-// a promoted record's leftovers.
+// TestPromotionWithholdsOnADirectoryItCannotStat pins the presence probe's
+// blind spot: every destructive arm of promotion is guarded by directory
+// absence, so a stat failing for any reason but "not there" must withhold —
+// reading it as absence would promote the record while the staged data,
+// now unreachable, gets reclaimed as a promoted record's leftovers.
 func TestPromotionWithholdsOnADirectoryItCannotStat(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -1347,11 +1322,9 @@ func TestPromotionWithholdsOnADirectoryItCannotStat(t *testing.T) {
 			wantState: MigrationStatePromoted,
 		},
 		{
-			// A name longer than any filesystem component makes the stat fail
-			// with something other than ENOENT, which is what a permission or
-			// I/O fault on the real path looks like to the probe. It has to be
-			// a single element: a handle with a separator in it no longer
-			// decodes, since a join is what carries one out of the shard.
+			// An overlong name makes stat fail with something other than
+			// ENOENT, mimicking a permission or I/O fault. Must stay a single
+			// path element: a separator would no longer decode as a handle.
 			name: "a staged directory that cannot be stat'd promotes nothing",
 			stagedDir: func(*reconcileFixture) string {
 				return strings.Repeat("m", 300)
@@ -1429,16 +1402,11 @@ func TestMigrationDirExists(t *testing.T) {
 }
 
 // TestEveryTeardownArmSealsTheUnit pins that the per-unit interlock covers
-// every arm that removes one of a migration's directories, not just the
-// discard it was written for. A cancel marks a task and signals the worker on
-// a later scheduler tick without waiting for it, so every one of these arms
-// can reach a directory a worker on this node is still writing through
-// pointers it took before its phase began.
-//
-// Each row is one arm, run twice on the same fixture shape: once with a live
-// worker, where nothing may be touched, and once without, where the arm has to
-// actually do its work — otherwise a row that withholds for some unrelated
-// reason would pass the first half and prove nothing.
+// every directory-removing arm, not just discard: a cancel signals the worker
+// without waiting for it, so any arm can race a live worker's pointers. Each
+// row runs twice — once with a live worker (nothing may be touched), once
+// without (the arm must actually run) — so a row that withholds for an
+// unrelated reason can't pass by accident.
 func TestEveryTeardownArmSealsTheUnit(t *testing.T) {
 	const taskID = "Books:change-tokenization:title:ab12"
 	subjectOf := func(version uint64) MigrationSubject {

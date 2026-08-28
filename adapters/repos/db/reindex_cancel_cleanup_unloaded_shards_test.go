@@ -51,10 +51,9 @@ func mustMainBucket(t *testing.T, propName, indexType string) string {
 	return name
 }
 
-// mkFlippedMigrationRecord plants the record of a migration whose flip is
-// durable: from here its staged directories hold the live data, and only a
-// shard load renames them onto the canonical names. It takes the canonical
-// name explicitly, which [mkMigrationRecord] derives, because the three index
+// mkFlippedMigrationRecord plants a record whose flip is durable: from here
+// its staged directories hold the live data, renamed onto canonical names
+// only by a shard load. Takes canonical explicitly, since the three index
 // types put one property's bucket under three different names.
 func mkFlippedMigrationRecord(t *testing.T, lsmPath, trackerName, prop, staged, canonical string) {
 	t.Helper()
@@ -395,11 +394,10 @@ func TestHasStalePartialReindexStateNotStaleMeansTheSweepFindsNothing(t *testing
 		// run at all, so there is no post-state to compare.
 		wantSweepFails bool
 		wantStale      bool
-		// wantFinalizable says a load would reclaim something here even though
-		// there is nothing for the sweep to remove. It is the other half of
-		// the gate: reporting it wrongly either wakes a cold tenant on every
-		// pass forever, or leaves a completed migration's leftovers on disk
-		// until something else happens to hydrate the tenant.
+		// wantFinalizable says a load would reclaim something here even with
+		// nothing for the sweep to remove — the gate's other half. Reporting
+		// it wrongly either wakes a cold tenant forever, or leaves a
+		// completed migration's leftovers on disk until something hydrates it.
 		wantFinalizable bool
 	}{
 		{
@@ -666,11 +664,9 @@ func TestHasStalePartialReindexStateNotStaleMeansTheSweepFindsNothing(t *testing
 			wantStale:               true,
 		},
 		{
-			// A corrupt record withholds the whole shard, which used to skip
-			// the listing entirely as a saved syscall. The two faults say
-			// different things: one is a settled fact, the other is a shard
-			// whose state was never read, and only the second forbids
-			// reporting it clean.
+			// A corrupt record withholds the whole shard. Distinct from the
+			// listing fault above: one is a settled fact, the other a shard
+			// whose state was never read — only the latter forbids "clean".
 			name:                    "an unreadable record on a shard whose migration directory cannot be listed",
 			indexType:               "filterable",
 			unreadableRecord:        true,

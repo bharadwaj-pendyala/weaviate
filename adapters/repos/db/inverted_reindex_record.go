@@ -76,14 +76,11 @@ func migrationTypeKnown(t ReindexMigrationType) bool {
 }
 
 // MigrationRecordKey identifies one migration on one shard. TaskVersion is the
-// RAFT log index of the task's creation: a total order allocated by consensus,
-// identical on every node, which is what lets two records on one property be
-// compared without chasing links.
-//
-// It is not the generation. That is a separate, per-node counter, allocated
-// from what a shard's own directories show, and it appears in every migration
-// directory name and in the operator documentation — two nodes running the
-// same migration routinely disagree about it.
+// RAFT log index of the task's creation — a total order allocated by
+// consensus and identical on every node, so two records on one property can
+// be compared without chasing links. It is not the generation: that's a
+// separate, per-node counter (visible in directory names and operator docs)
+// that two nodes running the same migration routinely disagree on.
 type MigrationRecordKey struct {
 	TaskVersion  uint64                `json:"taskVersion"`
 	StrategyCode MigrationStrategyCode `json:"strategyCode"`
@@ -128,15 +125,10 @@ type MigrationSubject struct {
 	OriginalTokenization string               `json:"originalTokenization,omitempty"`
 
 	// IterationCutoff is the horizon the rebuild iterates up to: an object
-	// last updated at or after it is left to the double-write mirror. It is
-	// captured in the same act as this record's first write, which is what
-	// keeps the window between arming the mirror and fixing the horizon
-	// empty. Every later state carries it unchanged, so a resume never
-	// re-derives a horizon from a clock that has moved on.
-	//
-	// The reverse edge is the one exception: it raises the horizon to
-	// migrationHorizonEverything, because the mirror it delegated to has lost
-	// the directory it was writing into.
+	// updated at or after it is left to the double-write mirror. Fixed at the
+	// record's first write and carried unchanged after, so a resume never
+	// re-derives it from a moved clock. The reverse edge raises it to
+	// migrationHorizonEverything once the mirror's own directory is lost.
 	IterationCutoff time.Time `json:"iterationCutoff"`
 
 	// TrackerDir is the migration's directory under .migrations, relative to
@@ -246,12 +238,11 @@ func (r MigrationRecordMerged) State() MigrationState    { return MigrationState
 func (r MigrationRecordSwapped) State() MigrationState   { return MigrationStateSwapped }
 func (r MigrationRecordPromoted) State() MigrationState  { return MigrationStatePromoted }
 
-// migrationRecordFormatVersion is bumped only for a change a previous release
-// cannot read correctly. The gate is exact equality in both directions, so a
-// bump makes every record written by either version read as NotUnderstood on
-// the other — which freezes every write and every removal on that shard, not
-// just the record itself. One version exists today, so nothing is frozen; a
-// second one is a rolling-upgrade decision, not an additive one.
+// migrationRecordFormatVersion is bumped only for changes a previous release
+// can't read. The gate is exact equality both ways, so a bump makes every
+// record from either version read as NotUnderstood on the other — freezing
+// all writes and removals on that shard, not just the record. Adding a
+// second version is a rolling-upgrade decision, not an additive one.
 const migrationRecordFormatVersion = 1
 
 type migrationFlipEnvelope struct {
@@ -303,13 +294,10 @@ func (r MigrationRecordPromoted) toEnvelope() migrationRecordEnvelope {
 }
 
 // encodeMigrationRecord indents so an operator can read a record with cat;
-// records are written once per transition, never on a hot path.
-//
-// It applies the same handle check the decoder does, so nothing this build
-// would refuse to read back can be written in the first place. A rejected
-// handle means the caller composed one, which fails the transition loudly
-// instead of persisting a record that reads as not-understood at the next
-// load and freezes every removal on the shard.
+// records are written once per transition, never on a hot path. It applies
+// the decoder's own handle check, so a rejected handle fails the transition
+// loudly instead of persisting a record that reads as not-understood (and
+// freezes removal) at the next load.
 func encodeMigrationRecord(rec MigrationRecord) ([]byte, error) {
 	env := rec.toEnvelope()
 	if err := validateMigrationEnvelope(env); err != nil {
@@ -318,11 +306,10 @@ func encodeMigrationRecord(rec MigrationRecord) ([]byte, error) {
 	return json.MarshalIndent(env, "", "  ")
 }
 
-// validateMigrationEnvelope holds every reason a record is refused that does
-// not depend on which state it is in. Both directions ask it, because a record
-// only the writer accepts is worse than one neither does: it lands under a
-// name the next load refuses, and the store then declines to write or remove
-// that name ever again, freezing the whole shard on a file nobody wanted.
+// validateMigrationEnvelope holds every state-independent reason a record is
+// refused. Both directions ask it: a record only the writer accepts is worse
+// than one neither does — it lands under a name that reads back as refused,
+// freezing that name's writes and removals forever.
 func validateMigrationEnvelope(e migrationRecordEnvelope) error {
 	if e.FormatVersion != migrationRecordFormatVersion {
 		return fmt.Errorf("unknown record format version %d", e.FormatVersion)
@@ -342,11 +329,10 @@ func validateMigrationEnvelope(e migrationRecordEnvelope) error {
 	return validateDisplacedAreNotStaged(e)
 }
 
-// validateDisplacedAreNotStaged refuses a record whose flip claims to have
-// displaced a directory this record staged, for that property or any other.
-// Promotion removes the displaced directory and then renames the staged one
-// onto the canonical name, so a collision destroys the only copy the property
-// owning that handle has. A restored archive is free to carry any handle.
+// validateDisplacedAreNotStaged refuses a record whose flip displaced a
+// directory this record itself staged: promotion removes the displaced
+// directory then renames staged onto canonical, so a collision would destroy
+// the property's only copy. (A restored archive may carry any handle.)
 func validateDisplacedAreNotStaged(e migrationRecordEnvelope) error {
 	if e.Flip == nil {
 		return nil
@@ -412,11 +398,10 @@ func decodeMigrationRecord(data []byte) (MigrationRecord, error) {
 	}
 }
 
-// migrationHandleIsOneElement reports whether h names a single entry of the
-// directory it is joined onto. [filepath.IsLocal] is not that test: it accepts
-// ".", "x/.." and "a/b/../..", each of which a Join resolves back to the very
-// root it started from — and that root is the shard's LSM directory, which
-// then reaches os.RemoveAll.
+// migrationHandleIsOneElement reports whether h names a single entry under
+// the directory it's joined onto. [filepath.IsLocal] isn't that test: it
+// accepts ".", "x/.." and "a/b/../..", each of which Join resolves back to
+// the shard's LSM root — which then reaches os.RemoveAll.
 func migrationHandleIsOneElement(h string) bool {
 	if h == "" || h == "." || h == ".." || filepath.IsAbs(h) {
 		return false
@@ -427,17 +412,12 @@ func migrationHandleIsOneElement(h string) bool {
 	return !strings.ContainsRune(h, '/') && !strings.ContainsRune(h, os.PathSeparator)
 }
 
-// validateMigrationHandles rejects any recorded string a reader turns into a
-// path component that does not name a single entry under the shard root:
-// directory handles, joined onto the shard's LSM directory and removed with
-// os.RemoveAll, and property names, from which the sweeps compose bucket and
-// sidecar directory names and then remove those.
-//
-// Nothing legitimate is refused — a schema property name carries no separator,
-// and every handle a writer emits is a strategy prefix plus sorted property
-// names. Backup restore is the reachable producer of anything else: it writes
-// an archive's record bytes into the records directory untouched. Both
-// directions ask, so they cannot disagree on what a valid record is.
+// validateMigrationHandles rejects any recorded string that doesn't name a
+// single entry under the shard root: directory handles (removed via
+// os.RemoveAll) and property names (used to compose bucket/sidecar names to
+// remove). Nothing legitimate is refused — writer-emitted handles are always
+// a strategy prefix plus sorted property names; a restored backup archive is
+// the only reachable producer of anything else. Both directions call this.
 func validateMigrationHandles(e migrationRecordEnvelope) error {
 	// Sorted, so a record with two bad handles names the same one every time.
 	// Ranging the maps directly would make the error text a coin flip.

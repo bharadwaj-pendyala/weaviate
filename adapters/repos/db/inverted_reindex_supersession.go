@@ -37,17 +37,15 @@ func (f migrationFlipBlock) displacedFor(dir string) (string, bool) {
 	return "", false
 }
 
-// migrationPropertySuperseded is the supersession predicate. Order comes from
-// the task version alone (a total order already in every record) so
-// supersession is closed under any retirement order or crash.
+// migrationPropertySuperseded is the supersession predicate, ordered by task
+// version alone (already a total order), so it's closed under any retirement
+// order or crash.
 //
-// The bar to supersede is Swapped, not Merged: a successor that has staged
-// but not decided may still be cancelled, and treating it as settled would
-// withhold promotion of a record whose own flip already retired the old data.
-//
-// "Covers the same property" compares recorded canonical directories, not
-// index types — a searchable and a filterable migration on one property stage
-// into different buckets and do not displace each other.
+// The bar is Swapped, not Merged: a successor that's staged but undecided may
+// still be cancelled, so treating it as settled would withhold promotion of a
+// record whose own flip already retired the old data. "Same property"
+// compares canonical directories, not index types — searchable and
+// filterable migrations on one property stage into different buckets.
 func migrationPropertySuperseded(all []MigrationRecord, subject MigrationSubject, prop string) bool {
 	canonical := subject.CanonicalDirs[prop]
 	if canonical == "" {
@@ -67,10 +65,9 @@ func migrationSupersedes(candidate MigrationRecord, subject MigrationSubject) bo
 }
 
 // migrationDirClaimedAsDisplaced reports whether a surviving later-versioned
-// record has recorded dir as what its own flip displaced. A predecessor that
-// flipped but never promoted still holds live data at that staged name, which
-// is exactly what a successor displaces — the directory it displaced is then
-// the only copy of that property left on disk.
+// record claims dir as what its flip displaced. A predecessor that flipped
+// but never promoted still holds live data at that staged name — exactly
+// what a successor displaces, making that directory the property's only copy.
 func migrationDirClaimedAsDisplaced(all []MigrationRecord, subject MigrationSubject, dir string) bool {
 	for _, other := range all {
 		if !migrationSupersedes(other, subject) {

@@ -40,14 +40,11 @@ func mkTrackerDir(t *testing.T, lsmPath, name string, sentinels ...string) {
 	}
 }
 
-// mkMigrationRecord plants the record for the tracker dir called trackerName,
-// which is what every sweep and gate now reads. staged maps each property to
-// the directory this migration writes its data into; from Merged on those
-// directories back a live bucket pointer and no sweep may remove them.
-//
-// The key is derived from the tracker name so that several fixtures on one
-// shard stay distinct — no reader compares a key to anything but another
-// record's key.
+// mkMigrationRecord plants the record for tracker dir trackerName, which
+// every sweep and gate now reads. staged maps each property to its data
+// directory; from Merged on, that directory backs a live bucket pointer and
+// no sweep may remove it. The key derives from trackerName so several
+// fixtures on one shard stay distinct.
 func mkMigrationRecord(t *testing.T, lsmPath, trackerName string,
 	state MigrationState, staged map[string]string,
 ) {
@@ -172,8 +169,6 @@ func fixtureSidecarFor(staged string) string {
 	return staged + "__reindex"
 }
 
-// dirExists fails the test on a stat it cannot interpret, so an assertion
-// never reads an unreadable directory as an absent one.
 // makeMigrationsUnlistable makes .migrations unreadable so a test can stage
 // the fault that hides every tracker directory.
 func makeMigrationsUnlistable(t *testing.T, lsmPath string) {
@@ -186,6 +181,8 @@ func makeMigrationsUnlistable(t *testing.T, lsmPath string) {
 	}
 }
 
+// dirExists fails the test on a stat it cannot interpret, so an assertion
+// never reads an unreadable directory as an absent one.
 func dirExists(t *testing.T, path string) bool {
 	t.Helper()
 	there, err := migrationDirExists(path)

@@ -25,10 +25,9 @@ import (
 // uniquely identify a per-strategy in-progress migration on a shard.
 //
 // Each name is its strategy's [MigrationStrategyCode], so a record file and
-// the directory it describes cannot drift apart. The constants here exist so
-// the writer side (each strategy's MigrationDirName()), the orphan audit's
-// bucket-name recipes (migrationSuffixes) and the debug endpoints all reach
-// the name through one symbol.
+// the directory it describes cannot drift apart. These constants exist so
+// the writer, the orphan audit's bucket-name recipes (migrationSuffixes),
+// and the debug endpoints all reach the name through one symbol.
 //
 // Some strategies pin a single directory (e.g. searchable_map_to_blockmax),
 // others suffix per-property names onto a common prefix (e.g.
@@ -517,20 +516,17 @@ func (c *taskPropsCache) count() int {
 	return c.reads
 }
 
-// readTaskProps answers from payload.mig, which costs megabytes per tracker on
-// a large migration, inside a RAFT apply that holds the FSM loop cluster-wide.
-// A payload over [maxRecoveryPayloadBytes] is therefore refused rather than
-// parsed, and reads the same as one that could not be parsed: fail-open, never
-// fail-wrong. Deletion falls back to matching the dir's own name (removing only
-// what the name proves, leaving the rest for the record check to refuse
-// loudly), preservation matches on a name token and so keeps more, and the
-// unloaded-shard gate hydrates the shard instead of skipping it.
+// readTaskProps answers from payload.mig, which costs megabytes per tracker
+// on a large migration inside a RAFT apply holding the FSM loop cluster-wide.
+// A payload over [maxRecoveryPayloadBytes] is refused rather than parsed, and
+// reads the same as an unparseable one — fail-open, never fail-wrong:
+// deletion falls back to the dir's own name, preservation and the
+// unloaded-shard gate err toward keeping more.
 //
-// A property name that does not name a single directory entry makes the whole
-// payload unreadable. The sweeps and the orphan audit compose bucket and
-// sidecar directory names out of these names and then remove those directories,
-// and unlike a record's names these never passed [validateMigrationHandles] — a
-// restored archive is free to carry any bytes here.
+// A property name that isn't a single directory entry makes the whole payload
+// unreadable: sweeps and the orphan audit compose bucket/sidecar names from it
+// and remove those, and unlike a record's names these never passed
+// [validateMigrationHandles] (a restored archive can carry anything here).
 //
 // readPayload reports whether payload.mig was opened, so the caller's read
 // counter keeps meaning what it says. A refusal opens nothing.

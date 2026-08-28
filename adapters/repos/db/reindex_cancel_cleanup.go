@@ -284,13 +284,12 @@ func (i *Index) cleanStalePartialReindexState(
 // reactivating it changes nothing: the record check runs from the task path,
 // not from a shard load.
 //
-// The second return says the shard holds the directories of a migration whose
-// staging finished: its data still under the ingest sidecar name, or a
-// directory a promoted record still owns. Only a shard load settles those,
-// since reconciliation runs before buckets open — and it may settle one by
-// discarding it, since staged is not committed. It is only meaningful where the first return is
-// false — a shard already being hydrated finalizes them on the way in either
-// way.
+// The second return says the shard holds directories of a migration whose
+// staging finished: data still under the ingest sidecar name, or a directory
+// a promoted record still owns. Only a shard load settles those
+// (reconciliation runs before buckets open, and may discard rather than
+// promote, since staged isn't committed). Meaningful only when the first
+// return is false — a shard already being hydrated finalizes them either way.
 //
 // props memoizes the tracker payloads read on the way to that answer. Callers
 // running a grid of tuples over the same shards hand in one for the whole run
@@ -319,11 +318,10 @@ func hasStalePartialReindexState(
 		// be a guess. Hydrating is what turns it into an error a caller sees.
 		return true, false
 	case committed.withholdEverything:
-		// A record or a marker-era payload this build cannot understand
-		// withholds every removal, so a hydration would reclaim nothing — and
-		// reporting otherwise would wake this tenant on every sweep pass for
-		// as long as it stays unreadable. The load that surfaces it happens
-		// for its own reasons.
+		// A record or marker-era payload this build can't understand withholds
+		// every removal, so hydrating would reclaim nothing, and reporting
+		// otherwise would wake this tenant on every sweep pass while it stays
+		// unreadable. (The load that eventually surfaces this happens on its own.)
 		return false, false
 	}
 	scope := migrationDirsOf(lsmPath, dirs, propName, indexType).cachingProps(props).knownFrom(committed)
@@ -399,11 +397,10 @@ type dirNamesCache struct {
 }
 
 // committedMigrations answers, per shard, which directories a committed
-// migration owns. Memoized on the same cache as the listings because one run
-// asks it per (property, index type) tuple over the same shards, and because
-// nothing may change the answer while a sweep holds it: records are written by
-// a shard's own engine and by reconciliation, both of which need the shard
-// loaded, and a loaded shard leaves this sweep's unloaded path.
+// migration owns. Memoized here because one run asks per (property, index
+// type) tuple over the same shards, and the answer can't change while a
+// sweep holds it: records are written only by a loaded shard's own engine or
+// by reconciliation, and a loaded shard has already left this sweep's path.
 func (c *dirNamesCache) committedMigrations(lsmPath string, logger logrus.FieldLogger) migrationPreservedState {
 	if c == nil {
 		return migrationPreservedStateAt(lsmPath, logger)

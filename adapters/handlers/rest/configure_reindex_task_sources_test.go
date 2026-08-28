@@ -37,9 +37,8 @@ func (f *fakeMigrationTaskRaft) ListDistributedTasks(context.Context) (map[strin
 	return f.list, f.listErr
 }
 
-// A task absent from the map is read as terminal and licenses a discard, so a
-// node still applying its RAFT tail must report its map as unusable rather
-// than as empty.
+// Absent-from-map reads as removed, so a node still catching up must report
+// unusable rather than empty.
 func TestMigrationLocalTaskSourceMeasuresCatchUp(t *testing.T) {
 	tasks := []*distributedtask.Task{{
 		Namespace:      db.ReindexNamespace,
@@ -111,9 +110,6 @@ func TestMigrationClusterTaskSourceReadsTheLeader(t *testing.T) {
 			because: "an unreachable leader must not read as an empty task map",
 		},
 		{
-			// The window the gate does cover: the startup replay, where a task
-			// the cluster committed is genuinely not in this node's map yet
-			// and reads exactly like one the cluster removed.
 			name: "still applying its tail: this node must not answer for the cluster",
 			raft: &fakeMigrationTaskRaft{
 				list: map[string][]*distributedtask.Task{db.ReindexNamespace: tasks},

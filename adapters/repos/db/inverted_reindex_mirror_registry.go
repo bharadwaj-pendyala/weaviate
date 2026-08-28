@@ -14,15 +14,11 @@ package db
 import "sync"
 
 // migrationMirrorRegistry holds the handles that disarm a migration's
-// double-write mirror, keyed by (record key, property). The zero value is
-// usable, so a shard can hold one as a plain field.
-//
-// It is keyed here rather than on the task instance because whoever disarms is
-// never whoever armed: a successor's retirement, the cancel edge and swap
-// completion all do it, and the provider drops a terminal task's instance
-// cache outright. Per property because a successor's property set can only
-// partly overlap its predecessor's, and disarming the predecessor whole would
-// stop mirroring the properties the successor never took over.
+// double-write mirror, keyed by (record key, property) rather than task
+// instance: whoever disarms (successor retirement, cancel, swap completion,
+// task-cache eviction) is never whoever armed. Per-property so disarming a
+// predecessor can't silently drop mirroring for properties its successor
+// hasn't taken over yet.
 type migrationMirrorRegistry struct {
 	mu      sync.Mutex
 	disarms map[migrationMirrorKey]func()
@@ -34,9 +30,8 @@ type migrationMirrorKey struct {
 }
 
 // ArmMigrationMirror records the handle that disarms the mirror for one
-// (record, property). Arming a pair that is already armed disarms the handle
-// it replaces, so a re-registration after a resume cannot leave the write path
-// carrying two callbacks for one property.
+// (record, property). Re-arming an already-armed pair disarms the handle it
+// replaces, so a resume can't leave two callbacks registered for one property.
 func (r *migrationMirrorRegistry) ArmMigrationMirror(key MigrationRecordKey, prop string, disarm func()) {
 	if disarm == nil {
 		return
@@ -57,9 +52,8 @@ func (r *migrationMirrorRegistry) ArmMigrationMirror(key MigrationRecordKey, pro
 }
 
 // DisarmMigrationMirror runs and forgets the handle for one (record,
-// property). A pair that is not armed is a no-op: every edge that disarms is
-// re-derived at each load and must be safe to re-run, and mirrors live only in
-// the process that armed them.
+// property); a no-op if unarmed, since every disarm edge is re-derived at
+// each load and must be safe to re-run.
 func (r *migrationMirrorRegistry) DisarmMigrationMirror(key MigrationRecordKey, prop string) {
 	mirrorKey := migrationMirrorKey{record: key, property: prop}
 
@@ -68,9 +62,8 @@ func (r *migrationMirrorRegistry) DisarmMigrationMirror(key MigrationRecordKey, 
 	delete(r.disarms, mirrorKey)
 	r.mu.Unlock()
 
-	// Outside the lock: the handle reaches into the shard's write-path
-	// callback state, and holding two locks in one order here would pin an
-	// ordering on every other caller of that state.
+	// Run outside the lock: disarm reaches into shard write-path state, and
+	// calling it locked would pin a lock ordering on every other caller.
 	if disarm != nil {
 		disarm()
 	}

@@ -187,11 +187,10 @@ func discoverDBFiles(dir string) ([]string, error) {
 // the suffix. A crash mid-copy leaves only .tmp files that are ignored by
 // newSegmentGroup on recovery.
 //
-// dstDir is fsynced before returning, because the caller records that the
-// staged data is complete and records it durably. Each rename is a directory
-// entry of its own, and without the sync a machine crash can take the entries
-// while leaving the claim, so the next load promotes a bucket that is missing
-// segments.
+// dstDir is fsynced before returning: the caller durably records the staged
+// data as complete, and without this sync a crash can drop the per-file
+// rename entries while keeping that record, so the next load promotes a
+// bucket missing segments.
 //
 // Returns the list of final .db filenames (without .tmp) in dstDir.
 func copySegmentFiles(srcDir, dstDir string, dbFiles []string, shift int64) ([]string, error) {

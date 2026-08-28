@@ -24,13 +24,12 @@ import (
 )
 
 // TestRangeableReadinessOnUnreadableRecords pins the query-side answer for a
-// shard whose migration records did not all decode. The readiness default is
-// "ready if the rangeable bucket exists", and a filterable-to-rangeable
-// migration pre-creates that bucket empty, so the default reads an in-flight
-// migration as finished. The pessimistic entries that correct it come from the
-// records — and a record that does not decode contributes none, silently.
-// Serving range filters from the empty bucket returns zero counts once another
-// replica flips the cluster-wide flag.
+// shard whose migration records didn't all decode: readiness defaults to
+// "bucket exists", but a filterable-to-rangeable migration pre-creates that
+// bucket empty. Only the records correct that default — a record that fails
+// to decode silently contributes none, and serving range filters from the
+// empty bucket returns zero counts once another replica flips the
+// cluster-wide flag.
 func TestRangeableReadinessOnUnreadableRecords(t *testing.T) {
 	const propName = "price"
 

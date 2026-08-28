@@ -22,13 +22,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestOversizedMigrationRecordIsRefusedNotParsed pins the read bound. Every
-// Load reads every record file, and a Load sits inside the RAFT apply of a
-// property DELETE, which holds the FSM loop cluster-wide — the same reason
-// payload.mig is bounded on that path.
-//
-// The oversized fixture is a valid record, so the bound is what the rows
-// separate: without it the large one decodes like any other.
+// TestOversizedMigrationRecordIsRefusedNotParsed pins the read bound: Load
+// runs inside the RAFT apply of a property DELETE, which holds the FSM loop
+// cluster-wide, so an oversized (but otherwise valid) record must be refused
+// rather than decoded.
 func TestOversizedMigrationRecordIsRefusedNotParsed(t *testing.T) {
 	tests := []struct {
 		name        string
