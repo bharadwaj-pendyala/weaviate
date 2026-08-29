@@ -243,3 +243,49 @@ func TestAPassThatChangedNothingSaysSo(t *testing.T) {
 		})
 	}
 }
+
+// TestAMixedRecordWakesOnlyTheHalfALoadCanMove pins that actionability is a
+// per-property fact. Promotion promotes every property whose promotion is not
+// lost and skips the ones that are, so a record can hold one directory nothing
+// will ever move next to one the very next load renames. Folding them together
+// answers wrongly for whichever half loses the fold.
+func TestAMixedRecordWakesOnlyTheHalfALoadCanMove(t *testing.T) {
+	f := newReconcileFixture(t)
+	f.class = testClassWithTokenization(models.PropertyTokenizationWord, "title", "body")
+
+	subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "body", "title")
+	lostStaged := subject.StagedDirs["title"]
+	lostSidecar := subject.SidecarDirs["title"]
+	pendingStaged := subject.StagedDirs["body"]
+	pendingCanonical := subject.CanonicalDirs["body"]
+
+	f.mkdirs(lostStaged, lostSidecar, pendingStaged, subject.SidecarDirs["body"],
+		subject.CanonicalDirs["title"], pendingCanonical)
+	f.put(NewMigrationRecordSwapped(subject, []string{"body", "title"},
+		map[string]string{"body": pendingCanonical, "title": subject.CanonicalDirs["title"]}).
+		WithPromotionAt("title", migrationPromotionLost))
+
+	state := migrationPreservedStateAt(f.lsmPath, f.logger)
+
+	// Preservation does not move: every directory is kept either way.
+	require.True(t, state.preservesBucket(lostStaged))
+	require.True(t, state.preservesBucket(pendingStaged))
+	require.True(t, state.preservesTracker(subject.TrackerDir))
+
+	require.False(t, state.bucketNeedsLoad(lostStaged),
+		"nothing anywhere clears a lost promotion, so hydrating reclaims nothing on its account")
+	require.False(t, state.bucketNeedsLoad(lostSidecar))
+	require.True(t, state.bucketNeedsLoad(pendingStaged),
+		"the sibling's loss must not claim this directory is settled")
+	require.True(t, state.trackerNeedsLoad(subject.TrackerDir),
+		"one property that can still act keeps the whole record's tracker claimed")
+
+	// And the load the gate promised really does move it.
+	f.reconcile()
+
+	require.Equal(t, pendingStaged, f.contentOf(pendingCanonical),
+		"the pending property's staged data was renamed onto its canonical name")
+	require.False(t, f.exists(pendingStaged))
+	require.True(t, f.exists(lostStaged), "the lost property's directories are untouched")
+	require.True(t, f.exists(lostSidecar))
+}

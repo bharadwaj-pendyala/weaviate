@@ -83,8 +83,14 @@ func migrationPreservedStateAt(lsmPath string, logger logrus.FieldLogger) migrat
 // parse — never the listing — to the trackers that could hold something of
 // that property's ([migrationTrackerMayOwnProperty]): the rest are settled by
 // their own directory name, and parsing them costs megabytes each inside the
-// RAFT apply that a property DELETE holds cluster-wide. The shard-wide flags
-// and the record set are unaffected, since both come from the listing.
+// RAFT apply that a property DELETE holds cluster-wide.
+//
+// The record set is unaffected, since it comes from the listing. The shard-wide
+// withhold is: a skipped tracker's marker is never stat'd and its payload never
+// parsed, so an unreadable one no longer withholds. That is sound because the
+// withhold exists to stop a sweep removing something a tracker owns, and a
+// tracker whose own name proves it stages nothing of this property's owns
+// nothing this sweep can name.
 //
 // props memoizes the payloads across the index types of one property's sweep;
 // a nil memo reads every payload again and counts nothing.
@@ -145,15 +151,29 @@ func migrationPreservedStateFromRecords(records []MigrationRecord, someRecordsUn
 			continue
 		}
 		subject := rec.Subject()
-		canAct := migrationLoadCanStillAct(rec)
-		for _, dir := range migrationOwnedDirs(subject) {
-			state.buckets[dir] = canAct
+		anyCanAct := false
+		for _, prop := range subject.Properties {
+			// Per property, because promotion is: a load promotes every
+			// property whose promotion is not lost and skips the ones that
+			// are. Folding the properties together claims a load would act on
+			// a lost property's directories, or that it would act on none
+			// because a sibling's is lost.
+			canAct := migrationPropertyLoadCanStillAct(rec, prop)
+			anyCanAct = anyCanAct || canAct
+			if dir := subject.StagedDirs[prop]; dir != "" {
+				state.buckets[dir] = canAct
+			}
+			if dir := subject.SidecarDirs[prop]; dir != "" {
+				state.buckets[dir] = canAct
+			}
 		}
 		if subject.TrackerDir != "" {
-			// A promoted record's own directory waits on the schema effect, which
-			// no load can force, so it never justifies hydration alone; its owned
+			// The tracker directory goes when the whole record retires, so one
+			// property that can still act keeps it claimed. A promoted
+			// record's own directory waits on the schema effect, which no load
+			// can force, so it never justifies hydration alone; its owned
 			// directories still do, counted from buckets above.
-			state.trackers[subject.TrackerDir] = rec.State() != MigrationStatePromoted && canAct
+			state.trackers[subject.TrackerDir] = rec.State() != MigrationStatePromoted && anyCanAct
 		}
 	}
 	return state
@@ -200,11 +220,15 @@ func (s migrationPreservedState) bucketNeedsLoad(dir string) bool {
 	return s.buckets[dir] && !s.settled[dir]
 }
 
-// migrationLoadCanStillAct reports whether a shard load could change this
-// record. A lost promotion has no exit anywhere in the system: the mark is
-// written when a promoted directory is found gone and nothing clears it, so a
-// record carrying one can never reach Promoted and a load reclaims nothing on
-// its account.
+// migrationPropertyLoadCanStillAct reports whether a shard load could change
+// what this record holds for one property. A lost promotion has no exit
+// anywhere in the system: the mark is written when a promoted directory is
+// found gone and nothing clears it, so that property can never be promoted and
+// a load reclaims nothing on its account.
+//
+// It is asked per property because promotion is per property: promoteSealed
+// skips a lost one and promotes the rest, so a record can hold one property
+// nothing will ever move next to one the very next load renames.
 //
 // Preservation is unaffected — the record and its directories are kept either
 // way. Only the claim that hydrating the shard would reclaim them changes, and
@@ -213,17 +237,12 @@ func (s migrationPreservedState) bucketNeedsLoad(dir string) bool {
 //
 // The record is still the exit's own witness: a resubmit supersedes it, and
 // retirement removes it from the record set entirely before this is asked.
-func migrationLoadCanStillAct(rec MigrationRecord) bool {
+func migrationPropertyLoadCanStillAct(rec MigrationRecord, prop string) bool {
 	sw, ok := rec.(MigrationRecordSwapped)
 	if !ok {
 		return true
 	}
-	for _, prop := range sw.Subject().Properties {
-		if sw.PromotionOf(prop) == migrationPromotionLost {
-			return false
-		}
-	}
-	return true
+	return sw.PromotionOf(prop) != migrationPromotionLost
 }
 
 // bucketsOf names the preserved sidecars of one main bucket, sorted, for a
