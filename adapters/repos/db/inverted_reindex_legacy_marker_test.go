@@ -20,14 +20,19 @@ import (
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 	"github.com/sirupsen/logrus/hooks/test"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	enthnsw "github.com/weaviate/weaviate/entities/vectorindex/hnsw"
 )
 
-// TestLegacyMarkerMigrationSurvivesTheSweep pins the tracker no record names,
-// whose completion only a marker file records — what every completed
-// migration leaves today, and what a pre-migration-records release left. It
-// must survive the sweep: its staged directory may hold the only copy.
+// TestLegacyMarkerMigrationSurvivesTheSweep pins the tracker whose completion
+// only a marker file records — what every completed migration leaves today,
+// and what a pre-migration-records release left. It must survive the sweep:
+// its staged directory may hold the only copy.
+//
+// Including when a record names it. After an upgrade, rehydrate adopts the
+// marker-era generation and writes a record for it, and that record starts at
+// Iterating, which no preserve set covers on its own.
 func TestLegacyMarkerMigrationSurvivesTheSweep(t *testing.T) {
 	tests := []struct {
 		name string
@@ -38,6 +43,12 @@ func TestLegacyMarkerMigrationSurvivesTheSweep(t *testing.T) {
 		// rawPayload replaces the well-formed payload.mig this tracker would
 		// otherwise carry.
 		rawPayload string
+		// record, when set, is planted naming the tracker, which is what
+		// rehydrate does after adopting a marker-era generation.
+		record MigrationState
+		// wantNeedsLoad is whether the tracker still asks for a hydration to
+		// finish its deferred finalize.
+		wantNeedsLoad bool
 		// unlistableMigrations takes the read bit off .migrations while
 		// leaving it traversable, so the records directory underneath still
 		// answers and only the tracker scan fails.
@@ -76,6 +87,28 @@ func TestLegacyMarkerMigrationSurvivesTheSweep(t *testing.T) {
 			propName: "gone",
 			wantDirs: false,
 			wantWarn: false,
+		},
+		{
+			// The record rehydrate writes is Iterating, so it protects
+			// nothing by itself; the marker is still the whole evidence.
+			name:     "a record naming the tracker does not take the marker's protection away",
+			propName: "gone",
+			marker:   "merged.mig",
+			record:   MigrationStateIterating,
+			wantDirs: true,
+			wantWarn: true,
+		},
+		{
+			// A record that does protect its own directories also asks for
+			// the hydration that finishes its finalize; the marker must not
+			// answer that question on its behalf.
+			name:          "a record that needs a load keeps needing one",
+			propName:      "gone",
+			marker:        "merged.mig",
+			record:        MigrationStateMerged,
+			wantDirs:      true,
+			wantWarn:      true,
+			wantNeedsLoad: true,
 		},
 		{
 			// Nothing names the sidecars, so preserving the tracker alone
@@ -140,6 +173,13 @@ func TestLegacyMarkerMigrationSurvivesTheSweep(t *testing.T) {
 				require.NoError(t, os.WriteFile(
 					filepath.Join(lsm, migrationsDir, tracker, tc.marker), nil, 0o600))
 			}
+			if tc.record != "" {
+				mkMigrationRecord(t, lsm, tracker, tc.record,
+					map[string]string{tc.propName: ingest})
+			}
+			assert.Equal(t, tc.wantNeedsLoad,
+				migrationPreservedStateAt(lsm, shard.index.logger).trackerNeedsLoad(tracker),
+				"whether hydrating this shard would finish a deferred finalize")
 
 			migrations := filepath.Join(lsm, migrationsDir)
 			if tc.unlistableMigrations {
@@ -156,11 +196,14 @@ func TestLegacyMarkerMigrationSurvivesTheSweep(t *testing.T) {
 			// The load path is what has to surface this: reconciliation is
 			// record-driven and says nothing about a directory no record names.
 			shard.reconcileMigrationRecords(ctx, class)
-			require.Equal(t, tc.wantWarn, legacyMarkerWarned(hook, tc.propName),
+			// assert, not require: the directory assertions below are what
+			// this test exists for, and a missing warning must not stop them
+			// from reporting the data loss it warns about.
+			assert.Equal(t, tc.wantWarn, legacyMarkerWarned(hook, tc.propName),
 				"a warning naming %q on the shard load path", tc.propName)
-			require.Equal(t, tc.wantUnreadableWarn, warnedContaining(hook, "cannot read"),
+			assert.Equal(t, tc.wantUnreadableWarn, warnedContaining(hook, "cannot read"),
 				"a warning that the tracker's properties could not be read")
-			require.Equal(t, tc.wantWithholdWarn, warnedContaining(hook, "could not be listed"),
+			assert.Equal(t, tc.wantWithholdWarn, warnedContaining(hook, "could not be listed"),
 				"a warning that the migration directory could not be listed")
 
 			if tc.wantSweepErr {
@@ -171,11 +214,13 @@ func TestLegacyMarkerMigrationSurvivesTheSweep(t *testing.T) {
 				cleanSweep(t, ctx, shard, tc.propName, "filterable")
 			}
 
-			require.Equal(t, tc.wantDirs, dirExistsAt(t, migrations, tracker),
+			// assert, so a run that loses more than one directory reports
+			// all of them rather than stopping at the first.
+			assert.Equal(t, tc.wantDirs, dirExistsAt(t, migrations, tracker),
 				"tracker dir %s", tracker)
-			require.Equal(t, tc.wantDirs, dirExistsAt(t, lsm, ingest),
+			assert.Equal(t, tc.wantDirs, dirExistsAt(t, lsm, ingest),
 				"ingest sidecar %s, which holds the data", ingest)
-			require.Equal(t, tc.wantDirs, dirExistsAt(t, lsm, reindex),
+			assert.Equal(t, tc.wantDirs, dirExistsAt(t, lsm, reindex),
 				"reindex sidecar %s", reindex)
 		})
 	}

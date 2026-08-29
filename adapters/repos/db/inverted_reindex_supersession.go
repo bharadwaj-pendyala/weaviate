@@ -244,7 +244,7 @@ func migrationRetirable(rec MigrationRecord, superseded []string) bool {
 	if rec.StagedDataComplete() {
 		return true
 	}
-	return !rec.PointerSwapped() && len(superseded) == len(rec.Subject().Properties)
+	return !rec.FlipDecided() && len(superseded) == len(rec.Subject().Properties)
 }
 
 // supersededProperties names the properties of subject a later-versioned

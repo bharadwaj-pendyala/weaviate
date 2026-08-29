@@ -452,7 +452,17 @@ func collectOrphanTrackers(lsmPath, collection, shardName string, knownTask Know
 		// so a marker-carrying tracker a record names would never be read;
 		// and ahead of the age check, because a matured quarantine sentinel
 		// arriving in a backup makes that check pass on the first sweep.
-		if marker, found := migrationCompletionMarker(trackerPath); found {
+		marker, found, unreadable := migrationCompletionMarker(trackerPath)
+		if unreadable {
+			// Whether it completed could not be read, and a completed one holds
+			// the property's only copy. This audit reclaims, so refusing to
+			// answer is the only safe reading.
+			logger.WithField("collection", collection).WithField("shard", shardName).
+				WithField("tracker", dirName).
+				Warn("reindex orphan audit: whether this tracker completed could not be read, so what it owns cannot be told from what is stale; leaving it untouched")
+			continue
+		}
+		if found {
 			logger.WithField("collection", collection).WithField("shard", shardName).
 				WithField("tracker", dirName).WithField("marker", marker).
 				Warn("reindex orphan audit: tracker carries a completed-migration marker from an older release; leaving it untouched")

@@ -132,8 +132,11 @@ func migrationPreservedStateFor(lsmPath, propName string, props *taskPropsCache,
 		}
 		// false: the tracker's own sidecars go into state.buckets below, and
 		// the gate already reports those as reclaimable-by-load, so nothing
-		// more is gained by asking for the load on the tracker's account.
-		state.trackers[legacy.dirName] = false
+		// more is gained by asking for the load on the tracker's account. A
+		// record that already asked for one keeps its answer.
+		if _, named := state.trackers[legacy.dirName]; !named {
+			state.trackers[legacy.dirName] = false
+		}
 		for _, dir := range legacy.sidecars {
 			// A marker-era tracker has no record to have written a promotion
 			// off, so the load's finalize really does act on these.
@@ -274,10 +277,10 @@ func migrationRecordForTracker(records []MigrationRecord, trackerDir string) (Mi
 	return nil, false
 }
 
-// migrationLegacyMarkerTracker is a tracker directory no record names, whose
-// completion marker names the property's live data at the staged name. Every
-// completed migration leaves one today, since no task writes a record yet;
-// so did every pre-migration-records release.
+// migrationLegacyMarkerTracker is a tracker directory whose completion marker
+// names the property's live data at the staged name. Every completed migration
+// leaves one today, since no task writes a record yet; so did every
+// pre-migration-records release.
 type migrationLegacyMarkerTracker struct {
 	dirName string
 	marker  string
@@ -291,10 +294,16 @@ type migrationLegacyMarkerTracker struct {
 	sidecars   []string
 }
 
-// migrationLegacyMarkerTrackersAt finds the completed trackers no record
-// names on one shard. listed=false is distinct from finding none: a fault
+// migrationLegacyMarkerTrackersAt finds every tracker on one shard carrying a
+// completion marker. listed=false is distinct from finding none: a fault
 // hiding every one of them (fd exhaustion on a many-tenant node) would
 // otherwise free a property's only copy.
+//
+// The marker is asked before anything else, exactly as the orphan audit asks
+// it. A record naming the tracker is not evidence against the marker: after an
+// upgrade, rehydrate adopts the marker-era generation and writes a record for
+// it, and that record is Iterating — which no preserve set covers, so asking
+// the record first would hand the marker's staged data to the reclaimers.
 func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord,
 	propName string, props *taskPropsCache,
 ) (trackers []migrationLegacyMarkerTracker, listed bool) {
@@ -315,15 +324,6 @@ func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord,
 		if !ok {
 			continue
 		}
-		if _, named := migrationRecordForTracker(records, dirName); named {
-			continue
-		}
-		if propName != "" && !migrationTrackerMayOwnProperty(dirName, propName) {
-			// Its own name proves it stages nothing of this property's, so no
-			// sweep of this property removes anything it owns and its payload
-			// need not be parsed.
-			continue
-		}
 		marker, found, unreadable := migrationCompletionMarker(filepath.Join(migsDir, dirName))
 		if unreadable {
 			// Whether this tracker completed could not be read, and a completed
@@ -335,6 +335,13 @@ func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord,
 			continue
 		}
 		if !found {
+			continue
+		}
+		if propName != "" && !migrationTrackerMayOwnProperty(dirName, propName) {
+			// Its own name proves it stages nothing of this property's, so no
+			// sweep of this property removes anything it owns and its payload
+			// need not be parsed. Asked after the marker, so a tracker whose
+			// completion could not be read still withholds the shard.
 			continue
 		}
 		migDir := filepath.Join(migsDir, dirName)

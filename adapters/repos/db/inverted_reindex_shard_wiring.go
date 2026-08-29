@@ -268,7 +268,7 @@ func (s *Shard) warnAboutLegacyMarkerMigrations() {
 			s.index.logger.WithField("shard", s.ID()).
 				WithField("tracker", legacy.dirName).
 				WithField("marker", legacy.marker).
-				Warn("a completed migration that no record names lists properties this build cannot read; " +
+				Warn("a completed migration from an older release lists properties this build cannot read; " +
 					"every removal on this shard is withheld until the tracker is repaired or removed by hand")
 			continue
 		}
@@ -280,7 +280,7 @@ func (s *Shard) warnAboutLegacyMarkerMigrations() {
 			WithField("tracker", legacy.dirName).
 			WithField("marker", legacy.marker).
 			WithField("properties", props).
-			Warn("a completed migration that no record names holds these properties' only copy under its " +
+			Warn("a completed migration from an older release holds these properties' only copy under its " +
 				"staged directory; no path in this build promotes it, so they serve empty until the staged " +
 				"directory is restored onto the canonical name by hand or the property is rebuilt")
 	}
