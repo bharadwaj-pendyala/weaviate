@@ -69,7 +69,8 @@ type migrationReconciler struct {
 	store   *MigrationRecordStore
 	lsmPath string
 	// wedgedKeys are the records this pass left standing for a reason no later
-	// load changes, for the shard's wedge gauge. Reset at the start of a pass.
+	// load changes. They feed the node-wide migration_records_wedged_total
+	// counter and the settled note. Reset at the start of a pass.
 	wedgedKeys map[MigrationRecordKey]bool
 	logger     logrus.FieldLogger
 	deps       migrationReconcileDeps
@@ -119,7 +120,8 @@ const migrationWedgeRemedy = "Submit a new migration for this property; " +
 	"reclaims the record and its directories."
 
 // wedged reports a record this pass left standing for a reason no later load
-// changes, names the remediation, and counts it for the shard's wedge gauge.
+// changes, names the remediation, and counts it for
+// migration_records_wedged_total.
 func (r *migrationReconciler) wedged(subject MigrationSubject, format string, args ...any) {
 	if r.wedgedKeys == nil {
 		r.wedgedKeys = map[MigrationRecordKey]bool{}
@@ -140,7 +142,7 @@ func migrationUnreadableFileNames(unreadable []MigrationRecordUnreadable) []stri
 }
 
 // WedgedCount is how many records the last pass left standing for a reason no
-// later load changes. Read after Reconcile, for the shard's gauge.
+// later load changes. Read after Reconcile, for migration_records_wedged_total.
 func (r *migrationReconciler) WedgedCount() int { return len(r.wedgedKeys) }
 
 // Reconcile runs one pass over this shard's records.
@@ -184,8 +186,8 @@ func (r *migrationReconciler) Reconcile(ctx context.Context) error {
 }
 
 // noteWhatThisPassSettled writes down the directories this pass reconciled and
-// left exactly as it found them, so a sweep over the cold shard can answer
-// "would hydrating reclaim anything here" without hydrating to find out.
+// reached an answer no later load revisits, so a sweep over the cold shard can
+// answer "would hydrating reclaim anything here" without hydrating to find out.
 //
 // A shard that could not read every record settles nothing: it withheld, and
 // the next load may read what this one could not.
@@ -199,6 +201,13 @@ func (r *migrationReconciler) noteWhatThisPassSettled(before map[MigrationRecord
 		subject := rec.Subject()
 		was, seen := before[subject.Key]
 		if !seen || was == "" || was != migrationRecordFingerprint(rec) {
+			continue
+		}
+		// An unchanged fingerprint only says this pass did not write. The
+		// commonest reason is a verdict withheld on this node's applied task
+		// map, which changes with no record write. Only a wedged record has an
+		// answer no later load revisits.
+		if !r.wedgedKeys[subject.Key] {
 			continue
 		}
 		if subject.TrackerDir != "" {

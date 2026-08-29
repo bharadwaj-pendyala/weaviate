@@ -150,10 +150,14 @@ func (f *reconcileFixture) warned(want string) bool {
 	return false
 }
 
-func (f *reconcileFixture) reconcile() {
+// reconcile runs one pass and returns the reconciler that ran it, so an
+// assertion about the pass reads the pass it is asserting about rather than
+// running a second one.
+func (f *reconcileFixture) reconcile() *migrationReconciler {
 	f.t.Helper()
 	r := newMigrationReconciler(f.store, f.lsmPath, f.logger, f.deps())
 	require.NoError(f.t, r.Reconcile(context.Background()))
+	return r
 }
 
 func (f *reconcileFixture) deps() migrationReconcileDeps {
@@ -1913,13 +1917,4 @@ func (f *reconcileFixture) trackerPayloadOf(subject MigrationSubject) string {
 	data, err := os.ReadFile(filepath.Join(f.lsmPath, migrationsDir, subject.TrackerDir, "payload.mig"))
 	require.NoError(f.t, err)
 	return string(data)
-}
-
-// wedgeCount runs one more pass and reports what it left standing for a reason
-// no later load changes, which is what the shard's gauge reports.
-func (f *reconcileFixture) wedgeCount() int {
-	f.t.Helper()
-	r := newMigrationReconciler(f.store, f.lsmPath, f.logger, f.deps())
-	require.NoError(f.t, r.Reconcile(f.t.Context()))
-	return r.WedgedCount()
 }

@@ -336,7 +336,7 @@ func TestShutdownFailureHoldsBackRemoval(t *testing.T) {
 				f.put(NewMigrationRecordMerged(testMigrationSubject(10, StrategyCodeSearchableRetokenize, "title")))
 				f.put(swappedOn(20, "title"))
 			},
-			drive: (*reconcileFixture).reconcile,
+			drive: func(f *reconcileFixture) { f.reconcile() },
 			key:   key(10),
 			dir:   "property_title__g10_ingest",
 		},

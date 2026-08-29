@@ -35,9 +35,15 @@ const migrationSettledNoteFile = "settled.mig"
 //
 // Losing it costs one hydration and never correctness — the sweep falls back
 // to hydrating, which is what it does today. A stale one costs a directory
-// left on disk until the tenant loads for some other reason, and it cannot go
-// stale silently: every record write and every record removal deletes it, and
-// those are the only events that change what a load would do.
+// left on disk until the tenant loads for some other reason.
+//
+// Record writes and removals are not the only events that change what a load
+// would do: this node's applied task map is a third, and it changes with no
+// record write at all. So a pass names a directory here only when it reached
+// an answer for its record that no later load revisits, which is the same
+// signal it must set to report the record as wedged
+// ([migrationReconciler.wedged]). A pass that merely could not decide names
+// nothing, and the tenant is woken as it was before the note existed.
 func migrationSettledNotePath(lsmPath string) string {
 	return filepath.Join(lsmPath, migrationsDir, migrationSettledNoteFile)
 }

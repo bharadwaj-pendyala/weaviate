@@ -156,40 +156,90 @@ func TestASupersededUnflippedRecordRetires(t *testing.T) {
 	}
 }
 
-// TestAPassThatChangedNothingSaysSo pins the settled note: a pass that
-// reconciled a record and left it exactly as it found it writes that down, so
-// a sweep over the cold shard can answer "would hydrating reclaim anything"
-// without hydrating. Any record write invalidates it, because a record write
-// is the only thing that changes what a load would do.
+// TestAPassThatChangedNothingSaysSo pins the settled note: a pass writes down
+// a directory only when it reached an answer for that directory's record which
+// no later load revisits, so a sweep over the cold shard can answer "would
+// hydrating reclaim anything" without hydrating.
+//
+// An unchanged record is not that answer. The commonest reason a pass leaves a
+// record alone is a verdict it could not take, which turns on this node's
+// applied task map — an input that changes with no record write at all. Both
+// rows plant identical directories and differ only in whether the pass reached
+// a terminal answer.
 func TestAPassThatChangedNothingSaysSo(t *testing.T) {
-	f := newReconcileFixture(t)
-	f.class = testClassWithTokenization(models.PropertyTokenizationWord, "title")
+	tests := []struct {
+		name string
+		// tasksReadable is this node's applied task map. False is the startup
+		// window migrationLocalTasks documents: an eagerly loaded shard
+		// reconciles before the index has its database handle.
+		tasksReadable bool
+		record        func(MigrationSubject) MigrationRecord
+		wantNoted     bool
+		wantWedged    int
+	}{
+		{
+			name:          "a promotion whose target is gone: no later load changes it",
+			tasksReadable: true,
+			record: func(subject MigrationSubject) MigrationRecord {
+				return NewMigrationRecordSwapped(subject, []string{"title"},
+					map[string]string{"title": wedgeCanonical}).WithPromotionAt("title", migrationPromotionLost)
+			},
+			wantNoted:  true,
+			wantWedged: 1,
+		},
+		{
+			name:          "a flip this node's task map cannot decide yet: the next load re-asks",
+			tasksReadable: false,
+			record: func(subject MigrationSubject) MigrationRecord {
+				return NewMigrationRecordMerged(subject)
+			},
+			wantNoted:  false,
+			wantWedged: 0,
+		},
+	}
 
-	subject := wedgeSubject(42)
-	f.mkdirs(wedgeStaged, wedgeSidecar, wedgeCanonical)
-	// A promotion whose target is gone: the record stands and no later load
-	// changes it, which is exactly the shape the note is for.
-	f.put(NewMigrationRecordSwapped(subject, []string{"title"},
-		map[string]string{"title": wedgeCanonical}).WithPromotionAt("title", migrationPromotionLost))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newReconcileFixture(t)
+			f.class = testClassWithTokenization(models.PropertyTokenizationWord, "title")
+			f.tasksReadable = tt.tasksReadable
 
-	f.reconcile()
+			subject := wedgeSubject(42)
+			f.mkdirs(wedgeStaged, wedgeSidecar, wedgeCanonical)
+			f.put(tt.record(subject))
 
-	note := migrationReadSettledNote(f.lsmPath)
-	require.True(t, note[wedgeTracker], "the pass reconciled this tracker and changed nothing")
-	require.True(t, note[wedgeStaged])
-	require.Equal(t, 1, f.wedgeCount(), "and it counted the record for the shard's gauge")
-	require.True(t, f.logged(migrationWedgeRemedy),
-		"an operator reading the error has to be told what clears it")
+			require.Equal(t, tt.wantWedged, f.reconcile().WedgedCount(),
+				"the note and the shard's wedge counter read the same answer")
 
-	// The gate reads the note rather than hydrating.
-	committed := migrationPreservedStateAt(f.lsmPath, f.logger)
-	require.True(t, committed.preservesTracker(wedgeTracker))
-	require.False(t, committed.trackerNeedsLoad(wedgeTracker))
+			note := migrationReadSettledNote(f.lsmPath)
+			committed := migrationPreservedStateAt(f.lsmPath, f.logger)
+			_, finalizable := hasStalePartialReindexState(f.lsmPath, "title", "searchable", nil, nil, f.logger)
 
-	// And any record write takes the note away again.
-	require.NoError(t, f.store.Put(NewMigrationRecordSwapped(subject, []string{"title"},
-		map[string]string{"title": wedgeCanonical})))
-	require.Empty(t, migrationReadSettledNote(f.lsmPath),
-		"a note that outlived the record it describes would suppress a hydration that is due")
-	require.NoFileExists(t, filepath.Join(f.lsmPath, migrationsDir, migrationSettledNoteFile))
+			if !tt.wantNoted {
+				require.Empty(t, note,
+					"a pass that could not decide has settled nothing, and saying otherwise stops the sweep waking the tenant that needs it")
+				require.True(t, committed.trackerNeedsLoad(wedgeTracker))
+				require.True(t, finalizable,
+					"the cold-tenant gate must answer as it would with no note at all")
+				return
+			}
+
+			require.True(t, note[wedgeTracker], "the pass reached an answer no later load revisits")
+			require.True(t, note[wedgeStaged])
+			require.True(t, f.logged(migrationWedgeRemedy),
+				"an operator reading the error has to be told what clears it")
+
+			// The gate reads the note rather than hydrating.
+			require.True(t, committed.preservesTracker(wedgeTracker))
+			require.False(t, committed.trackerNeedsLoad(wedgeTracker))
+			require.False(t, finalizable)
+
+			// And any record write takes the note away again.
+			require.NoError(t, f.store.Put(NewMigrationRecordSwapped(subject, []string{"title"},
+				map[string]string{"title": wedgeCanonical})))
+			require.Empty(t, migrationReadSettledNote(f.lsmPath),
+				"a note that outlived the record it describes would suppress a hydration that is due")
+			require.NoFileExists(t, filepath.Join(f.lsmPath, migrationsDir, migrationSettledNoteFile))
+		})
+	}
 }
