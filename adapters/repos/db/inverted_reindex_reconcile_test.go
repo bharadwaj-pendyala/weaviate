@@ -948,9 +948,12 @@ func TestReconcilePromotedRepairsATornPromotion(t *testing.T) {
 		name           string
 		stagedThere    bool
 		canonicalThere bool
-		wantContentAt  string
-		wantStagedGone bool
-		wantRecordGone bool
+		// propertyDeleted takes the property out of the schema, which is what
+		// an index DELETE does alongside removing its directory.
+		propertyDeleted bool
+		wantContentAt   string
+		wantStagedGone  bool
+		wantRecordGone  bool
 	}{
 		{
 			name:           "the rename never reached disk: re-promote, do not reclaim",
@@ -987,12 +990,27 @@ func TestReconcilePromotedRepairsATornPromotion(t *testing.T) {
 			wantStagedGone: true,
 			wantRecordGone: true,
 		},
+		{
+			// The ordinary end of a promoted property: an index DELETE takes
+			// the schema entry and the directory together. Reading the absent
+			// canonical name as lost data would leave this record, and the
+			// tracker directory behind it, on the shard forever — and a
+			// tracker that never goes keeps every later cleanup walk hydrating
+			// this shard to look at it.
+			name:            "the property was deleted after promotion, directory and all",
+			propertyDeleted: true,
+			wantStagedGone:  true,
+			wantRecordGone:  true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newReconcileFixture(t)
 			f.class = testClassWithTokenization(models.PropertyTokenizationLowercase, "title")
+			if tt.propertyDeleted {
+				f.class = &models.Class{Class: "Books"}
+			}
 
 			subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 			var planted []string
@@ -1676,4 +1694,53 @@ func writeRawMigrationRecord(t *testing.T, store *MigrationRecordStore, env migr
 	require.NoError(t, err)
 	require.NoError(t, os.MkdirAll(store.Dir(), 0o777))
 	require.NoError(t, os.WriteFile(filepath.Join(store.Dir(), env.Subject.Key.fileName()), data, 0o600))
+}
+
+// TestReconcilePromotedRepairsEveryPropertyItCan pins what one undecidable
+// property costs the rest of the record. A property holding a directory under
+// both its names stops the closure sweep, because the sweep reclaims staged
+// directories and nothing here can tell which of the two holds the promoted
+// data. It must not also stop the repair of the properties after it: those
+// serve an empty canonical bucket while their only copy sits at the staged
+// name, and no load resolves the sibling that blocks them.
+func TestReconcilePromotedRepairsEveryPropertyItCan(t *testing.T) {
+	tests := []struct {
+		name string
+		// props is the record's property order, which is the order the repair
+		// walks. The undecidable one is "title"; "body" is the one whose data
+		// is still at its staged name.
+		props []string
+	}{
+		{name: "the undecidable property comes first", props: []string{"title", "body"}},
+		{name: "the undecidable property comes last", props: []string{"body", "title"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newReconcileFixture(t)
+			f.class = testClassWithTokenization(models.PropertyTokenizationLowercase, tt.props...)
+
+			subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, tt.props...)
+			// title holds a directory under both names; body's data never
+			// reached its canonical name.
+			f.mkdirs("m_42_title", "property_title", "m_42_body")
+			f.put(NewMigrationRecordPromoted(subject, tt.props,
+				map[string]string{"title": "property_title", "body": "property_body"}))
+
+			f.reconcile()
+
+			require.True(t, f.exists("property_body"), "the sibling's repair rename must still run")
+			require.Equal(t, "m_42_body", f.contentOf("property_body"),
+				"and it must move the sibling's own data, not an empty bucket")
+			require.False(t, f.exists("m_42_body"), "which leaves nothing at the staged name")
+
+			require.True(t, f.exists("m_42_title"), "the undecidable property keeps both its directories")
+			require.True(t, f.exists("property_title"))
+			_, present := f.state(subject.Key)
+			require.True(t, present, "and the record that attributes them survives")
+			require.True(t, f.logged(
+				"1 property/properties hold a directory at both their staged and canonical names: title"),
+				"an operator has to be told which property the sweep is waiting on")
+		})
+	}
 }

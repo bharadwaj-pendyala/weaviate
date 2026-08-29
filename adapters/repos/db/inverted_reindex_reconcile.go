@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 	"github.com/weaviate/weaviate/cluster/distributedtask"
@@ -619,12 +620,18 @@ func (r *migrationReconciler) reconcilePromotedSealed(rec MigrationRecordPromote
 // If a surviving successor claims staged as displaced, the property was
 // superseded, not promoted, and staged is that successor's only copy.
 //
-// A property holding a directory under both names stops the sweep instead.
-// Which of the two holds the promoted data is not readable from here — a
-// shard load re-creates the canonical one, empty, for every property in the
-// schema — and the sweep this returns to reclaims staged directories, so
-// reading the canonical name as the answer would delete the only copy.
+// A property holding a directory under both names stops the sweep. Which of
+// the two holds the promoted data is not readable from here — a shard load
+// re-creates the canonical one, empty, for every property in the schema — and
+// the sweep this returns to reclaims staged directories, so reading the
+// canonical name as the answer would delete the only copy.
+//
+// Stopping the sweep is not stopping the loop: every later property still gets
+// its repair, because a property whose data is still at its staged name serves
+// an empty canonical bucket until that rename runs, and it would otherwise wait
+// on a sibling no load can resolve.
 func (r *migrationReconciler) repromoteWhatTheRecordOutran(all []MigrationRecord, subject MigrationSubject) error {
+	var ambiguous []string
 	for _, prop := range subject.Properties {
 		staged, canonical := subject.StagedDirs[prop], subject.CanonicalDirs[prop]
 		if staged == "" || canonical == "" {
@@ -645,10 +652,12 @@ func (r *migrationReconciler) repromoteWhatTheRecordOutran(all []MigrationRecord
 			return err
 		}
 		if canonicalThere {
-			return fmt.Errorf(
+			r.logger.WithField("record", subject.Key.String()).Errorf(
 				"property %q is recorded as promoted but holds a directory at both its staged name %q and its canonical name %q; "+
 					"nothing here can tell which one the promotion produced, so the record and both directories are preserved",
 				prop, staged, canonical)
+			ambiguous = append(ambiguous, prop)
+			continue
 		}
 
 		r.logger.WithField("record", subject.Key.String()).Errorf(
@@ -657,6 +666,12 @@ func (r *migrationReconciler) repromoteWhatTheRecordOutran(all []MigrationRecord
 		if err := r.rename(staged, canonical); err != nil {
 			return err
 		}
+	}
+	if len(ambiguous) > 0 {
+		return fmt.Errorf(
+			"%d property/properties hold a directory at both their staged and canonical names: %s; "+
+				"nothing here can tell which one the promotion produced, so the record and both directories are preserved",
+			len(ambiguous), strings.Join(ambiguous, ", "))
 	}
 	return nil
 }
