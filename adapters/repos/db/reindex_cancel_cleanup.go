@@ -265,7 +265,7 @@ func (i *Index) cleanStalePartialReindexState(
 //
 // Fails open (returns true) on anything it can't read — an unmappable index
 // type, an unlistable directory, or an unparseable tracker payload — since a
-// false "clean" would leave a stale record for the next task to resume
+// false "clean" would leave stale in-flight state for the next task to resume
 // against.
 //
 // The unreadable payload only fails open while no record names the dir. Where
@@ -281,8 +281,8 @@ func (i *Index) cleanStalePartialReindexState(
 // directory and skips it (which offload is about to make true anyway), or
 // races the other way into a spurious [ErrCleanupShardFailed] — never
 // corruption. A deactivated (COLD) tenant is absent from the map too, and
-// reactivating it changes nothing: the record check runs from the task path,
-// not from a shard load.
+// reactivating it changes nothing: the stale-completion check runs from the
+// task path, not from a shard load.
 //
 // The second return says the shard holds directories of a migration whose
 // staging finished: data still under the ingest sidecar name, or a directory

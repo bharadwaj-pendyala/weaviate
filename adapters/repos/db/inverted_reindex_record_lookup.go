@@ -256,8 +256,7 @@ func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord) 
 
 // servesEmpty reports properties whose data is still under this tracker's
 // staged name while the canonical directory is gone: the schema flip already
-// committed cluster-wide, and the load-time finalize promoted a different
-// generation, so nothing has renamed this one back.
+// committed cluster-wide, and nothing has renamed the staged directory back.
 func (t migrationLegacyMarkerTracker) servesEmpty(lsmPath string) []string {
 	suffixes := migrationSuffixes(t.dirName)
 	if suffixes == nil {

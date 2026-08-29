@@ -210,9 +210,9 @@ func disabledIndexTypes(prop *models.Property) []string {
 }
 
 // cleanStaleMigrationDirs removes per-property runtime-reindex migration
-// directories whose record still claims the removed (propName, indexType)
-// bucket is live. Without this, a re-enable short-circuits on that record,
-// re-flips the schema flag, and reports success against an empty bucket.
+// directories whose completion claim still names the removed (propName,
+// indexType) bucket as live. Without this, a re-enable short-circuits on that
+// claim, re-flips the schema flag, and reports success on an empty bucket.
 //
 // Errors are logged, not propagated: the bucket is already gone, so the user's
 // DELETE has succeeded at the level that matters. A failure only affects the
@@ -257,7 +257,7 @@ func cleanStaleMigrationDirsAt(ctx context.Context, lsmPath, propName, indexType
 	if err := cleanStaleMigrationDirsIn(ctx, scope, committed, logger); err != nil && ctx.Err() == nil {
 		// Logged and dropped here only: the DELETE this serves has already
 		// removed the bucket, and the next re-enable fails loudly on the
-		// record. The sweep path propagates it instead.
+		// stale completion claim. The sweep path propagates it instead.
 		//
 		// A run the context stopped is not logged at all: the apply it serves
 		// already fails with that same cause, and a line per shard would follow
@@ -313,14 +313,14 @@ func cleanStaleMigrationDirsIn(ctx context.Context, scope migrationDirScope,
 			// aggregate line on that call path counts payload reads, not
 			// preserved dirs, so it does not report this on their behalf.
 			logger.WithField("path", filepath.Join(migrationsRoot, name)).
-				Debug("partial-reindex cleanup: preserving a tracker dir the records say is not stale")
+				Debug("partial-reindex cleanup: preserving a tracker dir nothing on this shard proved stale")
 			continue
 		}
 		path := filepath.Join(migrationsRoot, name)
 		if err := os.RemoveAll(path); err != nil {
 			logger.WithField("path", path).
 				Errorf("failed to clean up stale migration directory after index DELETE: %v; "+
-					"subsequent re-enable will fail loudly on the migration record until "+
+					"subsequent re-enable will fail loudly on the stale completion state until "+
 					"this directory is removed manually", err)
 		}
 	}
@@ -332,7 +332,7 @@ func cleanStaleMigrationDirsIn(ctx context.Context, scope migrationDirScope,
 // (propName, indexType) on this shard. Mirrors the DELETE-handler cleanup
 // (updatePropertyBuckets) on the CANCEL→retry axis: after a cancel, the
 // next submit must start from a clean slate, otherwise the retry sees a
-// stale record + partial __reindex/__ingest sidecars from the
+// stale in-flight state + partial __reindex/__ingest sidecars from the
 // cancelled run, short-circuits the iteration to a 50-entry no-op, flips
 // the schema flag, and reports success against an empty-or-partial bucket.
 // Same Sev 1 family as the DELETE-then-re-enable silent failure fixed in
@@ -348,15 +348,15 @@ func cleanStaleMigrationDirsIn(ctx context.Context, scope migrationDirScope,
 //  2. Sidecar directories on disk are removed.
 //
 //  3. The .migrations/<dir>/ tracker for this (prop, indexType) tuple is
-//     removed, taking its payload.mig with it. The record in
-//     .migrations/records/ deliberately survives, so a retry cannot be
-//     handed the generation the abandoned run still claims.
+//     removed, taking its payload.mig and its completion state with it.
+//     That also frees the generation: the next task picks one above the
+//     highest tracker directory name left on disk.
 //
 // Failures to remove an individual directory at steps 2/3 are logged but not
 // propagated: the caller (cancel handler / submit handler) cannot meaningfully
-// recover, and the defense in depth in OnAfterLsmInitAsync (the record check)
-// will still fail loudly rather than silently report success if a partial
-// directory survives. Step 1 errors ARE propagated
+// recover, and the defense in depth in OnAfterLsmInitAsync (the
+// stale-completion check) will still fail loudly rather than silently report
+// success if a partial directory survives. Step 1 errors ARE propagated
 // because they indicate a bucket can't be cleanly disconnected from the LSM
 // layer — proceeding to remove its files would corrupt the store. So is a
 // .migrations that cannot be listed at all: the preserve pass reads that same
@@ -396,8 +396,8 @@ func (s *Shard) CleanStalePartialReindexState(ctx context.Context, propName, ind
 			continue
 		}
 		// Skip live sidecar buckets backing a completed-but-deferred
-		// migration. Matched by the directory the record names, so an
-		// unrelated strategy's completed migration never shields this bucket.
+		// migration. Matched by exact directory name, so an unrelated
+		// strategy's completed migration never shields this bucket.
 		if committed.preservesBucket(bucketName) {
 			continue
 		}
@@ -532,8 +532,8 @@ var sidecarRoleWords = []string{"reindex", "ingest", "backup", "map"}
 //
 // The dir a crashed [lsmkv.Store.ReplaceBuckets] leaves behind is matched by
 // whole name, since "del" is no migration role word. It is swept here because
-// nothing else removes it, and it can never be preserved: only a directory a
-// committed record names is.
+// nothing else removes it, and only a shard-wide withhold ever spares it: no
+// completed migration names it among its own directories.
 //
 // Still too weak: a property named "a__<word>_<role>" (or "a___del") reads as
 // a sidecar of "a" on all three index types, so sweeping "a" deletes that

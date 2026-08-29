@@ -330,54 +330,51 @@ func validateMigrationEnvelope(e migrationRecordEnvelope) error {
 	if err := validateMigrationHandles(e); err != nil {
 		return err
 	}
-	if err := validateOneSidecarPerProperty(e); err != nil {
-		return err
-	}
-	return validateDisplacedAreNotStaged(e)
+	return validateOneOwnerPerDirectory(e)
 }
 
-// validateOneSidecarPerProperty refuses a record where two properties name the
-// same sidecar directory: ShutdownStagedBuckets is given one property and
-// closes the directory that property names, so a shared name takes down a
-// bucket another property is still serving from. (A restored archive may
-// carry any handle.)
-func validateOneSidecarPerProperty(e migrationRecordEnvelope) error {
-	owner := make(map[string]string, len(e.Subject.SidecarDirs))
-	for _, prop := range slices.Sorted(maps.Keys(e.Subject.SidecarDirs)) {
-		dir := e.Subject.SidecarDirs[prop]
-		if dir == "" {
-			continue
-		}
-		if other, taken := owner[dir]; taken {
-			return fmt.Errorf("record %q names sidecar directory %q for properties %q and %q",
-				e.Subject.Key, dir, other, prop)
-		}
-		owner[dir] = prop
-	}
-	return nil
-}
+// validateOneOwnerPerDirectory refuses a record that names one directory
+// twice. Every actor is handed a single property and acts on the handles that
+// property names — ShutdownStagedBuckets closes its staged and sidecar
+// buckets, retirement removes its staged directory, promotion removes its
+// canonical and displaced ones — so a name a second property also carries is
+// closed or deleted while that property is still serving from it. (A restored
+// archive may carry any handle.)
+func validateOneOwnerPerDirectory(e migrationRecordEnvelope) error {
+	type claim struct{ role, prop string }
 
-// validateDisplacedAreNotStaged refuses a record whose flip displaced a
-// directory this record itself staged: promotion removes the displaced
-// directory then renames staged onto canonical, so a collision would destroy
-// the property's only copy. (A restored archive may carry any handle.)
-func validateDisplacedAreNotStaged(e migrationRecordEnvelope) error {
-	if e.Flip == nil {
-		return nil
+	var displaced map[string]string
+	if e.Flip != nil {
+		displaced = e.Flip.DisplacedDirs
 	}
-	stagedBy := make(map[string]string, len(e.Subject.StagedDirs))
-	for prop, staged := range e.Subject.StagedDirs {
-		if staged != "" {
-			stagedBy[staged] = prop
-		}
-	}
-	for prop, displaced := range e.Flip.DisplacedDirs {
-		if displaced == "" {
-			continue
-		}
-		if owner, ok := stagedBy[displaced]; ok {
-			return fmt.Errorf("record %q says property %q displaced %q, the directory staged for property %q",
-				e.Subject.Key, prop, displaced, owner)
+	owner := make(map[string]claim, len(e.Subject.StagedDirs)+
+		len(e.Subject.CanonicalDirs)+len(e.Subject.SidecarDirs)+len(displaced))
+
+	for _, group := range []struct {
+		role string
+		dirs map[string]string
+		// isDisplaced marks the one repeat a record legitimately carries: what
+		// a flip displaced is the canonical name that flip replaced.
+		isDisplaced bool
+	}{
+		{role: "staged directory", dirs: e.Subject.StagedDirs},
+		{role: "canonical directory", dirs: e.Subject.CanonicalDirs},
+		{role: "sidecar directory", dirs: e.Subject.SidecarDirs},
+		{role: "displaced directory", dirs: displaced, isDisplaced: true},
+	} {
+		// Sorted, so a record with two collisions names the same one every
+		// time. Ranging the map would make the error text a coin flip.
+		for _, prop := range slices.Sorted(maps.Keys(group.dirs)) {
+			dir := group.dirs[prop]
+			if dir == "" || (group.isDisplaced && dir == e.Subject.CanonicalDirs[prop]) {
+				continue
+			}
+			if held, taken := owner[dir]; taken {
+				return fmt.Errorf(
+					"record %q names directory %q as both the %s of property %q and the %s of property %q",
+					e.Subject.Key, dir, held.role, held.prop, group.role, prop)
+			}
+			owner[dir] = claim{group.role, prop}
 		}
 	}
 	return nil

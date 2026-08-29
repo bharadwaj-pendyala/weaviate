@@ -177,6 +177,9 @@ func TestRenameAndSync(t *testing.T) {
 		// syncFails makes every sync fail, which the caller has to surface.
 		syncFails bool
 		wantErr   bool
+		// wantPublished is for the row where the rename lands and only the sync
+		// fails: every other failure must leave the target name untouched.
+		wantPublished bool
 	}{
 		{name: "within one directory", from: "a.tmp", to: "a", wantSyncs: []string{"."}},
 		{name: "across two directories", from: "a.tmp", to: "d/a", wantSyncs: []string{"d", "."}},
@@ -185,7 +188,7 @@ func TestRenameAndSync(t *testing.T) {
 		{name: "target directory is not there", from: "a.tmp", to: "absent/a", wantErr: true},
 		{
 			name: "a sync that fails fails the rename", from: "a.tmp", to: "a",
-			syncFails: true, wantSyncs: []string{"."}, wantErr: true,
+			syncFails: true, wantSyncs: []string{"."}, wantErr: true, wantPublished: true,
 		},
 	}
 
@@ -224,6 +227,9 @@ func TestRenameAndSync(t *testing.T) {
 
 			if tc.wantErr {
 				require.Error(t, err)
+				_, statErr := os.Stat(to)
+				require.Equal(t, tc.wantPublished, statErr == nil,
+					"only a post-rename failure may leave the target name published")
 				return
 			}
 			require.NoError(t, err)

@@ -185,6 +185,18 @@ func TestSweepPayloadReadCount(t *testing.T) {
 			wantReads:     0,
 			wantSurvivors: []string{"enable_filterable_cat_dog_1"},
 		},
+		{
+			// A record that names no property answers nothing, so the dir name
+			// is left to decide, and this name is this property's own.
+			name:       "a record naming no property leaves the name to decide",
+			classProps: []string{"a_b"},
+			propName:   "a_b",
+			indexTypes: []string{"filterable"},
+			trackers: []tracker{
+				{dir: "enable_filterable_a_b_1", record: MigrationStateIterating},
+			},
+			wantReads: 0,
+		},
 	}
 
 	for _, tc := range tests {

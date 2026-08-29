@@ -65,14 +65,15 @@ func mkMigrationRecordAt(t *testing.T, lsmPath, trackerName string,
 	staged, canonical map[string]string, state MigrationState,
 ) {
 	t.Helper()
+	code, migrationType := fixtureStrategyOf(t, trackerName)
 	subject := MigrationSubject{
 		Key: MigrationRecordKey{
 			TaskVersion:  fixtureRecordVersion(trackerName),
-			StrategyCode: StrategyCodeEnableFilterable,
+			StrategyCode: code,
 			UnitID:       "shard-1__node-0",
 		},
 		TaskID:        "fixture:" + trackerName,
-		MigrationType: ReindexTypeEnableFilterable,
+		MigrationType: migrationType,
 		TrackerDir:    trackerName,
 		StagedDirs:    staged,
 		CanonicalDirs: canonical,
@@ -226,7 +227,7 @@ func TestIndexCleanStalePartialReindexStateReclaimsDeferredFinalizeResidue(t *te
 		canonical string
 		// legacyDir is the backup copy of the displaced main bucket that
 		// every swap writes. What makes it legacy here is that no record
-		// names it, so reclaiming it is this sweep's job alone.
+		// names it, and the tracker that would have is already gone.
 		legacyDir string
 	}{
 		{
@@ -1565,8 +1566,7 @@ func TestIsSidecarDirOfRejectsOtherPropertiesBuckets(t *testing.T) {
 		{name: "category__ingest_0's own bucket, wrongly accepted", dir: main + "__ingest_0", want: true},
 		{name: "a property named after a number", dir: main + "__12", want: false},
 		// The backup copy of the displaced main bucket, which every swap
-		// writes ([ShardReindexTaskGeneric.runtimeSwap]). No record names it,
-		// so this sweep is the only thing that reclaims it.
+		// writes ([ShardReindexTaskGeneric.runtimeSwap]).
 		{name: "a blockmax backup dir", dir: main + "__blockmax_map_3", want: true},
 		{name: "a filterable backup dir", dir: main + "__enable_filterable_backup_1", want: true},
 		{name: "a property whose name extends a role word", dir: main + "__ingest_x", want: false},

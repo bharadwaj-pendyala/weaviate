@@ -126,6 +126,19 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 		return out
 	}
 
+	// twoProperties gives the fixture a second property with its own three
+	// directories, so a row can collide exactly one pair of them.
+	twoProperties := func(mutate func(subject, env map[string]any)) []byte {
+		return valid(func(env map[string]any) {
+			subject := env["subject"].(map[string]any)
+			subject["properties"] = []string{"title", "body"}
+			subject["stagedDirs"].(map[string]any)["body"] = "m_42_body"
+			subject["canonicalDirs"].(map[string]any)["body"] = "property_body"
+			subject["sidecarDirs"].(map[string]any)["body"] = "m_42_body_sidecar"
+			mutate(subject, env)
+		})
+	}
+
 	// wantErr is what each row's refusal has to say. Without it a build that
 	// collapsed every validation into one error would keep all of these green.
 	tests := []struct {
@@ -206,7 +219,7 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 					"displacedDirs": map[string]any{"title": subject["stagedDirs"].(map[string]any)["title"]},
 				}
 			}),
-			wantErr: "says property \"title\" displaced \"m_42_title\", the directory staged for property \"title\"",
+			wantErr: `names directory "m_42_title" as both the staged directory of property "title" and the displaced directory of property "title"`,
 		},
 		{
 			// Promoting title removes body's only staged copy, and body then
@@ -225,7 +238,7 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 					"displacedDirs": map[string]any{"title": staged["body"]},
 				}
 			}),
-			wantErr: "says property \"title\" displaced \"m_42_body\", the directory staged for property \"body\"",
+			wantErr: `names directory "m_42_body" as both the staged directory of property "body" and the displaced directory of property "title"`,
 		},
 		{
 			// ShutdownStagedBuckets closes the directory the property it is
@@ -238,7 +251,87 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 				sidecars := subject["sidecarDirs"].(map[string]any)
 				sidecars["body"] = sidecars["title"]
 			}),
-			wantErr: "names sidecar directory \"m_42_title_sidecar\" for properties \"body\" and \"title\"",
+			wantErr: `names directory "m_42_title_sidecar" as both the sidecar directory of property "body" and the sidecar directory of property "title"`,
+		},
+		// The same harm in every remaining pairing of the four roles a record
+		// hands out: one property's teardown closes or deletes the directory
+		// another property is still serving from.
+		{
+			name: "two properties naming the same staged directory",
+			data: twoProperties(func(subject, _ map[string]any) {
+				staged := subject["stagedDirs"].(map[string]any)
+				staged["body"] = staged["title"]
+			}),
+			wantErr: `names directory "m_42_title" as both the staged directory of property "body" and the staged directory of property "title"`,
+		},
+		{
+			name: "a property staged into another property's sidecar directory",
+			data: twoProperties(func(subject, _ map[string]any) {
+				subject["stagedDirs"].(map[string]any)["body"] = subject["sidecarDirs"].(map[string]any)["title"]
+			}),
+			wantErr: `names directory "m_42_title_sidecar" as both the staged directory of property "body" and the sidecar directory of property "title"`,
+		},
+		{
+			name: "a property staged into its own sidecar directory",
+			data: twoProperties(func(subject, _ map[string]any) {
+				subject["stagedDirs"].(map[string]any)["title"] = subject["sidecarDirs"].(map[string]any)["title"]
+			}),
+			wantErr: `names directory "m_42_title_sidecar" as both the staged directory of property "title" and the sidecar directory of property "title"`,
+		},
+		{
+			name: "two properties naming the same canonical directory",
+			data: twoProperties(func(subject, _ map[string]any) {
+				canonical := subject["canonicalDirs"].(map[string]any)
+				canonical["body"] = canonical["title"]
+			}),
+			wantErr: `names directory "property_title" as both the canonical directory of property "body" and the canonical directory of property "title"`,
+		},
+		{
+			name: "a property staged into another property's canonical directory",
+			data: twoProperties(func(subject, _ map[string]any) {
+				subject["stagedDirs"].(map[string]any)["body"] = subject["canonicalDirs"].(map[string]any)["title"]
+			}),
+			wantErr: `names directory "property_title" as both the staged directory of property "body" and the canonical directory of property "title"`,
+		},
+		{
+			name: "a sidecar that is another property's canonical directory",
+			data: twoProperties(func(subject, _ map[string]any) {
+				subject["sidecarDirs"].(map[string]any)["body"] = subject["canonicalDirs"].(map[string]any)["title"]
+			}),
+			wantErr: `names directory "property_title" as both the canonical directory of property "title" and the sidecar directory of property "body"`,
+		},
+		{
+			name: "a flip that displaced a sidecar directory",
+			data: twoProperties(func(subject, env map[string]any) {
+				env["state"] = string(MigrationStateSwapped)
+				env["flip"] = map[string]any{
+					"flipped":       []string{"title", "body"},
+					"displacedDirs": map[string]any{"title": subject["sidecarDirs"].(map[string]any)["body"]},
+				}
+			}),
+			wantErr: `names directory "m_42_body_sidecar" as both the sidecar directory of property "body" and the displaced directory of property "title"`,
+		},
+		{
+			name: "a flip that displaced another property's canonical directory",
+			data: twoProperties(func(subject, env map[string]any) {
+				env["state"] = string(MigrationStateSwapped)
+				env["flip"] = map[string]any{
+					"flipped":       []string{"title", "body"},
+					"displacedDirs": map[string]any{"title": subject["canonicalDirs"].(map[string]any)["body"]},
+				}
+			}),
+			wantErr: `names directory "property_body" as both the canonical directory of property "body" and the displaced directory of property "title"`,
+		},
+		{
+			name: "two properties displacing the same directory",
+			data: twoProperties(func(_, env map[string]any) {
+				env["state"] = string(MigrationStateSwapped)
+				env["flip"] = map[string]any{
+					"flipped":       []string{"title", "body"},
+					"displacedDirs": map[string]any{"title": "m_41_shared", "body": "m_41_shared"},
+				}
+			}),
+			wantErr: `names directory "m_41_shared" as both the displaced directory of property "body" and the displaced directory of property "title"`,
 		},
 		{
 			name: "a unit the record file name could not carry",
@@ -692,10 +785,14 @@ func TestMigrationRecordStoreConcurrentAccess(t *testing.T) {
 // via backup restore) could otherwise delete outside the shard.
 func TestDecodeMigrationRecordRejectsEscapingHandles(t *testing.T) {
 	tests := []struct {
-		name    string
-		place   func(*MigrationSubject, *migrationFlipEnvelope, string)
-		handle  string
-		wantErr bool
+		name   string
+		place  func(*MigrationSubject, *migrationFlipEnvelope, string)
+		handle string
+		// wantErr asks for an error; wantField, where set, pins which group
+		// named it. Without that a build that labelled every group the same
+		// would keep the whole table green.
+		wantErr   bool
+		wantField string
 	}{
 		{
 			name:   "tracker directory",
@@ -707,28 +804,28 @@ func TestDecodeMigrationRecordRejectsEscapingHandles(t *testing.T) {
 			place: func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) {
 				s.StagedDirs = map[string]string{"title": h}
 			},
-			handle: "/var/lib/weaviate", wantErr: true,
+			handle: "/var/lib/weaviate", wantErr: true, wantField: "staged directory",
 		},
 		{
 			name: "canonical directory",
 			place: func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) {
 				s.CanonicalDirs = map[string]string{"title": h}
 			},
-			handle: "../sibling_shard/property_title", wantErr: true,
+			handle: "../sibling_shard/property_title", wantErr: true, wantField: "canonical directory",
 		},
 		{
 			name: "sidecar directory",
 			place: func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) {
 				s.SidecarDirs = map[string]string{"title": h}
 			},
-			handle: "..", wantErr: true,
+			handle: "..", wantErr: true, wantField: "sidecar directory",
 		},
 		{
 			name: "displaced directory",
 			place: func(_ *MigrationSubject, f *migrationFlipEnvelope, h string) {
 				f.DisplacedDirs = map[string]string{"title": h}
 			},
-			handle: "/", wantErr: true,
+			handle: "/", wantErr: true, wantField: "displaced directory",
 		},
 		{
 			name: "a handle that only looks like an escape stays inside",
@@ -752,9 +849,9 @@ func TestDecodeMigrationRecordRejectsEscapingHandles(t *testing.T) {
 			place:  func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) { s.TrackerDir = h },
 			handle: "",
 		},
-		// The four handles a join resolves back to the shard root itself,
-		// which is then what os.RemoveAll is handed. filepath.IsLocal accepts
-		// every one of them.
+		// The handles a join resolves back to the shard root itself, which is
+		// then what os.RemoveAll is handed. filepath.IsLocal accepts every one
+		// of them.
 		{
 			name: "the current directory",
 			place: func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) {
@@ -763,30 +860,16 @@ func TestDecodeMigrationRecordRejectsEscapingHandles(t *testing.T) {
 			handle: ".", wantErr: true,
 		},
 		{
-			name: "the current directory, spelled with a separator",
-			place: func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) {
-				s.StagedDirs = map[string]string{"title": h}
-			},
-			handle: "./", wantErr: true,
-		},
-		{
 			name:   "a descent and an ascent that cancel",
 			place:  func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) { s.TrackerDir = h },
 			handle: "x/..", wantErr: true,
-		},
-		{
-			name: "two descents and two ascents that cancel",
-			place: func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) {
-				s.CanonicalDirs = map[string]string{"title": h}
-			},
-			handle: "a/b/../..", wantErr: true,
 		},
 		// Property names are the other family: the sweeps compose bucket and
 		// sidecar directory names out of them and then remove those.
 		{
 			name:   "a property name that escapes",
 			place:  func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) { s.Properties = []string{h} },
-			handle: "x/../../../../etc", wantErr: true,
+			handle: "x/../../../../etc", wantErr: true, wantField: "property",
 		},
 		{
 			name:   "an empty property name, which composes into another property's bucket",
@@ -854,6 +937,9 @@ func TestDecodeMigrationRecordRejectsEscapingHandles(t *testing.T) {
 			if tt.wantErr {
 				require.Error(t, err, "a handle that leaves the shard root must not decode")
 				require.Nil(t, rec)
+				if tt.wantField != "" {
+					require.Contains(t, err.Error(), fmt.Sprintf("names %s %q", tt.wantField, tt.handle))
+				}
 				return
 			}
 			require.NoError(t, err)

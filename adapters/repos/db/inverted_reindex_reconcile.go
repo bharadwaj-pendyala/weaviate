@@ -574,7 +574,7 @@ func (r *migrationReconciler) sealUnit(subject MigrationSubject) (func(), bool) 
 // withSealedUnit runs a teardown under the unit's seal, declining (and
 // retrying next pass) if a worker is live — every arm here writes through
 // pointers taken before the worker's phase began. The per-unit orphan audit
-// and [ReindexProvider.WaitForLocalTaskDrain] take the same seal separately.
+// takes the same seal separately.
 func (r *migrationReconciler) withSealedUnit(subject MigrationSubject, what string, run func() error) error {
 	release, sealed := r.sealUnit(subject)
 	if !sealed {
@@ -782,9 +782,9 @@ func (r *migrationReconciler) dirExists(dir string) (bool, error) {
 	return migrationDirExists(r.path(dir))
 }
 
-// rename is the only promoting filesystem step. The Promoted record written on
-// its strength is durable, so the rename must be durable too, or a crash
-// leaves a record naming a path the filesystem never created.
+// rename is the reconciler's only promoting filesystem step. The Promoted
+// record written on its strength is durable, so the rename must be durable
+// too, or a crash leaves a record naming a path the filesystem never created.
 func (r *migrationReconciler) rename(from, to string) error {
 	if err := diskio.RenameAndSync(r.path(from), r.path(to)); err != nil {
 		return fmt.Errorf("promote %q to %q: %w", from, to, err)

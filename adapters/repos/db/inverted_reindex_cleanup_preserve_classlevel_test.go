@@ -158,10 +158,12 @@ func cleanSweep(t *testing.T, ctx context.Context, shard *Shard, propName, index
 	return reads
 }
 
-// fixtureSidecarFor mirrors what every production writer records: alongside the
-// ingest directory a flip stages into, the migration also owns the reindex
-// sidecar it built that data in. A fixture without one exercises no part of
-// the preservation and reclamation that reads MigrationSubject.SidecarDirs.
+// fixtureSidecarFor pairs a staged (ingest) directory with the reindex sidecar
+// the same migration owns, so the fixture exercises the preservation and
+// reclamation that read MigrationSubject.SidecarDirs. A production-shaped
+// ingest name yields the production reindex name; anything else yields a
+// synthetic one, so a row whose sweep has to match the name on disk has to
+// pass a production-shaped staged name.
 func fixtureSidecarFor(staged string) string {
 	if reindex := strings.Replace(staged, "_ingest_", "_reindex_", 1); reindex != staged {
 		return reindex
@@ -314,6 +316,9 @@ func TestCleanStalePartialReindexState_GenCollisionAcrossStrategies(t *testing.T
 		staleTracker     string
 		staleSidecar     string
 		wipeReason       string
+		// loadBuckets opens both sidecars in the store before the sweep, so
+		// the row also pins which of them the sweep disconnects.
+		loadBuckets bool
 	}{
 		{
 			name:             "completed enable_filterable gen 1 must not preserve stale roaringset ingest_1",
@@ -333,6 +338,16 @@ func TestCleanStalePartialReindexState_GenCollisionAcrossStrategies(t *testing.T
 			wipeReason: "stale enable_filterable ingest_2 must be wiped even though the " +
 				"completed roaringset migration shares gen 2",
 		},
+		{
+			name:             "the same collision with both sidecar buckets loaded",
+			completedTracker: "filterable_roaringset_refresh_2",
+			liveSidecar:      "property_category__roaringset_ingest_2",
+			staleTracker:     "enable_filterable_category_2",
+			staleSidecar:     "property_category__enable_filterable_ingest_2",
+			loadBuckets:      true,
+			wipeReason: "stale enable_filterable ingest_2 must be wiped even though the " +
+				"completed roaringset migration shares gen 2",
+		},
 	}
 
 	for _, tc := range cases {
@@ -349,58 +364,33 @@ func TestCleanStalePartialReindexState_GenCollisionAcrossStrategies(t *testing.T
 			mkTrackerDir(t, lsm, tc.completedTracker)
 			mkMigrationRecord(t, lsm, tc.completedTracker, MigrationStateSwapped,
 				map[string]string{"category": tc.liveSidecar})
-			mkSidecarDir(t, lsm, tc.liveSidecar)
 			mkTrackerDir(t, lsm, tc.staleTracker)
 			mkMigrationRecord(t, lsm, tc.staleTracker, MigrationStateIterating,
 				map[string]string{"category": tc.staleSidecar})
-			mkSidecarDir(t, lsm, tc.staleSidecar)
+			for _, name := range []string{tc.liveSidecar, tc.staleSidecar} {
+				if !tc.loadBuckets {
+					mkSidecarDir(t, lsm, name)
+					continue
+				}
+				// A loaded bucket lays down its own directory; mkSidecarDir's
+				// placeholder segment is not one the store can open.
+				require.NoError(t, shard.store.CreateOrLoadBucket(ctx, name,
+					lsmkv.WithStrategy(lsmkv.StrategyRoaringSet)))
+			}
 
 			cleanSweep(t, ctx, shard, "category", "filterable")
 
 			require.True(t, dirExistsAt(t, lsm, tc.liveSidecar),
 				"live completed-migration sidecar must survive")
 			require.False(t, dirExistsAt(t, lsm, tc.staleSidecar), tc.wipeReason)
+			if tc.loadBuckets {
+				require.NotNil(t, shard.store.Bucket(tc.liveSidecar),
+					"live completed-migration sidecar bucket must not be shut down")
+				require.Nil(t, shard.store.Bucket(tc.staleSidecar),
+					"stale sidecar bucket must be shut down despite the shared gen")
+			}
 		})
 	}
-}
-
-// TestCleanStalePartialReindexState_ShutdownSkipKeyedBySuffix pins the
-// bucket-shutdown half of the bare-gen keying bug (issue #295).
-func TestCleanStalePartialReindexState_ShutdownSkipKeyedBySuffix(t *testing.T) {
-	ctx := testCtx()
-	className := "CleanupShutdownSkip_" + uuid.NewString()[:8]
-	class := newTestClassWithProps(className, []string{"category"})
-	shd, _ := testShardWithSettings(t, ctx, class, enthnsw.UserConfig{Skip: true},
-		false, false, false)
-	shard := shd.(*Shard)
-	defer shard.Shutdown(ctx)
-	lsm := shard.pathLSM()
-
-	// Completed class-level migration at gen 2 with its ingest bucket loaded.
-	mkTrackerDir(t, lsm, "filterable_roaringset_refresh_2")
-	liveName := "property_category__roaringset_ingest_2"
-	mkMigrationRecord(t, lsm, "filterable_roaringset_refresh_2", MigrationStateSwapped,
-		map[string]string{"category": liveName})
-	require.NoError(t, shard.store.CreateOrLoadBucket(ctx, liveName,
-		lsmkv.WithStrategy(lsmkv.StrategyRoaringSet)))
-
-	// Cancelled per-prop attempt at the same gen; its bucket is stale.
-	mkTrackerDir(t, lsm, "enable_filterable_category_2")
-	staleName := "property_category__enable_filterable_ingest_2"
-	require.NoError(t, shard.store.CreateOrLoadBucket(ctx, staleName,
-		lsmkv.WithStrategy(lsmkv.StrategyRoaringSet)))
-
-	cleanSweep(t, ctx, shard, "category", "filterable")
-
-	require.NotNil(t, shard.store.Bucket(liveName),
-		"live deferred-finalize sidecar bucket must not be shut down")
-	require.True(t, dirExistsAt(t, lsm, liveName),
-		"live deferred-finalize sidecar dir must survive")
-	require.Nil(t, shard.store.Bucket(staleName),
-		"stale sidecar bucket must be shut down despite sharing gen 2 with "+
-			"the completed class-level migration")
-	require.False(t, dirExistsAt(t, lsm, staleName),
-		"stale sidecar dir must be wiped")
 }
 
 // Pins that "__" in a property name (e.g. "category__extra") is not

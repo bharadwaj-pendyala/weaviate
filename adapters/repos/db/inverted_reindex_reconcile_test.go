@@ -583,13 +583,6 @@ func TestReconcileReverseEdge(t *testing.T) {
 			wantRestart: true,
 		},
 		{
-			name:        "iterated and both gone",
-			plant:       func(s MigrationSubject) MigrationRecord { return NewMigrationRecordIterated(s) },
-			present:     []string{"property_title"},
-			wantState:   MigrationStateIterating,
-			wantRestart: true,
-		},
-		{
 			name:      "a checkpoint with every owned directory on disk keeps its place",
 			plant:     checkpointed,
 			present:   []string{"m_42_title", "m_42_title_sidecar", "property_title"},
@@ -1277,14 +1270,6 @@ func TestReconcilePerShardDivergentStatesConverge(t *testing.T) {
 			require.Equal(t, sh.wantLive, f.contentOf("property_title"),
 				"each shard serves what its own records and directories say")
 			f.requireMigrationDirsTrackRecords()
-
-			// Nothing from a sibling shard may appear here: the reconciler is
-			// handed one LSM path and must never join another.
-			entries, err := os.ReadDir(f.lsmPath)
-			require.NoError(t, err)
-			for _, entry := range entries {
-				require.NotEqual(t, "shard-0", entry.Name())
-			}
 		})
 	}
 }

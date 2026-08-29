@@ -261,6 +261,14 @@ func TestMigrationDirScopeMatches(t *testing.T) {
 			dir:      "enable_filterable_a_b_c_1",
 			propName: "b", want: false,
 		},
+		// The one shape only the middle-token arm of namesPropertyToken keeps
+		// in scope: without it the payload is never read and the tracker of a
+		// three-property task is never deleted.
+		{
+			name: "the middle property of a three-property task, with its payload",
+			dir:  "enable_filterable_a_b_c_1", props: []string{"a", "b", "c"},
+			propName: "b", want: true,
+		},
 		// An empty payload decides nothing, so falls back to the name like a
 		// missing payload does.
 		{

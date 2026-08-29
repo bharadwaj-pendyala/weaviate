@@ -238,9 +238,9 @@ func (s *Shard) reconcileMigrationRecords(ctx context.Context, class *models.Cla
 }
 
 // warnAboutLegacyMarkerMigrations reports migrations completed on a
-// pre-migration-records release whose staged data the load-time finalize
-// ([FinalizeCompletedMigrations]) did not promote. Those properties serve
-// empty until a finalize picks the tracker up, which is where the WARN points.
+// build that writes no record — this one, and every release before records
+// existed — whose staged data the load-time finalize did not promote. Those
+// properties serve empty until a finalize picks the tracker up.
 func (s *Shard) warnAboutLegacyMarkerMigrations() {
 	if s.migrationRecords == nil || len(s.migrationRecords.Unreadable()) > 0 {
 		// A record this build cannot read may be the one naming that tracker,
@@ -277,8 +277,8 @@ func (s *Shard) warnAboutLegacyMarkerMigrations() {
 			WithField("properties", props).
 			Warn("a completed migration that no record names holds these properties' only copy under its " +
 				"staged directory; the load-time finalize did not promote it, so they serve empty until it does. " +
-				"Check the finalize log for this tracker: its generation is likely not the highest one the " +
-				"directory carries a completion marker for")
+				"Check the finalize log for this tracker: a failed sentinel write or a failed tracker removal " +
+				"is what leaves it behind")
 	}
 }
 
