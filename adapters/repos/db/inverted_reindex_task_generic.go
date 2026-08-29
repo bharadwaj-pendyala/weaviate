@@ -697,49 +697,61 @@ func (t *ShardReindexTaskGeneric) stagedPropsStillOnDisk(logger logrus.FieldLogg
 }
 
 // requireCanonicalHoldsMigratedData refuses to commit a migration's schema
-// effect unless every property's canonical bucket is serving this migration's
-// own data.
+// effect unless the canonical name really holds this migration's data.
 //
-// The flip decision is written before the first pointer moves, so it proves
-// the flip was DECIDED, never that it ran. Only two states put the migrated
-// data under the canonical name, and each has a post-condition of its own:
+// The flip decision is written before the first pointer moves (see
+// [migrationRecordQuestions.FlipDecided]), so it proves the flip was DECIDED,
+// never that it ran. Two things put the data under the canonical name, and
+// they answer in different places:
 //
-//   - the in-process flip pointed the canonical name at the staged directory,
-//     which is what the bucket's own directory says;
-//   - the promotion renamed that directory onto the canonical name, which is
-//     what a Promoted record says, and which leaves no staged directory behind
-//     because [ShardReindexTaskGeneric.stagedPropsStillOnDisk] stops the load
-//     path from re-creating one.
+//   - an in-process flip points the canonical name at the staged directory,
+//     which the open bucket's own directory says;
+//   - a promotion renamed that directory onto the canonical name, which only
+//     disk says. An enable-* migration commits the very schema flag that
+//     decides whether shard init opens that bucket, so requiring an open one
+//     here would make the retry uncommittable exactly when it is needed.
 //
-// Everything else — including a decided flip whose promotion has not run, and
-// a property whose directories a DELETE removed and shard init re-created
-// empty — reports a migration complete over an index that never moved.
+// Promoted means every property is either promoted or superseded, and both
+// leave the same disk shape: the canonical directory present, the staged one
+// gone. A missing canonical directory is one a later load deleted, and the
+// schema effect must stay off an index nothing serves.
+//
+// A superseded property therefore commits its schema effect over a successor's
+// data. That is only safe because [typesConflictReason] refuses a new task
+// overlapping an in-flight one's properties, so a successor can only exist
+// once this migration's task is terminal — and a terminal task never re-enters
+// here. Without that, an enable-searchable successor targeting a different
+// tokenization would have its predecessor commit the wrong one.
 func (t *ShardReindexTaskGeneric) requireCanonicalHoldsMigratedData(shard ShardLike, rec MigrationRecord) error {
 	subject := rec.Subject()
 	for _, propName := range subject.Properties {
-		bucketName := t.strategy.SourceBucketName(propName)
-		bucket := shard.Store().Bucket(bucketName)
-		if bucket == nil {
-			return fmt.Errorf("stale migration state on shard %q: the record claims property %q is complete, but its bucket %q is not open — usually caused by a DELETE between the previous successful reindex and this one; refusing to report success",
-				shard.Name(), propName, bucketName)
-		}
-		serving := filepath.Base(bucket.GetDir())
-		if serving == subject.StagedDirs[propName] {
-			continue
+		if bucket := shard.Store().Bucket(t.strategy.SourceBucketName(propName)); bucket != nil {
+			serving := filepath.Base(bucket.GetDir())
+			if serving == subject.StagedDirs[propName] {
+				continue
+			}
+			if serving != subject.CanonicalDirs[propName] {
+				return fmt.Errorf("stale migration state on shard %q: the record claims property %q is complete, but its bucket serves %q, which is neither this migration's staged directory %q nor its canonical one %q; refusing to report success",
+					shard.Name(), propName, serving, subject.StagedDirs[propName], subject.CanonicalDirs[propName])
+			}
 		}
 		if rec.State() != MigrationStatePromoted {
-			return fmt.Errorf("stale migration state on shard %q: the record claims property %q is complete, but its bucket serves %q and the migration is only %q, not promoted; refusing to report success",
-				shard.Name(), propName, serving, rec.State())
+			return fmt.Errorf("stale migration state on shard %q: the record claims property %q is complete, but the canonical name does not serve this migration's staged directory and the migration is only %q, not promoted; refusing to report success",
+				shard.Name(), propName, rec.State())
 		}
-		if serving != subject.CanonicalDirs[propName] {
-			return fmt.Errorf("stale migration state on shard %q: the record claims property %q is promoted, but its bucket serves %q rather than the canonical directory %q; refusing to report success",
-				shard.Name(), propName, serving, subject.CanonicalDirs[propName])
+		canonicalThere, err := migrationDirExists(filepath.Join(shard.pathLSM(), subject.CanonicalDirs[propName]))
+		if err != nil {
+			return fmt.Errorf("probe canonical dir for %q: %w", propName, err)
 		}
-		there, err := migrationDirExists(filepath.Join(shard.pathLSM(), subject.StagedDirs[propName]))
+		if !canonicalThere {
+			return fmt.Errorf("stale migration state on shard %q: the record claims property %q is promoted, but its canonical directory %q is gone; refusing to report success",
+				shard.Name(), propName, subject.CanonicalDirs[propName])
+		}
+		stagedThere, err := migrationDirExists(filepath.Join(shard.pathLSM(), subject.StagedDirs[propName]))
 		if err != nil {
 			return fmt.Errorf("probe staged dir for %q: %w", propName, err)
 		}
-		if there {
+		if stagedThere {
 			return fmt.Errorf("stale migration state on shard %q: the record claims property %q is promoted, but its staged directory %q is still there, so the rename that promotion is made of never ran; refusing to report success",
 				shard.Name(), propName, subject.StagedDirs[propName])
 		}

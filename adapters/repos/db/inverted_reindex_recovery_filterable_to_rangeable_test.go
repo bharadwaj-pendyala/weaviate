@@ -219,9 +219,17 @@ type testFilterableToRangeableStrategyWrapper struct {
 	FilterableToRangeableStrategy
 	migrationCompleted  bool
 	preReindexHookCount int
+	// onComplete stands in for the RAFT commit the real hook performs, so a
+	// test can fail it or observe the schema flag it sets.
+	onComplete func() error
 }
 
 func (s *testFilterableToRangeableStrategyWrapper) OnMigrationComplete(_ context.Context, _ ShardLike) error {
+	if s.onComplete != nil {
+		if err := s.onComplete(); err != nil {
+			return err
+		}
+	}
 	s.migrationCompleted = true
 	return nil
 }
