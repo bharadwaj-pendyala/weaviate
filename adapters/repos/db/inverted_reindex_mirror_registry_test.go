@@ -227,6 +227,84 @@ func TestMigrationMirrorDisarmIsPerProperty(t *testing.T) {
 		"a property nobody disarmed must keep mirroring")
 }
 
+// TestRegistrationRollbackDisarmsOnlyWhatItArmed pins the handle
+// [ShardReindexTaskGeneric.registerDoubleWriteCallbacks] returns. It is the
+// rollback for the record write that follows the registration, so it owes two
+// things: it disarms only the properties that call armed, and it is spent
+// after one use. A handle scoped to the whole record key tears down mirroring
+// for properties the failed call never touched; one that can run twice tears
+// down whatever re-armed since.
+func TestRegistrationRollbackDisarmsOnlyWhatItArmed(t *testing.T) {
+	const (
+		rolledBack = "title"
+		untouched  = "body"
+	)
+	ctx := testCtx()
+	className := "MirrorRollbackScope_" + uuid.NewString()[:8]
+	class := newEnableFilterableTestClass(className, rolledBack, untouched)
+
+	shd, idx := testShardWithSettings(t, ctx, class, enthnsw.UserConfig{Skip: true},
+		false, false, false)
+	shard := shd.(*Shard)
+	defer shard.Shutdown(context.Background())
+
+	task, _ := newEnableFilterableTask(t, idx, className, rolledBack, untouched)
+	require.NoError(t, task.OnAfterLsmInit(ctx, shard))
+
+	registry := shard.migrationMirrorRegistry()
+	require.Equal(t, 2, registry.ArmedMigrationMirrors(),
+		"fixture: one handle per property")
+
+	rollback, err := task.registerDoubleWriteCallbacks(shard, []string{rolledBack}, task.ingestBucketName)
+	require.NoError(t, err)
+	require.Equal(t, 2, registry.ArmedMigrationMirrors(),
+		"fixture: re-arming one property replaces its handle rather than adding one")
+
+	rollback()
+	require.Equal(t, 1, registry.ArmedMigrationMirrors(),
+		"the rollback disarmed a property it never armed")
+
+	_, err = task.registerDoubleWriteCallbacks(shard, []string{rolledBack}, task.ingestBucketName)
+	require.NoError(t, err)
+	require.Equal(t, 2, registry.ArmedMigrationMirrors(),
+		"fixture: the property is armed again")
+
+	rollback()
+	require.Equal(t, 2, registry.ArmedMigrationMirrors(),
+		"a spent rollback disarmed the registration that replaced it")
+}
+
+// TestArmingTheMirrorRefusesAPropertyWithNoStagedBucket pins that a property
+// whose staged bucket is not open stops the registration instead of being
+// dropped from it. A dropped property leaves the mirror armed for it but
+// unable to resolve the canonical fallback after the flip, so every write
+// from the flip onward is lost from the staged copy.
+func TestArmingTheMirrorRefusesAPropertyWithNoStagedBucket(t *testing.T) {
+	const armedProp = "title"
+	ctx := testCtx()
+	className := "MirrorArmRefusal_" + uuid.NewString()[:8]
+	class := newEnableFilterableTestClass(className, armedProp)
+
+	shd, idx := testShardWithSettings(t, ctx, class, enthnsw.UserConfig{Skip: true},
+		false, false, false)
+	shard := shd.(*Shard)
+	defer shard.Shutdown(context.Background())
+
+	task, _ := newEnableFilterableTask(t, idx, className, armedProp)
+	require.NoError(t, task.OnAfterLsmInit(ctx, shard))
+
+	registry := shard.migrationMirrorRegistry()
+	armed := registry.ArmedMigrationMirrors()
+	require.Positive(t, armed, "fixture: the mirror is armed for the property that has a bucket")
+
+	disarm, err := task.registerDoubleWriteCallbacks(shard,
+		[]string{armedProp, "no_staged_bucket"}, task.ingestBucketName)
+	require.ErrorContains(t, err, "no_staged_bucket")
+	require.Nil(t, disarm)
+	require.Equal(t, armed, registry.ArmedMigrationMirrors(),
+		"a refused registration must publish no handle at all")
+}
+
 // TestOverlappingMirrorsOnOneProperty pins that two records mirroring one
 // property stay independent: one's disarm must leave the other copying and
 // must not un-suppress the inline write path, which would land

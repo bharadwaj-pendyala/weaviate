@@ -115,6 +115,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -190,7 +191,7 @@ type ShardReindexTaskGeneric struct {
 	// (weaviate/weaviate#11688). Always set — no test-only branch runs in
 	// production.
 	registerDoubleWriteCallbacksFn func(shard *Shard, props []string,
-		bucketNamer func(string) string) func()
+		bucketNamer func(string) string) (func(), error)
 
 	// onPropSwapped runs inside the Phase 2a tight loop right after each
 	// bucket-pointer flip, so a query never observes overlay≠bucket for
@@ -996,7 +997,10 @@ func (t *ShardReindexTaskGeneric) OnAfterLsmInit(ctx context.Context, shard *Sha
 		err = fmt.Errorf("starting ingest buckets:%w", err)
 		return err
 	}
-	disableJustRegistered := t.registerDoubleWriteCallbacksFn(shard, props, t.ingestBucketName)
+	disableJustRegistered, err := t.registerDoubleWriteCallbacksFn(shard, props, t.ingestBucketName)
+	if err != nil {
+		return err
+	}
 
 	if hasRecord {
 		return nil
@@ -1932,18 +1936,28 @@ func (t *ShardReindexTaskGeneric) removeBucketsDirs(ctx context.Context, logger 
 // a committed predecessor's, so a shared handle would either keep mirroring
 // a property the successor took over, or stop mirroring one it never
 // touched.
+//
+// Refuses rather than arming a partial mirror. A property with no captured
+// bucket is not inert: [resolveScopedDoubleWriteBucket] compares the canonical
+// fallback against the captured pointer, and a missing entry reads as a typed
+// nil that no bucket equals, so the mirror could never take the post-flip
+// fallback it exists for and would drop every write from the flip onward.
 func (t *ShardReindexTaskGeneric) registerDoubleWriteCallbacks(shard *Shard, props []string,
 	bucketNamer func(string) string,
-) func() {
+) (func(), error) {
 	// The staged buckets are open by now (loadIngestBuckets precedes this
 	// call) and each one is this mirror's for the record's whole life, so the
 	// pointers can be captured once. Without them the callbacks cannot tell
 	// their own flip from someone shutting their bucket down.
 	buckets := make(map[string]*lsmkv.Bucket, len(props))
 	for _, propName := range props {
-		if bucket := shard.store.Bucket(bucketNamer(propName)); bucket != nil {
-			buckets[propName] = bucket
+		bucketName := bucketNamer(propName)
+		bucket := shard.store.Bucket(bucketName)
+		if bucket == nil {
+			return nil, fmt.Errorf("arming the double-write mirror on shard %q: staged bucket %q for property %q is not open",
+				shard.Name(), bucketName, propName)
 		}
+		buckets[propName] = bucket
 	}
 
 	disarm := shard.registerDoubleWriteWithScope(props, t.strategy.AnalyzerOverlay(props),
@@ -1960,8 +1974,18 @@ func (t *ShardReindexTaskGeneric) registerDoubleWriteCallbacks(shard *Shard, pro
 	}
 
 	// Through the registry, so the published handles never outlive the
-	// callbacks they disarm.
-	return func() { registry.DisarmMigrationMirrors(key) }
+	// callbacks they disarm. Scoped to exactly the properties armed here and
+	// spent on first use: this is the rollback for the record write that
+	// follows, and taking the whole record key or running twice would tear
+	// down a registration this call never made.
+	var spent sync.Once
+	return func() {
+		spent.Do(func() {
+			for _, propName := range props {
+				registry.DisarmMigrationMirror(key, propName)
+			}
+		})
+	}, nil
 }
 
 func (t *ShardReindexTaskGeneric) bucketOptions(shard *Shard, strategy string,

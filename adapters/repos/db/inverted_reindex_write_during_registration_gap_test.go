@@ -114,7 +114,7 @@ func testRegistrationGapWritesSurvive(t *testing.T,
 	origRegister := task.registerDoubleWriteCallbacksFn
 	task.registerDoubleWriteCallbacksFn = func(shard *Shard, props []string,
 		bucketNamer func(string) string,
-	) func() {
+	) (func(), error) {
 		for i := 0; i < numGapUpdates; i++ {
 			update(i, gapValueBase+int64(i))
 		}
