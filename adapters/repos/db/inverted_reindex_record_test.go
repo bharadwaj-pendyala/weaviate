@@ -60,8 +60,6 @@ func testMigrationSubject(version uint64, code MigrationStrategyCode, props ...s
 func TestMigrationRecordRoundTrip(t *testing.T) {
 	checkpoint := MigrationCheckpoint{
 		LastProcessedKey: []byte{0xDE, 0xAD, 0xBE, 0xEF},
-		ProcessedCount:   1200,
-		IndexedCount:     980,
 		UpdatedAt:        time.Date(2026, 8, 21, 10, 0, 0, 123456789, time.UTC),
 	}
 	displaced := map[string]string{"title": "property_title"}
@@ -225,7 +223,7 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 		{
 			name: "checkpoint on a state that has none",
 			data: valid(func(env map[string]any) {
-				env["checkpoint"] = map[string]any{"processedCount": 1}
+				env["checkpoint"] = map[string]any{"lastProcessedKey": "aGFsZndheQ=="}
 			}),
 			wantErr: "in state \"merged\": checkpoint block present=true, wanted=false",
 		},

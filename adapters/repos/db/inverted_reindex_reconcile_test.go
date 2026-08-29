@@ -707,7 +707,7 @@ func TestReconcileReverseEdge(t *testing.T) {
 	// and it vouches for postings exactly as Iterated does.
 	checkpointed := func(subject MigrationSubject) MigrationRecord {
 		return NewMigrationRecordIterating(subject, MigrationCheckpoint{
-			LastProcessedKey: []byte("halfway"), ProcessedCount: 10, IndexedCount: 10,
+			LastProcessedKey: []byte("halfway"),
 		})
 	}
 

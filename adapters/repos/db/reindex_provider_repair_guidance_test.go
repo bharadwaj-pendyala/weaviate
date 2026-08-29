@@ -323,12 +323,12 @@ func TestHasLocalPostMergeStateReadsEachShardsRecordsOnce(t *testing.T) {
 	mkMigrationRecordFor(t, concrete.pathLSM(), postMergeTrackerDir(t, "title"),
 		"T_cancel", 1, "u1__n1", ReindexTypeChangeTokenization, MigrationStateIterating, "title")
 
-	logger, _ := logrustest.NewNullLogger()
+	logger, hook := logrustest.NewNullLogger()
+	logger.SetLevel(logrus.DebugLevel)
 	p := NewReindexProvider(
 		&DB{indices: map[string]*Index{indexID(entschema.ClassName("C")): idx}},
 		nil, nil, logger, "n1", nil, ctx)
 
-	readsBefore := migrationRecordReads.Load()
 	require.False(t, p.hasLocalPostMergeState(ctx, &ReindexTaskPayload{
 		MigrationType: ReindexTypeChangeTokenization,
 		Collection:    "C",
@@ -336,8 +336,22 @@ func TestHasLocalPostMergeStateReadsEachShardsRecordsOnce(t *testing.T) {
 		UnitToShard:   map[string]string{"u1": shard.Name(), "u2": shard.Name()},
 	}))
 
-	require.Equal(t, uint64(1), migrationRecordReads.Load()-readsBefore,
+	require.Equal(t, 1, countRecordSetReads(hook),
 		"one read for the one shard the payload names, whatever the property count")
+}
+
+// countRecordSetReads counts the line migrationRecordsAt logs per read, on
+// both its outcomes: the Debug line on the healthy path and the Error line
+// when nothing could be read. It is the same line an operator watching a slow
+// startup sees, so the assertion and the signal cannot drift apart.
+func countRecordSetReads(hook *logrustest.Hook) int {
+	n := 0
+	for _, entry := range hook.AllEntries() {
+		if strings.HasPrefix(entry.Message, "read migration records") {
+			n++
+		}
+	}
+	return n
 }
 
 // postMergeEvidenceFixture stands up a one-shard collection carrying the

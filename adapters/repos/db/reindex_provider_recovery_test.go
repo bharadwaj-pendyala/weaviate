@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
 	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/require"
 	"github.com/weaviate/weaviate/cluster/distributedtask"
@@ -457,12 +458,12 @@ func TestLocalCallbacksDoneReadsEachShardsRecordsOnce(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			logger, _ := logrustest.NewNullLogger()
+			logger, hook := logrustest.NewNullLogger()
+			logger.SetLevel(logrus.DebugLevel)
 			p := NewReindexProvider(
 				&DB{indices: map[string]*Index{indexID(entschema.ClassName(className)): idx}},
 				nil, nil, logger, node, nil, ctx)
 
-			readsBefore := migrationRecordReads.Load()
 			done := p.LocalCallbacksDone(&distributedtask.Task{
 				Namespace:      ReindexNamespace,
 				TaskDescriptor: distributedtask.TaskDescriptor{ID: "T_cost", Version: 1},
@@ -471,7 +472,7 @@ func TestLocalCallbacksDoneReadsEachShardsRecordsOnce(t *testing.T) {
 			}, node)
 			require.Equal(t, tt.wantDone, done)
 
-			require.Equal(t, uint64(1), migrationRecordReads.Load()-readsBefore,
+			require.Equal(t, 1, countRecordSetReads(hook),
 				"one read per shard, whatever the payload's tuple count")
 			require.False(t, cold.isLoaded())
 		})

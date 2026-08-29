@@ -956,7 +956,7 @@ func migrationSidecarDirsFor(dirName, prefix string, generation int, properties 
 }
 
 // migrationPreservedSidecarDirsFor names every sidecar bucket dir one tracker
-// owns, the displaced <main><backupSuffix>_<gen> included.
+// owns, the displaced <main><legacyBackupSuffix>_<gen> included.
 //
 // A preserve pass has to answer wider than the reclaiming one. The displaced
 // directory holds the pre-swap main bucket; this build writes none, but a

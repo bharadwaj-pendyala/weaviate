@@ -1178,7 +1178,7 @@ func (t *ShardReindexTaskGeneric) OnAfterLsmInitAsync(ctx context.Context, shard
 	defer func() {
 		if err != nil && !bytes.Equal(lastStoredKey.Bytes(), lastProcessedKey.Bytes()) {
 			logger.WithField("last_processed_key", lastProcessedKey).Debug("recording progress on error")
-			if cerr := t.recordCheckpoint(shard, subject, lastProcessedKey, processedCount, indexedCount); cerr != nil {
+			if cerr := t.recordCheckpoint(shard, subject, lastProcessedKey); cerr != nil {
 				logger.Warnf("recording reindex progress on error: %v", cerr)
 			}
 		}
@@ -1279,7 +1279,7 @@ func (t *ShardReindexTaskGeneric) OnAfterLsmInitAsync(ctx context.Context, shard
 		}
 	}
 	if !bytes.Equal(lastStoredKey.Bytes(), lastProcessedKey.Bytes()) {
-		if err := t.recordCheckpoint(shard, subject, lastProcessedKey, processedCount, indexedCount); err != nil {
+		if err := t.recordCheckpoint(shard, subject, lastProcessedKey); err != nil {
 			err = fmt.Errorf("recording reindex progress: %w", err)
 			return zerotime, false, err
 		}
@@ -1863,7 +1863,7 @@ func (t *ShardReindexTaskGeneric) flushReindexBuckets(shard ShardLike, props []s
 // rewritten because a checkpoint only means anything alongside the horizon and
 // the directories the same record names.
 func (t *ShardReindexTaskGeneric) recordCheckpoint(shard ShardLike, subject MigrationSubject,
-	lastProcessedKey indexKey, processedCount, indexedCount int,
+	lastProcessedKey indexKey,
 ) error {
 	// The checkpoint is fsynced and the postings it vouches for are not, so
 	// without this the two disagree after a crash: the resume seeks strictly
@@ -1875,8 +1875,6 @@ func (t *ShardReindexTaskGeneric) recordCheckpoint(shard ShardLike, subject Migr
 	}
 	return t.putMigrationRecord(shard, NewMigrationRecordIterating(subject, MigrationCheckpoint{
 		LastProcessedKey: lastProcessedKey.Clone().Bytes(),
-		ProcessedCount:   processedCount,
-		IndexedCount:     indexedCount,
 		UpdatedAt:        time.Now(),
 	}))
 }

@@ -255,10 +255,12 @@ func (s *Shard) NotifyReady() {
 // [Shard.IsRangeableLocallyReady]. Promoted covers a superseded property too,
 // whose canonical directory holds a successor's data — safe here because
 // property_<p>_rangeable is built by exactly one strategy code, so the
-// superseding record is another rangeable record this same scan answers. A decided flip is not enough: the flip
-// decision is recorded before the first pointer moves, and it lives only in the
-// process that made it, so a decided-but-unpromoted record at load means the
-// canonical rangeable directory is the empty one initNonVector just recreated.
+// superseding record is another rangeable record this same scan answers.
+//
+// A decided flip is not enough: the flip decision is recorded before the first
+// pointer moves, and it lives only in the process that made it, so a
+// decided-but-unpromoted record at load means the canonical rangeable
+// directory is the empty one initNonVector just recreated.
 // Reconciliation runs immediately above and promotes what it can, so a record
 // still short of Promoted here is one it declined. A record that does not decode
 // cannot be answered per property, since the property list is exactly what could

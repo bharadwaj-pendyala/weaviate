@@ -24,7 +24,7 @@ func testQuestionRecords() (iterating, iterated, merged, swapped, promoted Migra
 	flipped := []string{"title", "body"}
 	displaced := map[string]string{"title": "property_title", "body": "property_body"}
 
-	return NewMigrationRecordIterating(subject, MigrationCheckpoint{ProcessedCount: 10}),
+	return NewMigrationRecordIterating(subject, MigrationCheckpoint{LastProcessedKey: []byte("halfway")}),
 		NewMigrationRecordIterated(subject),
 		NewMigrationRecordMerged(subject),
 		NewMigrationRecordSwapped(subject, flipped, displaced),

@@ -102,7 +102,7 @@ func TestCheckpointNeverOutrunsThePostingsItVouchesFor(t *testing.T) {
 			}
 
 			key := task.keyParser.FromBytes([]byte("the-last-processed-key"))
-			err := task.recordCheckpoint(shard, subject, key, 1, 1)
+			err := task.recordCheckpoint(shard, subject, key)
 
 			if tt.wantDurable {
 				require.NotZero(t, segmentsOnDisk(t, bucket.GetDir()),

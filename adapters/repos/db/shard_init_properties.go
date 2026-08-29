@@ -293,7 +293,7 @@ func cleanStaleMigrationDirsAt(ctx context.Context, lsmPath, propName, indexType
 	if err := cleanStaleMigrationDirsIn(ctx, scope, sweep.committed, logger); err != nil && ctx.Err() == nil {
 		// Logged and dropped here only: the DELETE this serves has already
 		// removed the bucket, and the next re-enable fails loudly on the
-		// stale completion claim. The sweep path propagates it instead.
+		// migration record. The sweep path propagates it instead.
 		//
 		// A run the context stopped is not logged at all: the apply it serves
 		// already fails with that same cause, and a line per shard would follow
