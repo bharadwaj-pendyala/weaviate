@@ -23,16 +23,12 @@ import (
 	"github.com/weaviate/weaviate/adapters/repos/db/inverted"
 )
 
-// onAddToPropertyValueIndex and onDeleteFromPropertyValueIndex are test-only
-// shorthands that fire the registered add/delete callbacks against the shard's
-// default (no-scope) index state. Production code fires callbacks via
-// fire{Add,Delete}FromPropertyValueIndex directly with an explicit scope state.
+// onAddToPropertyValueIndex is a test-only shorthand that fires the registered
+// add callbacks against the shard's default (no-scope) index state. Production
+// code fires callbacks via fireAddToPropertyValueIndex directly with an
+// explicit scope state.
 func (s *Shard) onAddToPropertyValueIndex(docID uint64, property *inverted.Property) error {
 	return s.fireAddToPropertyValueIndex(s.loadPropValueIndexState().add, docID, property)
-}
-
-func (s *Shard) onDeleteFromPropertyValueIndex(docID uint64, property *inverted.Property) error {
-	return s.fireDeleteFromPropertyValueIndex(s.loadPropValueIndexState().del, docID, property)
 }
 
 // TestShardCallbacks_ConcurrentRegistrationAndWrites verifies that arming and
