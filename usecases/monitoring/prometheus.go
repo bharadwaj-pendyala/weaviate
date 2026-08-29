@@ -75,8 +75,8 @@ type PrometheusMetrics struct {
 
 	// Reindex metrics
 	RangeableInMemoryRebuildDegraded *prometheus.CounterVec
-	MigrationRecordsWedged           *prometheus.GaugeVec
-	MigrationRecordsNotUnderstood    *prometheus.GaugeVec
+	MigrationRecordsWedged           prometheus.Counter
+	MigrationRecordsNotUnderstood    prometheus.Counter
 
 	// Backup/Restore metrics
 	BackupRestoreDurations            *prometheus.SummaryVec
@@ -363,8 +363,6 @@ func (pm *PrometheusMetrics) DeleteShard(className, shardName string) error {
 	pm.StartupDurations.DeletePartialMatch(labels)
 	pm.StartupDiskIO.DeletePartialMatch(labels)
 	pm.RangeableInMemoryRebuildDegraded.DeletePartialMatch(labels)
-	pm.MigrationRecordsWedged.DeletePartialMatch(labels)
-	pm.MigrationRecordsNotUnderstood.DeletePartialMatch(labels)
 	return nil
 }
 
@@ -602,14 +600,14 @@ func newPrometheusMetrics() *PrometheusMetrics {
 			Name: "rangeable_inmemory_rebuild_degraded_total",
 			Help: "Number of times the rangeable in-memory rebuild at reindex finalize degraded to disk serving instead of activating in-memory acceleration",
 		}, []string{"class_name", "shard_name", "property"}),
-		MigrationRecordsWedged: promauto.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "migration_records_wedged",
-			Help: "Number of reindex migration records on this shard that no further shard load can advance. Non-zero needs an operator: see the shard's log for the record and the remediation.",
-		}, []string{"class_name", "shard_name"}),
-		MigrationRecordsNotUnderstood: promauto.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "migration_records_not_understood",
-			Help: "Number of reindex migration records on this shard this build could not decode. Non-zero withholds every promoting and destructive reindex action on the shard, and is normally a downgrade artifact rather than a migration outcome.",
-		}, []string{"class_name", "shard_name"}),
+		MigrationRecordsWedged: promauto.NewCounter(prometheus.CounterOpts{
+			Name: "migration_records_wedged_total",
+			Help: "Reindex migration records a shard load left standing for a reason no later load can change. Any increase needs an operator; the log line for each names the record, the shard, and what clears it.",
+		}),
+		MigrationRecordsNotUnderstood: promauto.NewCounter(prometheus.CounterOpts{
+			Name: "migration_records_not_understood_total",
+			Help: "Reindex migration records a shard load could not decode. Each one withholds every promoting and destructive reindex action on its shard, and is normally a downgrade artifact rather than a migration outcome; the log line names the files.",
+		}),
 
 		// Queue metrics
 		QueueSize: promauto.NewGaugeVec(prometheus.GaugeOpts{
@@ -1062,20 +1060,33 @@ func (m *PrometheusMetrics) initObjectsTtl() error {
 	return nil
 }
 
-// SetMigrationRecordsWedged reports one shard's wedge count. Written on every
-// load including zero: a shard that healed would otherwise report its last
-// non-zero value forever.
+// AddMigrationRecordsWedged counts what one shard load left standing.
 //
-// The two counts are separate series on purpose. A record this build cannot
-// decode is a downgrade artifact and clears by running the newer build again; a
-// wedged record is a migration outcome and clears by resubmitting the migration.
-func (m *PrometheusMetrics) SetMigrationRecordsWedged(className, shardName string, wedged, notUnderstood int) {
+// Node-wide and unlabelled on purpose. Class and shard names are user-chosen
+// strings, and one series per shard is one series per tenant — the cardinality
+// TestMetricsCount exists to forbid. The identity of a wedged record belongs in
+// the log line, which names the record, its shard, and what clears it; the
+// metric's job is only to say that there is something to go and read.
+//
+// Counters rather than gauges for the same reason: a per-shard gauge would have
+// to be re-set by every shard on every load to stop a healed one reporting its
+// last non-zero value forever, and an unlabelled gauge cannot be. An increase
+// over a window is the actionable signal, and a healed cluster stops producing
+// one.
+//
+// The two are separate series on purpose. A record this build cannot decode is
+// a downgrade artifact and clears by running the newer build again; a wedged
+// record is a migration outcome and clears by resubmitting the migration.
+func (m *PrometheusMetrics) AddMigrationRecordsWedged(wedged, notUnderstood int) {
 	if m == nil {
 		return
 	}
-	labels := prometheus.Labels{"class_name": className, "shard_name": shardName}
-	m.MigrationRecordsWedged.With(labels).Set(float64(wedged))
-	m.MigrationRecordsNotUnderstood.With(labels).Set(float64(notUnderstood))
+	if wedged > 0 {
+		m.MigrationRecordsWedged.Add(float64(wedged))
+	}
+	if notUnderstood > 0 {
+		m.MigrationRecordsNotUnderstood.Add(float64(notUnderstood))
+	}
 }
 
 func (m *PrometheusMetrics) IncRangeableInMemoryRebuildDegraded(className, shardName, propName string) {

@@ -236,10 +236,9 @@ func (s *Shard) reconcileMigrationRecords(ctx context.Context, class *models.Cla
 		// individual disposition already fails toward doing nothing.
 		s.index.logger.WithField("shard", s.ID()).Errorf("reconcile migration records: %v", err)
 	}
-	// Written on every load, zero included: a shard that healed would
-	// otherwise report its last non-zero value for the life of the process.
-	monitoring.GetMetrics().SetMigrationRecordsWedged(
-		s.index.Config.ClassName.String(), s.Name(),
+	// Node-wide and unlabelled: which shard is in the log line above, since a
+	// label carrying a class or tenant name is one series per tenant.
+	monitoring.GetMetrics().AddMigrationRecordsWedged(
 		reconciler.WedgedCount(), len(s.migrationRecords.Unreadable()))
 	s.warnAboutLegacyMarkerMigrations()
 }
@@ -308,7 +307,10 @@ func (s *Shard) liveMigrationReconciler() *migrationReconciler {
 }
 
 func (s *Shard) migrationReconciler(class func() *models.Class) *migrationReconciler {
-	return newMigrationReconciler(s.migrationRecords, s.pathLSM(), s.index.logger,
+	// Shard-scoped, because the wedge metric is node-wide and unlabelled: the
+	// line an operator is sent to has to say which shard it is about.
+	return newMigrationReconciler(s.migrationRecords, s.pathLSM(),
+		s.index.logger.WithField("shard", s.ID()),
 		migrationReconcileDeps{
 			LocalTasks: s.migrationLocalTasks,
 			SealUnit:   s.migrationSealUnit,
