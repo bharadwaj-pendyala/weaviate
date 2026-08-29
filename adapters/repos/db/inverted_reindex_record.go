@@ -583,7 +583,8 @@ func validateMigrationHandles(e migrationRecordEnvelope) error {
 		namesDirectory bool
 		// stagesData marks the roles that hold a migration's own copy of a
 		// property's index. Those are reclaimed on every teardown path, so
-		// they may not name a bucket the shard serves from.
+		// they must carry the shape a writer emits rather than name any
+		// directory at all.
 		stagesData bool
 		handles    []string
 	}{
@@ -611,8 +612,8 @@ func validateMigrationHandles(e migrationRecordEnvelope) error {
 				return fmt.Errorf("record %q names %s %q, which is a store the shard serves from",
 					e.Subject.Key, group.field, handle)
 			}
-			if group.stagesData && migrationHandleIsLiveBucket(handle) {
-				return fmt.Errorf("record %q names %s %q, which is a property's own bucket rather than a sidecar of one",
+			if group.stagesData && !migrationHandleIsSidecarShaped(handle) {
+				return fmt.Errorf("record %q names %s %q, which is not shaped like a sidecar of a property bucket",
 					e.Subject.Key, group.field, handle)
 			}
 		}
@@ -630,27 +631,31 @@ func migrationReservedDirName(h string) bool {
 	return h == migrationsDir || h == migrationRecordsDirName || h == helpers.ObjectsBucketLSM
 }
 
-// migrationHandleIsLiveBucket reports whether h names a property's own bucket
-// rather than a sidecar of one.
+// migrationHandleIsSidecarShaped reports whether h has the shape every writer
+// emits for a directory holding a migration's own copy of a property's index:
+// <property bucket> + "__" + a strategy tail ending in one of
+// [sidecarRoleWords].
 //
-// Staged and sidecar directories hold a migration's private copy and are
-// reclaimed on every teardown path, so a record naming a live bucket in either
-// role hands that bucket to os.RemoveAll. Every such directory a writer emits
-// is <property bucket> + "__" + a strategy tail ending in one of
-// [sidecarRoleWords]; a bare property bucket has no such tail.
+// Staged and sidecar directories are reclaimed on every teardown path, so the
+// rule is positive rather than a list of names to refuse. A denylist only
+// covers the stores someone remembered to name; requiring the writer's own
+// shape refuses every store the shard serves from at once, including the ones
+// added after this was written: the object store, the vector and dimension
+// stores, their per-target-vector and compressed variants, the multivector
+// stores, and a property's own bucket.
 //
-// A handle that is no property bucket at all is not this check's business: it
-// names nothing the shard serves from.
-func migrationHandleIsLiveBucket(h string) bool {
+// It stays as weak as [isSidecarDirOf] in one place: a property literally
+// named "a__<word>_<role>" reads as a sidecar of "a". weaviate/weaviate#12621
+func migrationHandleIsSidecarShaped(h string) bool {
 	tail, ok := strings.CutPrefix(h, migrationPropertyBucketPrefix)
 	if !ok {
 		return false
 	}
 	i := strings.Index(tail, "__")
 	if i < 0 {
-		return true
+		return false
 	}
-	return !slices.Contains(sidecarRoleWords, sidecarRoleWord(tail[i+2:]))
+	return slices.Contains(sidecarRoleWords, sidecarRoleWord(tail[i+2:]))
 }
 
 // migrationPropertyBucketPrefix is what every property bucket directory name
