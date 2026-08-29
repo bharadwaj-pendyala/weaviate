@@ -137,7 +137,7 @@ func TestListInactiveLSMFiles(t *testing.T) {
 			},
 		},
 		{
-			name: "migrations tmp leftovers are excluded, records and sentinels are not",
+			name: "migrations tmp leftovers and the settled note are excluded, records and sentinels are not",
 			setup: func(t *testing.T, lsmDir string) {
 				trackerDir := filepath.Join(lsmDir, migrationsDir, "searchable_retokenize_text_1")
 				recordsDir := filepath.Join(lsmDir, migrationsDir, "records")
@@ -159,6 +159,13 @@ func TestListInactiveLSMFiles(t *testing.T) {
 				leftover, err := os.CreateTemp(recordsDir, "7_searchable_retokenize.json.*.tmp")
 				require.NoError(t, err)
 				require.NoError(t, leftover.Close())
+
+				// The reconciler's own cache of what the last pass on THIS
+				// shard settled, which describes nothing a restored copy would
+				// be right about.
+				require.NoError(t, os.WriteFile(
+					filepath.Join(lsmDir, migrationsDir, migrationSettledNoteFile),
+					[]byte("some_dir\n"), 0o644))
 			},
 			expected: []string{
 				filepath.Join(migrationsDir, "records", "7_searchable_retokenize.json"),

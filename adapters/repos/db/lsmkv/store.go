@@ -390,6 +390,13 @@ func (s *Store) listMigrationFiles(basePath string) ([]string, error) {
 		if filepath.Ext(d.Name()) == ".tmp" {
 			return nil
 		}
+		// The settled note is a cache of the last reconciliation pass on THIS
+		// shard, so it describes nothing a restored copy would be right about.
+		// It is also deleted by every record write, so listing it hands the
+		// copy a file that can go away underneath it.
+		if d.Name() == MigrationSettledNoteFile {
+			return nil
+		}
 
 		relPath, err := filepath.Rel(basePath, path)
 		if err != nil {
@@ -515,6 +522,11 @@ func (s *Store) CreateBucket(ctx context.Context, bucketName string,
 
 	return nil
 }
+
+// MigrationSettledNoteFile is the reindex reconciler's per-shard cache under
+// .migrations. Named here rather than where it is written, so the backup
+// walkers that must skip it and the code that writes it cannot drift apart.
+const MigrationSettledNoteFile = "settled.mig"
 
 // ReplacedBucketDirSuffix names the dir the displaced bucket sits at between
 // [Store.ReplaceBuckets]' two renames. A crash in that window leaves it on

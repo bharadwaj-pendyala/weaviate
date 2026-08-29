@@ -26,9 +26,11 @@ import (
 // TestStoreListFilesMigrationDir pins what an active shard's backup takes from
 // .migrations: the migration state records, the recovery payloads and every
 // tracker sentinel, but none of the scratch files an interrupted atomic write
-// leaves behind. A backup that drops the records restores a shard whose
-// directories nothing can attribute; one that drops started.mig restores a
-// tracker recovery refuses to resume.
+// leaves behind, and not the settled note. A backup that drops the records
+// restores a shard whose directories nothing can attribute; one that drops
+// started.mig restores a tracker recovery refuses to resume; one that carries
+// the settled note restores another shard's answer about which directories a
+// load would leave alone.
 func TestStoreListFilesMigrationDir(t *testing.T) {
 	ctx := context.Background()
 	logger, _ := test.NewNullLogger()
@@ -57,6 +59,10 @@ func TestStoreListFilesMigrationDir(t *testing.T) {
 	leftover, err := os.CreateTemp(recordsDir, "7_searchable_retokenize.json.*.tmp")
 	require.NoError(t, err)
 	require.NoError(t, leftover.Close())
+
+	// The reconciler's own cache of what the last pass on THIS shard settled.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, ".migrations", MigrationSettledNoteFile), []byte("some_dir\n"), 0o644))
 
 	got, err := store.ListFiles(ctx, dir)
 	require.NoError(t, err)

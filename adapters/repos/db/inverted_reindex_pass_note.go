@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/weaviate/weaviate/adapters/repos/db/lsmkv"
 )
 
 // migrationSettledNoteFile holds the directories the last reconciliation pass
@@ -23,7 +25,7 @@ import (
 // directories rather than inside the record store, so nothing that enumerates
 // records has to know about it, and every reader of .migrations already skips
 // non-directories.
-const migrationSettledNoteFile = "settled.mig"
+const migrationSettledNoteFile = lsmkv.MigrationSettledNoteFile
 
 // The note is a cache, not a state, and that difference is what makes it
 // admissible where a sixth record state is not.
