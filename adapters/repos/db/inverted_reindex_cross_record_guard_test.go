@@ -39,10 +39,10 @@ func TestAPromotionRefusesToReplaceAnotherRecordsData(t *testing.T) {
 	}
 
 	// Only the displaced directory is driven end to end. The canonical
-	// directory takes the identical guard, but a record naming a property's own
-	// bucket in a live-data role is refused by the writer now
-	// (migrationHandleIsLiveBucket), so that collision has no producer left to
-	// drive it from.
+	// directory takes the identical guard, but a canonical name's last word is
+	// the index type and never a sidecar role word, so no record can name one
+	// in a staged or sidecar role: migrationHandleIsSidecarShaped refuses it at
+	// the writer, and that collision has no producer left to drive it from.
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newReconcileFixture(t)

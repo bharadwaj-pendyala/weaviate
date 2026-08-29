@@ -581,6 +581,10 @@ func validateMigrationHandles(e migrationRecordEnvelope) error {
 		// user-chosen, and a collection may legitimately have one called
 		// "records".
 		namesDirectory bool
+		// underMigrationsDir marks the roles rooted in .migrations rather than
+		// in the shard's LSM directory, which decides what removing a reserved
+		// name in that role would take with it.
+		underMigrationsDir bool
 		// stagesData marks the roles that hold a migration's own copy of a
 		// property's index. Those are reclaimed on every teardown path, so
 		// they must carry the shape a writer emits rather than name any
@@ -588,7 +592,7 @@ func validateMigrationHandles(e migrationRecordEnvelope) error {
 		stagesData bool
 		handles    []string
 	}{
-		{field: "tracker directory", namesDirectory: true, handles: []string{e.Subject.TrackerDir}},
+		{field: "tracker directory", namesDirectory: true, underMigrationsDir: true, handles: []string{e.Subject.TrackerDir}},
 		{field: "sidecar directory", namesDirectory: true, stagesData: true, handles: sidecars},
 		{field: "property", handles: slices.Concat(
 			e.Subject.Properties, stagedProps, canonicalProps, sidecarProps, displacedProps, flipped)},
@@ -609,8 +613,12 @@ func validateMigrationHandles(e migrationRecordEnvelope) error {
 					e.Subject.Key, group.field, handle)
 			}
 			if group.namesDirectory && migrationReservedDirName(handle) {
-				return fmt.Errorf("record %q names %s %q, which is a store the shard serves from",
-					e.Subject.Key, group.field, handle)
+				what := "a store the shard serves from"
+				if group.underMigrationsDir {
+					what = "a name the migration record store reserves"
+				}
+				return fmt.Errorf("record %q names %s %q, which is %s",
+					e.Subject.Key, group.field, handle, what)
 			}
 			if group.stagesData && !migrationHandleIsSidecarShaped(handle) {
 				return fmt.Errorf("record %q names %s %q, which is not shaped like a sidecar of a property bucket",
@@ -621,12 +629,17 @@ func validateMigrationHandles(e migrationRecordEnvelope) error {
 	return nil
 }
 
-// migrationReservedDirName reports whether h names a store the shard reads
-// from rather than a directory a migration may own. A record naming one as a
-// directory it owns points every teardown path at it: reclaiming a
-// ".migrations" handle removes every tracker and the record store with it, a
-// tracker directory of "records" removes the store on its own, and "objects"
-// is the shard's whole object store.
+// migrationReservedDirName reports whether h names a store rather than a
+// directory a migration may own. A record naming one as a directory it owns
+// points every teardown path at it: reclaiming a ".migrations" handle removes
+// every tracker and the record store with it, a tracker directory of "records"
+// removes the store on its own, and "objects" is the shard's whole object
+// store.
+//
+// It covers all three in every role, although only some are reachable per
+// role: a tracker handle is joined onto .migrations, so it can reach the
+// record store but never the shard's own stores. Refusing the whole set
+// everywhere costs nothing and keeps the rule one line.
 func migrationReservedDirName(h string) bool {
 	return h == migrationsDir || h == migrationRecordsDirName || h == helpers.ObjectsBucketLSM
 }

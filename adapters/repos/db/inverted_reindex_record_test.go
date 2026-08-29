@@ -474,7 +474,7 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 			data: valid(func(env map[string]any) {
 				env["subject"].(map[string]any)["trackerDir"] = migrationRecordsDirName
 			}),
-			wantErr: `names tracker directory "records", which is a store the shard serves from`,
+			wantErr: `names tracker directory "records", which is a name the migration record store reserves`,
 		},
 		{
 			name: "a unit the record file name could not carry",
@@ -1286,10 +1286,93 @@ func TestEveryPropertyBucketCarriesTheMigrationPrefix(t *testing.T) {
 		require.False(t, migrationHandleIsSidecarShaped(bucket),
 			"a property's own bucket must never pass as a migration's staged copy")
 	}
-	// And a sidecar of one must still pass, or the rule refuses what the
-	// writer emits.
-	require.True(t, migrationHandleIsSidecarShaped("property_title_searchable__retokenize_ingest_1"))
-	require.True(t, migrationHandleIsSidecarShaped("property_title_searchable__blockmax_map_2"))
-	require.True(t, migrationHandleIsSidecarShaped("property_title__g42_ingest"),
-		"a handle that is no property bucket names nothing the shard serves from")
+}
+
+// TestNoStoreTheShardServesFromCanBeStaged is the rule-3 half of the shape
+// check. A record's staged and sidecar handles reach os.RemoveAll on every
+// teardown path, so every store the shard serves from has to be refused —
+// not the four someone remembered to name.
+//
+// The names come from the helpers that build them rather than from a literal
+// list here, so a store added later fails this test instead of passing
+// silently.
+func TestNoStoreTheShardServesFromCanBeStaged(t *testing.T) {
+	stores := []string{
+		helpers.ObjectsBucketLSM,
+		helpers.DimensionsBucketLSM,
+		helpers.BucketFromPropNameLSM("title"),
+		helpers.BucketSearchableFromPropNameLSM("title"),
+		helpers.BucketRangeableFromPropNameLSM("title"),
+		migrationsDir,
+		migrationRecordsDirName,
+	}
+	// Both the unnamed vector and a named one: their artifact sets differ by
+	// more than a suffix, and the multivector and hfresh buckets are keyed on
+	// the index ID rather than on the vector name.
+	for _, targetVector := range []string{"", "myNamedVector"} {
+		stores = append(stores, helpers.VectorIndexArtifactsFor(targetVector, nil).LSMBuckets...)
+	}
+
+	for _, store := range stores {
+		t.Run(store, func(t *testing.T) {
+			subject := testMigrationSubject(1, StrategyCodeSearchableRetokenize, "title")
+			subject.StagedDirs["title"] = store
+			err := validateMigrationHandles(migrationRecordEnvelope{
+				Subject: subject, State: MigrationStateIterating,
+				Checkpoint: &MigrationCheckpoint{},
+			})
+			require.Error(t, err, "a record naming this in a staged role hands it to os.RemoveAll")
+			require.Contains(t, err.Error(), store)
+		})
+	}
+}
+
+// TestEveryWriterEmittedSidecarNameIsAccepted is the other direction, and the
+// one a false positive would break: the shape rule refusing a name a strategy
+// really emits refuses a legitimate migration outright.
+//
+// Driven off the strategies themselves, over property names carrying the
+// separators the rule reads ("__" and a trailing role word), so a strategy
+// whose suffix stopped matching fails here rather than in production.
+func TestEveryWriterEmittedSidecarNameIsAccepted(t *testing.T) {
+	// "a__b" is its own property whose bucket contains the separator;
+	// "x_ingest" and "a__reindex" end in role words of their own.
+	props := []string{"title", "a__b", "x_ingest", "a__reindex"}
+
+	// Per property, because two strategies take theirs at construction and
+	// ignore the argument. The count is checked against the sweep's own table
+	// so a strategy added there and not here fails rather than goes untested.
+	strategiesFor := func(prop string, generation int) []MigrationStrategy {
+		return []MigrationStrategy{
+			&MapToBlockmaxStrategy{generation: generation},
+			&RoaringSetRefreshStrategy{generation: generation},
+			&FilterableToRangeableStrategy{propNames: []string{prop}, generation: generation},
+			&SearchableRetokenizeStrategy{propName: prop, generation: generation},
+			&FilterableRetokenizeStrategy{propName: prop, generation: generation},
+			&EnableFilterableStrategy{propNames: []string{prop}, generation: generation},
+			&EnableSearchableStrategy{propNames: []string{prop}, generation: generation},
+			&RebuildSearchableStrategy{propNames: []string{prop}, generation: generation},
+		}
+	}
+	require.Len(t, strategiesFor("title", 1), len(strategiesByMigrationDir(1)))
+
+	checked := 0
+	for _, generation := range []int{1, 2, 11} {
+		for _, prop := range props {
+			for _, strategy := range strategiesFor(prop, generation) {
+				// The composition the writer uses: no generation is appended
+				// here, since each strategy's suffix already carries its own.
+				main := strategy.SourceBucketName(prop)
+				for _, suffix := range []string{
+					strategy.ReindexSuffix(), strategy.IngestSuffix(), strategy.BackupSuffix(),
+				} {
+					name := main + suffix
+					require.Truef(t, migrationHandleIsSidecarShaped(name),
+						"%T emits %q, and refusing it refuses the migration", strategy, name)
+					checked++
+				}
+			}
+		}
+	}
+	require.Equal(t, 3*len(props)*len(strategiesFor("title", 1))*3, checked)
 }
