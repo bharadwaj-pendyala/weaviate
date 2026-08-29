@@ -113,15 +113,18 @@ func TestCleanStaleMigrationDirsAt_PreservesCompletedGens(t *testing.T) {
 			wantSurvivors: []string{"searchable_retokenize_text_1"},
 		},
 		{
-			// A record names the directory explicitly, so the marker
-			// underneath it is a leftover and decides nothing.
-			name:     "a record outranks a marker left in the same dir",
+			// A record naming a marker-carrying tracker is not evidence that
+			// the marker is stale: it is what rehydrate writes after adopting
+			// a marker-era generation, and it starts at Iterating, which
+			// protects nothing on its own. This build writes no markers, so
+			// there is no other way for the two to meet.
+			name:     "a record naming the tracker does not outrank its marker",
 			propName: "text",
 			idxType:  "searchable",
 			trackers: []plantedTracker{
 				{dir: "searchable_retokenize_text_1", prop: "text", state: MigrationStateIterating, marker: "merged.mig"},
 			},
-			wantSurvivors: []string{},
+			wantSurvivors: []string{"searchable_retokenize_text_1"},
 		},
 		{
 			// Two back-to-back migrations both completed, and both still
