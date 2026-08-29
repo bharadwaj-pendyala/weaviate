@@ -457,6 +457,24 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 			wantErr: `names directory "m_41_shared" as both the displaced directory of property "body" and the displaced directory of property "title"`,
 		},
 		{
+			// Reclaiming this handle hands the shard's whole migration tree
+			// to os.RemoveAll: every tracker and the record store with it.
+			name: "a staged directory that is the shard's migrations tree",
+			data: valid(func(env map[string]any) {
+				env["subject"].(map[string]any)["stagedDirs"].(map[string]any)["title"] = migrationsDir
+			}),
+			wantErr: `names staged directory ".migrations", which is the shard's own migration tree`,
+		},
+		{
+			// removeTrackerDir joins this onto .migrations, so the tracker
+			// sweep of one record deletes every record on the shard.
+			name: "a tracker directory that is the record store",
+			data: valid(func(env map[string]any) {
+				env["subject"].(map[string]any)["trackerDir"] = migrationRecordsDirName
+			}),
+			wantErr: `names tracker directory "records", which is the shard's own migration tree`,
+		},
+		{
 			name: "a unit the record file name could not carry",
 			data: valid(func(env map[string]any) {
 				env["subject"].(map[string]any)["key"].(map[string]any)["unitID"] = "../shard-2__node-0"
@@ -1039,6 +1057,14 @@ func TestDecodeMigrationRecordRejectsEscapingHandles(t *testing.T) {
 			place:  func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) { s.Properties = []string{h} },
 			handle: "title_2",
 		},
+		{
+			// Property names are user-chosen, so the reserved set is scoped to
+			// directory handles. A blanket check would refuse this collection
+			// a migration outright.
+			name:   "a property named after the record store decodes",
+			place:  func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) { s.Properties = []string{h} },
+			handle: migrationRecordsDirName,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1089,6 +1115,12 @@ func TestTheWriterRefusesWhatTheLoaderWouldReject(t *testing.T) {
 			mangle:  func(s *MigrationSubject) { s.TrackerDir = "../../../etc" },
 			because: "the tracker directory is joined onto the shard and handed to a recursive delete",
 			wantErr: "names tracker directory \"../../../etc\"",
+		},
+		{
+			name:    "a sidecar directory that is the shard's migrations tree",
+			mangle:  func(s *MigrationSubject) { s.SidecarDirs = map[string]string{"title": migrationsDir} },
+			because: "a sidecar handle is reclaimed by os.RemoveAll like every other owned directory",
+			wantErr: `names sidecar directory ".migrations", which is the shard's own migration tree`,
 		},
 		{
 			name:    "a strategy code outside the known set",

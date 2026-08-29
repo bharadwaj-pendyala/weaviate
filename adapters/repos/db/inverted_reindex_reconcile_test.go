@@ -13,6 +13,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1604,4 +1605,75 @@ func TestEveryTeardownArmSealsTheUnit(t *testing.T) {
 				"and lets it go again: a leaked seal refuses this unit for the life of the process")
 		})
 	}
+}
+
+// TestAPoisonedRecordCannotSweepTheMigrationTree pins the reserved directory
+// names end to end. A restored archive is the reachable producer of a record
+// naming the shard's own migration tree as a directory it owns, and every
+// sweep hands an owned directory to os.RemoveAll — so such a record would
+// delete every tracker and every other record on the shard.
+func TestAPoisonedRecordCannotSweepTheMigrationTree(t *testing.T) {
+	tests := []struct {
+		name   string
+		poison func(*MigrationSubject)
+	}{
+		{
+			name: "a staged directory naming the migrations tree",
+			poison: func(s *MigrationSubject) {
+				s.StagedDirs = map[string]string{"title": migrationsDir}
+			},
+		},
+		{
+			name: "a sidecar directory naming the migrations tree",
+			poison: func(s *MigrationSubject) {
+				s.SidecarDirs = map[string]string{"title": migrationsDir}
+			},
+		},
+		{
+			name:   "a tracker directory naming the record store",
+			poison: func(s *MigrationSubject) { s.TrackerDir = migrationRecordsDirName },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newReconcileFixture(t)
+			f.class = testClassWithTokenization(models.PropertyTokenizationLowercase, "title")
+
+			// A second, ordinary record: what the poisoned one would take with
+			// it, and the reason this costs more than one leaked directory.
+			bystander := testMigrationSubject(50, StrategyCodeEnableFilterable, "title")
+			f.mkdirs("m_50_title", "property_title")
+			f.put(NewMigrationRecordMerged(bystander))
+
+			poisoned := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
+			tt.poison(&poisoned)
+			writeRawMigrationRecord(t, f.store, migrationRecordEnvelope{
+				FormatVersion: migrationRecordFormatVersion,
+				State:         MigrationStatePromoted,
+				Subject:       poisoned,
+				Flip:          &migrationFlipEnvelope{Flipped: []string{"title"}},
+			})
+
+			f.reconcile()
+
+			require.Len(t, f.store.Unreadable(), 1,
+				"a record naming the migration tree as its own must read as not understood")
+			require.DirExists(t, filepath.Join(f.lsmPath, migrationsDir),
+				"the shard's migration tree must survive the record that named it")
+			_, present := f.state(bystander.Key)
+			require.True(t, present, "and so must every other record on the shard")
+			require.True(t, f.migrationDirExists(bystander))
+		})
+	}
+}
+
+// writeRawMigrationRecord plants an envelope the writer would refuse, which is
+// what a restored archive or a hand-edited file puts in the store's directory.
+func writeRawMigrationRecord(t *testing.T, store *MigrationRecordStore, env migrationRecordEnvelope) {
+	t.Helper()
+	data, err := json.Marshal(env)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(store.Dir(), 0o777))
+	require.NoError(t, os.WriteFile(filepath.Join(store.Dir(), env.Subject.Key.fileName()), data, 0o600))
 }

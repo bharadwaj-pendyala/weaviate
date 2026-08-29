@@ -560,32 +560,53 @@ func validateMigrationHandles(e migrationRecordEnvelope) error {
 	}
 
 	for _, group := range []struct {
-		field   string
-		handles []string
+		field string
+		// namesDirectory separates the handles a sweep hands to os.RemoveAll
+		// from the property names it composes bucket names out of. Only the
+		// former may be checked against the reserved set: property names are
+		// user-chosen, and a collection may legitimately have one called
+		// "records".
+		namesDirectory bool
+		handles        []string
 	}{
-		{"tracker directory", []string{e.Subject.TrackerDir}},
-		{"sidecar directory", sidecars},
-		{"property", slices.Concat(
+		{field: "tracker directory", namesDirectory: true, handles: []string{e.Subject.TrackerDir}},
+		{field: "sidecar directory", namesDirectory: true, handles: sidecars},
+		{field: "property", handles: slices.Concat(
 			e.Subject.Properties, stagedProps, canonicalProps, sidecarProps, displacedProps, flipped)},
-		{"staged directory", staged},
-		{"canonical directory", canonical},
-		{"displaced directory", displaced},
+		{field: "staged directory", namesDirectory: true, handles: staged},
+		{field: "canonical directory", namesDirectory: true, handles: canonical},
+		{field: "displaced directory", namesDirectory: true, handles: displaced},
 	} {
 		for _, handle := range group.handles {
 			// An empty handle is the ordinary "this record names none", and
 			// every reader already guards on it. An empty property name is
 			// not: nothing legitimate emits one, and it composes into a
 			// bucket name that names another property's sidecar.
-			if handle == "" && group.field != "property" {
+			if handle == "" && group.namesDirectory {
 				continue
 			}
 			if !migrationHandleIsOneElement(handle) {
 				return fmt.Errorf("record %q names %s %q, which is not a single directory inside the shard",
 					e.Subject.Key, group.field, handle)
 			}
+			if group.namesDirectory && migrationReservedDirName(handle) {
+				return fmt.Errorf("record %q names %s %q, which is the shard's own migration tree",
+					e.Subject.Key, group.field, handle)
+			}
 		}
 	}
 	return nil
+}
+
+// migrationReservedDirName reports whether h is one of the two names the
+// shard's migration tree already holds. A record naming either as a directory
+// it owns points a sweep at that tree: reclaiming a ".migrations" handle
+// removes every tracker and the record store with it, and a tracker directory
+// of "records" removes the store on its own. No legitimate handle can be
+// either — bucket directories are "property_*", staged directories carry a
+// strategy and generation suffix, and tracker directories carry a generation.
+func migrationReservedDirName(h string) bool {
+	return h == migrationsDir || h == migrationRecordsDirName
 }
 
 // migrationBlocks names which optional blocks a state carries, so the call
