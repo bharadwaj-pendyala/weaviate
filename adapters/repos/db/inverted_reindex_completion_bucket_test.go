@@ -19,6 +19,7 @@ import (
 	"github.com/weaviate/weaviate/adapters/repos/db/helpers"
 	"github.com/weaviate/weaviate/adapters/repos/db/lsmkv"
 	"github.com/weaviate/weaviate/entities/models"
+	"github.com/weaviate/weaviate/entities/schema"
 	enthnsw "github.com/weaviate/weaviate/entities/vectorindex/hnsw"
 )
 
@@ -119,6 +120,149 @@ func TestPromotedCompletionServesTheIndexItAdvertises(t *testing.T) {
 
 			require.Equal(t, before, tc.serves(t, promoted.store.Bucket(canonical)),
 				"after the completion the property must serve exactly what the migration built")
+		})
+	}
+}
+
+// completionGateClass carries one property per canonical bucket the gate can
+// be asked about: a text property with both inverted indexes on, and an int
+// property with range filters on.
+func completionGateClass(className string) *models.Class {
+	on := true
+	return &models.Class{
+		Class:             className,
+		VectorIndexConfig: enthnsw.NewDefaultUserConfig(),
+		InvertedIndexConfig: &models.InvertedIndexConfig{
+			CleanupIntervalSeconds: 60,
+			Stopwords:              &models.StopwordConfig{Preset: "none"},
+			IndexNullState:         true,
+			IndexPropertyLength:    true,
+		},
+		Properties: []*models.Property{
+			{
+				Name: "title", DataType: schema.DataTypeText.PropString(),
+				Tokenization:    models.PropertyTokenizationWord,
+				IndexFilterable: &on, IndexSearchable: &on,
+			},
+			{
+				Name: "score", DataType: schema.DataTypeInt.PropString(),
+				IndexFilterable: &on, IndexRangeFilters: &on,
+			},
+		},
+	}
+}
+
+// TestTheCompletionGateOnlyTouchesAClosedBucket pins what the gate is allowed
+// to do, for every strategy rather than for the two whose hook happens to
+// reopen.
+//
+// The gate borrows PreReindexHook to re-open a canonical bucket, and that hook
+// is a start-of-migration hook with side effects of its own: it marks
+// searchable properties and takes rangeable properties off their in-memory
+// representation. Neither is true of a bucket that is already open, and the
+// gate is re-entered once per completion retry for the life of the process, so
+// firing them there grew a slice the object write path scans on every update.
+//
+// Three of the eight strategies open the canonical bucket in that hook and
+// five do not. For those five the gate can only refuse; they never reach it
+// with a closed bucket, because their schema flag is already true when the
+// migration starts and shard init opens the bucket unconditionally.
+func TestTheCompletionGateOnlyTouchesAClosedBucket(t *testing.T) {
+	tests := []struct {
+		name     string
+		propName string
+		strategy MigrationStrategy
+		// canonical names the bucket this strategy's completion advertises.
+		canonical func(string) string
+		// reopens is whether PreReindexHook opens that bucket.
+		reopens bool
+	}{
+		{
+			name: "enable-filterable", propName: "title", reopens: true,
+			strategy:  &EnableFilterableStrategy{propNames: []string{"title"}},
+			canonical: helpers.BucketFromPropNameLSM,
+		},
+		{
+			name: "enable-searchable", propName: "title", reopens: true,
+			strategy:  &EnableSearchableStrategy{propNames: []string{"title"}},
+			canonical: helpers.BucketSearchableFromPropNameLSM,
+		},
+		{
+			name: "filterable-to-rangeable", propName: "score", reopens: true,
+			strategy:  &FilterableToRangeableStrategy{propNames: []string{"score"}},
+			canonical: helpers.BucketRangeableFromPropNameLSM,
+		},
+		{
+			name: "searchable-retokenize", propName: "title",
+			strategy:  &SearchableRetokenizeStrategy{propName: "title"},
+			canonical: helpers.BucketSearchableFromPropNameLSM,
+		},
+		{
+			name: "filterable-retokenize", propName: "title",
+			strategy:  &FilterableRetokenizeStrategy{propName: "title"},
+			canonical: helpers.BucketFromPropNameLSM,
+		},
+		{
+			name: "rebuild-searchable", propName: "title",
+			strategy:  &RebuildSearchableStrategy{propNames: []string{"title"}},
+			canonical: helpers.BucketSearchableFromPropNameLSM,
+		},
+		{
+			name: "roaringset-refresh", propName: "title",
+			strategy:  &RoaringSetRefreshStrategy{},
+			canonical: helpers.BucketFromPropNameLSM,
+		},
+		{
+			name: "map-to-blockmax", propName: "title",
+			strategy:  &MapToBlockmaxStrategy{},
+			canonical: helpers.BucketSearchableFromPropNameLSM,
+		},
+	}
+	require.Len(t, tests, len(strategiesByMigrationDir(1)),
+		"a strategy missing from this table would never have its gate behavior checked")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := testCtx()
+			className := "CompletionGate_" + uuid.NewString()[:8]
+			shd, idx := testShardWithSettings(t, ctx, completionGateClass(className),
+				enthnsw.UserConfig{Skip: true}, false, false, false)
+			shard := shd.(*Shard)
+			defer shard.Shutdown(ctx)
+
+			task := &ShardReindexTaskGeneric{strategy: tt.strategy, logger: idx.logger}
+			canonical := tt.canonical(tt.propName)
+			props := []string{tt.propName}
+
+			t.Run("the bucket is already open", func(t *testing.T) {
+				require.NotNil(t, shard.store.Bucket(canonical), "fixture: shard init opens it")
+				shard.setRangeableLocallyReady(tt.propName, true)
+				marked := len(shard.getSearchableBlockmaxProperties())
+
+				require.NoError(t, task.ensureCanonicalBucketsOpen(ctx, shard, props))
+
+				require.Equal(t, marked, len(shard.getSearchableBlockmaxProperties()),
+					"the gate fired a start-of-migration hook over a bucket that needed nothing, "+
+						"and the slice it grew is scanned on every object update")
+				require.True(t, shard.IsRangeableLocallyReady(tt.propName),
+					"and it took a property off the representation it is already serving from")
+			})
+
+			t.Run("the bucket is closed", func(t *testing.T) {
+				require.NoError(t, shard.store.ShutdownBucket(ctx, canonical))
+				require.Nil(t, shard.store.Bucket(canonical), "fixture: the bucket has to be closed")
+
+				err := task.ensureCanonicalBucketsOpen(ctx, shard, props)
+				if !tt.reopens {
+					require.ErrorContains(t, err, "refusing to report migration complete")
+					require.ErrorContains(t, err, canonical)
+					require.Nil(t, shard.store.Bucket(canonical))
+					return
+				}
+				require.NoError(t, err)
+				require.NotNil(t, shard.store.Bucket(canonical),
+					"the completion may not advertise an index nothing serves")
+			})
 		})
 	}
 }

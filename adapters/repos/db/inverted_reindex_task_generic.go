@@ -769,8 +769,19 @@ func (t *ShardReindexTaskGeneric) requireCanonicalHoldsMigratedData(shard ShardL
 // over a closed bucket advertises an index nothing serves: every query for that
 // property fails loudly until some later load re-opens it.
 //
-// [ReindexStrategy.PreReindexHook] is the one function that already knows each
-// canonical bucket's name and options, and it is idempotent on an open one.
+// [ReindexStrategy.PreReindexHook] is the only function that already knows
+// each canonical bucket's name and options, so it is what re-opens them. It is
+// not a general-purpose reopen: three of the eight strategies open the
+// canonical bucket there and five do not, so for those five this can only
+// refuse — which is safe, because their schema flag is already true when the
+// migration starts and shard init therefore opens their canonical bucket
+// unconditionally.
+//
+// The hook is not idempotent either: it also marks searchable properties and
+// takes rangeable properties off the in-memory representation. So it runs only
+// for a property whose canonical bucket is actually closed, which is the one
+// state in which both of those side effects describe the truth. A completion
+// retry over open buckets fires nothing at all.
 func (t *ShardReindexTaskGeneric) ensureCanonicalBucketsOpen(ctx context.Context,
 	shard ShardLike, props []string,
 ) error {
@@ -778,8 +789,17 @@ func (t *ShardReindexTaskGeneric) ensureCanonicalBucketsOpen(ctx context.Context
 	if err != nil {
 		return fmt.Errorf("open the canonical buckets this completion advertises: %w", err)
 	}
-	t.strategy.PreReindexHook(concrete, props)
+	closed := make([]string, 0, len(props))
 	for _, propName := range props {
+		if concrete.store.Bucket(t.strategy.SourceBucketName(propName)) == nil {
+			closed = append(closed, propName)
+		}
+	}
+	if len(closed) == 0 {
+		return nil
+	}
+	t.strategy.PreReindexHook(concrete, closed)
+	for _, propName := range closed {
 		name := t.strategy.SourceBucketName(propName)
 		if concrete.store.Bucket(name) == nil {
 			return fmt.Errorf("refusing to report migration complete for property %q: its canonical bucket %q "+
@@ -1093,12 +1113,12 @@ func (t *ShardReindexTaskGeneric) OnAfterLsmInitAsync(ctx context.Context, shard
 		if err = t.requireCanonicalHoldsMigratedData(shard, rec); err != nil {
 			return zerotime, false, err
 		}
-		// Same ordering contract as runtimeSwap (see there for reasoning):
-		// this re-entry branch must recheck the rebuild too, or a retry
-		// could flip the schema without it ever succeeding.
 		if err = t.ensureCanonicalBucketsOpen(ctx, shard, props); err != nil {
 			return zerotime, false, err
 		}
+		// Same ordering contract as runtimeSwap (see there for reasoning):
+		// this re-entry branch must recheck the rebuild too, or a retry
+		// could flip the schema without it ever succeeding.
 		if err = t.rebuildRangeableInMemoryReps(ctx, logger, shard, props); err != nil {
 			return zerotime, false, err
 		}
