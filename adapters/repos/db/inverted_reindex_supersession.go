@@ -311,14 +311,37 @@ func (r *migrationReconciler) retireProperty(ctx context.Context, all []Migratio
 	}
 
 	dir := subject.StagedDirs[prop]
-	if dir == "" || migrationDirClaimedAsDisplaced(all, subject, dir) {
-		return nil
-	}
-	if !r.mayReclaim(all, subject, dir) {
+	if migrationRetirementLeavesStagedDir(all, subject, dir) {
+		if dir != "" {
+			// Of the three reasons, only "another record holds it" has
+			// anything to tell an operator, and mayReclaim carries that line;
+			// it is silent for the other two, which are ordinary.
+			r.mayReclaim(all, subject, dir)
+		}
 		return nil
 	}
 	if err := os.RemoveAll(r.path(dir)); err != nil {
 		return fmt.Errorf("remove staged directory %q of a superseded migration: %w", dir, err)
 	}
 	return nil
+}
+
+// migrationRetirementLeavesStagedDir reports the staged directories
+// retirement stops on: this record names none, a successor claims it as what
+// its own flip displaced, or another record holds it in a role of its own.
+// [migrationReconciler.retireProperty] returns on exactly these, so a true
+// here means retirement has done everything it is ever going to do for this
+// property.
+//
+// [migrationReconciler.supersededPropertyIsRetired] reads the same answer
+// rather than restating it. Enumerated twice, the two drifted: a promotion
+// waited forever on a removal the other had already decided not to make.
+func migrationRetirementLeavesStagedDir(all []MigrationRecord,
+	subject MigrationSubject, dir string,
+) bool {
+	if dir == "" || migrationDirClaimedAsDisplaced(all, subject, dir) {
+		return true
+	}
+	_, _, held := migrationDirHeldByAnotherRecord(all, subject, dir, migrationOwnedRoles)
+	return held
 }

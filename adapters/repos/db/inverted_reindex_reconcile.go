@@ -494,16 +494,17 @@ func (r *migrationReconciler) promoteSealed(rec MigrationRecordSwapped,
 // one superseded property, read from the disk inside the same sealed section
 // that writes the record.
 //
-// Two shapes count as retired: the staged directory is gone, or a surviving
-// successor claims it as what its own flip displaced — in which case that
-// successor owns it, and the second reader skips it under the identical
-// predicate. Nothing can re-create the directory between this probe and the
-// write, because reconciliation runs before any bucket on the shard opens.
+// Retired means the staged directory is gone, or retirement has decided not
+// to remove it — [migrationRetirementLeavesStagedDir] is the one enumeration
+// of the second, shared with retirement itself so a reason added to one
+// cannot be missing from the other. Nothing can re-create the directory
+// between this probe and the write, because reconciliation runs before any
+// bucket on the shard opens.
 func (r *migrationReconciler) supersededPropertyIsRetired(all []MigrationRecord,
 	subject MigrationSubject, prop string,
 ) bool {
 	staged := subject.StagedDirs[prop]
-	if staged == "" || migrationDirClaimedAsDisplaced(all, subject, staged) {
+	if migrationRetirementLeavesStagedDir(all, subject, staged) {
 		return true
 	}
 	there, err := r.dirExists(staged)
