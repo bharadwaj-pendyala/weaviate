@@ -443,31 +443,23 @@ func collectOrphanTrackers(lsmPath, collection, shardName string, knownTask Know
 		if !ok {
 			continue
 		}
+		trackerPath := filepath.Join(migsDir, dirName)
+		// A completion marker is how the previous release recorded that a
+		// migration's staged directories are the live data. This build writes
+		// records instead and reads no markers, so an upgraded node would
+		// reclaim the only copy. Asked before the record lookup, because
+		// rehydrate adopts a marker-era generation and writes a record for it,
+		// so a marker-carrying tracker a record names would never be read;
+		// and ahead of the age check, because a matured quarantine sentinel
+		// arriving in a backup makes that check pass on the first sweep.
+		if marker, found := migrationCompletionMarker(trackerPath); found {
+			logger.WithField("collection", collection).WithField("shard", shardName).
+				WithField("tracker", dirName).WithField("marker", marker).
+				Warn("reindex orphan audit: tracker carries a completed-migration marker from an older release; leaving it untouched")
+			continue
+		}
 		rec, ok := migrationRecordForTracker(records, dirName)
 		if !ok {
-			trackerPath := filepath.Join(migsDir, dirName)
-			// A completion marker is how the previous release recorded that a
-			// migration's staged directories are the live data. This build
-			// writes records instead and reads no markers, so an upgraded node
-			// would see a record-less tracker and reclaim the only copy.
-			// Ahead of the age check on purpose: a matured quarantine sentinel
-			// arriving in a backup makes that check pass on the first sweep.
-			marker, found, unreadable := migrationCompletionMarker(trackerPath)
-			if unreadable {
-				// Whether it completed could not be read, and a completed one
-				// holds the property's only copy. The audit reclaims; refusing
-				// to answer is the only safe reading.
-				logger.WithField("collection", collection).WithField("shard", shardName).
-					WithField("tracker", dirName).
-					Warn("reindex orphan audit: whether this tracker completed could not be read, so what it owns cannot be told from what is stale; leaving it untouched")
-				continue
-			}
-			if found {
-				logger.WithField("collection", collection).WithField("shard", shardName).
-					WithField("tracker", dirName).WithField("marker", marker).
-					Warn("reindex orphan audit: tracker carries a completed-migration marker from an older release and names no migration record; leaving it untouched")
-				continue
-			}
 			old, mtime, err := migrationDirPredatesThisProcess(trackerPath)
 			if err != nil {
 				logger.WithField("collection", collection).WithField("shard", shardName).

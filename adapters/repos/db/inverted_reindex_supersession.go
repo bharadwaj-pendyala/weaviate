@@ -61,7 +61,7 @@ func migrationPropertySuperseded(all []MigrationRecord, subject MigrationSubject
 
 func migrationSupersedes(candidate MigrationRecord, subject MigrationSubject) bool {
 	key := candidate.Subject().Key
-	return key != subject.Key && key.TaskVersion > subject.Key.TaskVersion && candidate.PointerSwapped()
+	return key != subject.Key && key.TaskVersion > subject.Key.TaskVersion && candidate.FlipDecided()
 }
 
 // migrationDirRole is how one record holds a directory, for the log line that

@@ -15,18 +15,21 @@ package db
 // something finer switches on the variant instead.
 //
 // Composition stays out of call sites: the rule needing two answers
-// (StagedDataComplete and not PointerSwapped means discardable) lives in
+// (StagedDataComplete and not FlipDecided means discardable) lives in
 // reconciliation's cancel edge.
 type migrationRecordQuestions interface {
 	// StagedDataComplete reports whether this migration's output is fully
-	// staged. Not a commitment: until PointerSwapped, the canonical bucket is
+	// staged. Not a commitment: until the flip, the canonical bucket is
 	// still primary, and a cancelled task discards the staged copy whole.
 	StagedDataComplete() bool
 
-	// PointerSwapped reports whether the flip decision is durable. From here
-	// the migration is irreversible: the new buckets may hold acknowledged
-	// writes the old copy never received.
-	PointerSwapped() bool
+	// FlipDecided reports whether the flip DECISION is durable. It is
+	// written before the first pointer moves, so it never means the flip ran
+	// and never means the canonical name holds the migrated data — only
+	// MigrationStatePromoted answers that. From here the migration is
+	// irreversible: the new buckets may hold acknowledged writes the old copy
+	// never received.
+	FlipDecided() bool
 
 	// IterationComplete reports whether the pass over objects has finished.
 	// False is the only answer a resume may act on; past true, a second pass
@@ -69,8 +72,8 @@ func (r MigrationRecordMerged) IterationComplete() bool    { return true }
 func (r MigrationRecordSwapped) IterationComplete() bool   { return true }
 func (r MigrationRecordPromoted) IterationComplete() bool  { return true }
 
-func (r MigrationRecordIterating) PointerSwapped() bool { return false }
-func (r MigrationRecordIterated) PointerSwapped() bool  { return false }
-func (r MigrationRecordMerged) PointerSwapped() bool    { return false }
-func (r MigrationRecordSwapped) PointerSwapped() bool   { return true }
-func (r MigrationRecordPromoted) PointerSwapped() bool  { return true }
+func (r MigrationRecordIterating) FlipDecided() bool { return false }
+func (r MigrationRecordIterated) FlipDecided() bool  { return false }
+func (r MigrationRecordMerged) FlipDecided() bool    { return false }
+func (r MigrationRecordSwapped) FlipDecided() bool   { return true }
+func (r MigrationRecordPromoted) FlipDecided() bool  { return true }

@@ -265,6 +265,15 @@ func TestSingleNode_ReindexSuite(t *testing.T) {
 		testPromotionRunsOnRecordedHandles(t, compose)
 	})
 
+	// --- Subtest 16: index DELETE crossed with a restart ---
+	// The two journeys this package covers separately and never together.
+	// Promotion is deferred to the next shard load, so a DELETE lands while
+	// every finished migration still names directories it removes, and the
+	// damage only shows at the load that follows.
+	t.Run("DeleteDuringDeferredPromotion", func(t *testing.T) {
+		testDeleteDuringDeferredPromotion(t, compose)
+	})
+
 	// --- Shared restart: verify all deferred finalizations ---
 	t.Run("PostRestartFinalize", func(t *testing.T) {
 		t.Log("restarting weaviate container for deferred finalize verification")

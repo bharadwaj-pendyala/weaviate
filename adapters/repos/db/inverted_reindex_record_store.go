@@ -349,7 +349,7 @@ func (s *MigrationRecordStore) HasUndecided() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, rec := range s.records {
-		if !rec.PointerSwapped() {
+		if !rec.FlipDecided() {
 			return true
 		}
 	}

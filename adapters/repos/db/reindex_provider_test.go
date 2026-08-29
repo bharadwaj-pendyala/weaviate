@@ -693,6 +693,29 @@ func TestSealedUnitRefusesLateEntrants(t *testing.T) {
 	}
 }
 
+// The task-scoped seal builds its release by hand rather than through
+// [unitClaims.take], so it needs the same guard for the same reason: a stale
+// copy firing a second time frees a concurrent teardown's seal, and a worker
+// then enters a unit that teardown is already removing directories under.
+func TestASealReleaseNeverFreesASealItDoesNotHold(t *testing.T) {
+	desc := distributedtask.TaskDescriptor{ID: "Books:enable-rangeable:price:ab12", Version: 7}
+	const unit = "shard-1__node-0"
+
+	p := &ReindexProvider{}
+	releaseFirst, sealed := p.sealLocalTask(desc)
+	require.True(t, sealed)
+	releaseSecond, sealed := p.sealLocalTask(desc)
+	require.True(t, sealed, "two teardowns may hold the same task at once")
+	defer releaseSecond()
+
+	releaseFirst()
+	releaseFirst()
+
+	require.Equal(t, 1, p.sealedTasks[desc], "the teardown holding it now still does")
+	_, entered := p.enterLocalUnit(desc, unit)
+	require.False(t, entered, "a worker must not enter a unit a teardown still holds")
+}
+
 // A drop that fires a second time is not idle: it decrements whatever claim
 // holds the slot now, and after a re-claim that is a different worker's. The
 // teardown then reads the unit as free and removes directories under a worker

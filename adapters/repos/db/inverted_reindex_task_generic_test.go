@@ -370,7 +370,7 @@ func TestRunSwapOnShard_RecordAwareDispatch(t *testing.T) {
 
 			post, ok := shard.migrationRecords.Get(task.migrationRecordKey())
 			require.True(t, ok)
-			require.True(t, post.PointerSwapped(),
+			require.True(t, post.FlipDecided(),
 				"the flip decision must be durable once the dispatch returns")
 		})
 	}
@@ -491,7 +491,7 @@ func TestRuntimeSwap_Phase2a_AtomicTightLoop(t *testing.T) {
 	rec, ok := shard.migrationRecords.Get(task.migrationRecordKey())
 	require.True(t, ok, "the flip decision should be recorded post-runtimeSwap")
 	require.Equal(t, MigrationStateSwapped, rec.State())
-	require.True(t, rec.PointerSwapped())
+	require.True(t, rec.FlipDecided())
 	for _, p := range propNames {
 		assert.Contains(t, rec.(MigrationRecordSwapped).Flipped(), p,
 			"prop %q should be in the recorded flip set", p)

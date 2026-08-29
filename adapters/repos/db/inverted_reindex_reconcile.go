@@ -399,7 +399,7 @@ func (r *migrationReconciler) ReconcileWithClusterTasks(ctx context.Context, tas
 	}
 	records := r.store.Records()
 	for _, rec := range records {
-		if rec.PointerSwapped() {
+		if rec.FlipDecided() {
 			continue
 		}
 		subject := rec.Subject()

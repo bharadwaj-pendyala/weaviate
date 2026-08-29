@@ -259,9 +259,12 @@ func (t *ShardReindexTaskGeneric) processOneSwapProp(ctx context.Context, store 
 	ingestName := t.ingestBucketName(propName)
 	mainName := t.strategy.SourceBucketName(propName)
 
-	// A property already flipped in this process has no ingest-name entry
-	// left. Reading the bucket map keeps the loop free of I/O.
-	if store.Bucket(ingestName) == nil {
+	// A property already flipped in this process serves its canonical name
+	// out of the staged directory, which is the flip's own post-condition.
+	// An absent ingest entry is not: a property whose staged bucket was
+	// never loaded looks exactly the same, and skipping it reports the
+	// migration complete over an index that never moved.
+	if main := store.Bucket(mainName); main != nil && filepath.Base(main.GetDir()) == ingestName {
 		return nil, nil
 	}
 
@@ -523,12 +526,15 @@ func (t *ShardReindexTaskGeneric) RunSwapOnShard(ctx context.Context, shard Shar
 	}
 
 	switch {
-	case entry.rec.PointerSwapped():
+	case entry.rec.FlipDecided():
 		// The flip decision is durable, so every directory step left is
 		// reconciliation's to finish at a load that can rename safely. What
 		// remains here is in-process state the strategy still owes: the
 		// analyzer overlay, the schema flag, the in-memory range reps.
 		logger.WithField("props", props).Info("RunSwapOnShard: flip already decided; running OnMigrationComplete only")
+		if err := t.requireCanonicalHoldsMigratedData(shard, entry.rec); err != nil {
+			return err
+		}
 		return t.finalizeMigrationAfterRecovery(ctx, logger, shard, props)
 
 	case entry.rec.StagedDataComplete():
@@ -640,6 +646,102 @@ func (t *ShardReindexTaskGeneric) ensureReindexBucketsLoadedForSwap(
 		// post-merge ingest options apply.
 		if err := t.loadIngestBuckets(ctx, logger, shard, missingIngest, false, false); err != nil {
 			return fmt.Errorf("load ingest buckets: %w", err)
+		}
+	}
+	return nil
+}
+
+// stagedPropsStillOnDisk narrows props to the ones whose staged directory is
+// still on disk under the name this task would open it by.
+//
+// It is the one place that keeps the invariant [migrationReconciler.promoteProperty]
+// rests on true: past Merged a staged directory is only ever REMOVED, by the
+// promotion that renames it onto the canonical name. Opening a name that no
+// longer exists creates an empty directory instead, and the next load's
+// promotion renames that empty directory over the property's live index.
+//
+// Both conditions are positive evidence on purpose. A property whose recorded
+// staged directory is not the name this task derives belongs to another
+// generation, so opening the derived name would create a directory no record
+// names and no promotion will ever rename.
+func (t *ShardReindexTaskGeneric) stagedPropsStillOnDisk(logger logrus.FieldLogger,
+	shard *Shard, subject MigrationSubject, props []string,
+) ([]string, error) {
+	kept := make([]string, 0, len(props))
+	var promoted, misnamed []string
+	for _, propName := range props {
+		staged := subject.StagedDirs[propName]
+		if staged == "" || staged != t.ingestBucketName(propName) {
+			misnamed = append(misnamed, propName)
+			continue
+		}
+		there, err := migrationDirExists(filepath.Join(shard.pathLSM(), staged))
+		if err != nil {
+			return nil, fmt.Errorf("probe staged dir for %q: %w", propName, err)
+		}
+		if there {
+			kept = append(kept, propName)
+			continue
+		}
+		promoted = append(promoted, propName)
+	}
+	if len(promoted) > 0 {
+		logger.WithField("props", promoted).Info(
+			"staged directories are gone, so the canonical name holds these properties already; not re-creating them")
+	}
+	if len(misnamed) > 0 {
+		logger.WithField("props", misnamed).Warn(
+			"the record names a staged directory this task would not open, so it belongs to another generation; opening neither name")
+	}
+	return kept, nil
+}
+
+// requireCanonicalHoldsMigratedData refuses to commit a migration's schema
+// effect unless every property's canonical bucket is serving this migration's
+// own data.
+//
+// The flip decision is written before the first pointer moves, so it proves
+// the flip was DECIDED, never that it ran. Only two states put the migrated
+// data under the canonical name, and each has a post-condition of its own:
+//
+//   - the in-process flip pointed the canonical name at the staged directory,
+//     which is what the bucket's own directory says;
+//   - the promotion renamed that directory onto the canonical name, which is
+//     what a Promoted record says, and which leaves no staged directory behind
+//     because [ShardReindexTaskGeneric.stagedPropsStillOnDisk] stops the load
+//     path from re-creating one.
+//
+// Everything else — including a decided flip whose promotion has not run, and
+// a property whose directories a DELETE removed and shard init re-created
+// empty — reports a migration complete over an index that never moved.
+func (t *ShardReindexTaskGeneric) requireCanonicalHoldsMigratedData(shard ShardLike, rec MigrationRecord) error {
+	subject := rec.Subject()
+	for _, propName := range subject.Properties {
+		bucketName := t.strategy.SourceBucketName(propName)
+		bucket := shard.Store().Bucket(bucketName)
+		if bucket == nil {
+			return fmt.Errorf("stale migration state on shard %q: the record claims property %q is complete, but its bucket %q is not open — usually caused by a DELETE between the previous successful reindex and this one; refusing to report success",
+				shard.Name(), propName, bucketName)
+		}
+		serving := filepath.Base(bucket.GetDir())
+		if serving == subject.StagedDirs[propName] {
+			continue
+		}
+		if rec.State() != MigrationStatePromoted {
+			return fmt.Errorf("stale migration state on shard %q: the record claims property %q is complete, but its bucket serves %q and the migration is only %q, not promoted; refusing to report success",
+				shard.Name(), propName, serving, rec.State())
+		}
+		if serving != subject.CanonicalDirs[propName] {
+			return fmt.Errorf("stale migration state on shard %q: the record claims property %q is promoted, but its bucket serves %q rather than the canonical directory %q; refusing to report success",
+				shard.Name(), propName, serving, subject.CanonicalDirs[propName])
+		}
+		there, err := migrationDirExists(filepath.Join(shard.pathLSM(), subject.StagedDirs[propName]))
+		if err != nil {
+			return fmt.Errorf("probe staged dir for %q: %w", propName, err)
+		}
+		if there {
+			return fmt.Errorf("stale migration state on shard %q: the record claims property %q is promoted, but its staged directory %q is still there, so the rename that promotion is made of never ran; refusing to report success",
+				shard.Name(), propName, subject.StagedDirs[propName])
 		}
 	}
 	return nil
@@ -842,7 +944,9 @@ func (t *ShardReindexTaskGeneric) OnAfterLsmInit(ctx context.Context, shard *Sha
 	// load serves the property from the canonical directory again — the one
 	// promotion removes before renaming the staged directory over it. Without
 	// the mirror below, every write taken until then is deleted by the
-	// promotion that follows.
+	// promotion that follows. That reasoning holds only while the staged
+	// directory is still there: once promotion has renamed it away, there is
+	// nothing left to rename over the canonical name and nothing to mirror.
 	if hasRecord && rec.State() == MigrationStatePromoted {
 		logger.Debug("migration already promoted. nothing to open")
 		return nil
@@ -852,6 +956,13 @@ func (t *ShardReindexTaskGeneric) OnAfterLsmInit(ctx context.Context, shard *Sha
 	// have served their purpose and their directories may already be gone.
 	committed := hasRecord && rec.StagedDataComplete()
 	if committed {
+		if props, err = t.stagedPropsStillOnDisk(logger, shard, rec.Subject(), props); err != nil {
+			return err
+		}
+		if len(props) == 0 {
+			logger.Debug("every staged directory is already promoted. nothing to open")
+			return nil
+		}
 		logger.Debug("merged, not swapped. starting ingest buckets")
 	} else {
 		if hasRecord {
@@ -925,20 +1036,9 @@ func (t *ShardReindexTaskGeneric) OnAfterLsmInitAsync(ctx context.Context, shard
 		props = rec.Subject().Properties
 	}
 
-	if hasRecord && rec.PointerSwapped() {
-		// Defense in depth: a durable flip decision means a prior run
-		// reported success, so the target bucket should exist and be
-		// populated. If it's missing now (e.g. a DELETE raced the
-		// re-trigger), calling OnMigrationComplete would re-flip the schema
-		// and report success over an empty index. Fail loudly instead.
-		for _, propName := range props {
-			bucketName := t.strategy.SourceBucketName(propName)
-			if shard.Store().Bucket(bucketName) == nil {
-				err = fmt.Errorf(
-					"stale migration state on shard %q: the record claims property %q is complete, but target bucket %q is missing — usually caused by a DELETE between the previous successful reindex and this one; refusing to silently report success",
-					shard.Name(), propName, bucketName)
-				return zerotime, false, err
-			}
+	if hasRecord && rec.FlipDecided() {
+		if err = t.requireCanonicalHoldsMigratedData(shard, rec); err != nil {
+			return zerotime, false, err
 		}
 		// Same ordering contract as runtimeSwap (see there for reasoning):
 		// this re-entry branch must recheck the rebuild too, or a retry

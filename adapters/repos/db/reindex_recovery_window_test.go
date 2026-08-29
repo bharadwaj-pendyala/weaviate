@@ -23,6 +23,7 @@ import (
 	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/require"
 
+	"github.com/weaviate/weaviate/entities/models"
 	enthnsw "github.com/weaviate/weaviate/entities/vectorindex/hnsw"
 )
 
@@ -164,9 +165,13 @@ func TestShardLoadArmsTheMirrorForAnUnpromotedFlip(t *testing.T) {
 	const propName = filterableToRangeablePropName
 
 	tests := []struct {
-		name      string
-		rec       func(MigrationSubject) MigrationRecord
-		wantArmed bool
+		name string
+		rec  func(MigrationSubject) MigrationRecord
+		// noStagedDir plants the record without the staged directory it
+		// names, which is what a promotion that already renamed it leaves
+		// behind.
+		noStagedDir bool
+		wantArmed   bool
 	}{
 		{
 			name: "swapped but not promoted",
@@ -174,6 +179,17 @@ func TestShardLoadArmsTheMirrorForAnUnpromotedFlip(t *testing.T) {
 				return NewMigrationRecordSwapped(s, s.Properties, map[string]string{propName: s.CanonicalDirs[propName]})
 			},
 			wantArmed: true,
+		},
+		{
+			// Promotion renamed the staged directory onto the canonical name,
+			// so the next one has nothing left to act on. Opening the name
+			// again creates the empty directory that promotion then renames
+			// over the live index.
+			name: "swapped, staged dir already promoted away",
+			rec: func(s MigrationSubject) MigrationRecord {
+				return NewMigrationRecordSwapped(s, s.Properties, map[string]string{propName: s.CanonicalDirs[propName]})
+			},
+			noStagedDir: true,
 		},
 		{
 			name: "promoted",
@@ -195,6 +211,12 @@ func TestShardLoadArmsTheMirrorForAnUnpromotedFlip(t *testing.T) {
 			task, _ := newFilterableToRangeableTask(t, idx, className, propName)
 			subject := task.migrationSubject(shard, []string{propName}, time.Now())
 			require.NoError(t, task.putMigrationRecord(shard, tt.rec(subject)))
+			// The record alone is not the fixture: what the next promotion
+			// will act on is the staged directory the record names.
+			stagedDir := filepath.Join(shard.pathLSM(), subject.StagedDirs[propName])
+			if !tt.noStagedDir {
+				require.NoError(t, os.MkdirAll(stagedDir, 0o777))
+			}
 			require.Zero(t, shard.migrationMirrors.ArmedMigrationMirrors())
 
 			require.NoError(t, task.OnAfterLsmInit(ctx, shard))
@@ -205,6 +227,88 @@ func TestShardLoadArmsTheMirrorForAnUnpromotedFlip(t *testing.T) {
 				return
 			}
 			require.Zero(t, shard.migrationMirrors.ArmedMigrationMirrors())
+			if tt.noStagedDir {
+				require.NoDirExists(t, stagedDir,
+					"opening a staged dir promotion already renamed away re-creates it empty for the next promotion to rename over the live index")
+			}
 		})
 	}
+}
+
+// TestOnlyAPromotedFlipReportsRangeableReady pins which recorded states leave
+// a rangeable property answering range filters from its canonical bucket.
+//
+// The flip decision is recorded before the first pointer moves and it lives
+// only in the process that made it, so at a load the canonical rangeable
+// directory is the empty one shard init just recreated. Answering "ready" for
+// it plans range filters against nothing while IndexRangeFilters is already
+// committed cluster-wide.
+func TestOnlyAPromotedFlipReportsRangeableReady(t *testing.T) {
+	const propName = filterableToRangeablePropName
+
+	tests := []struct {
+		name      string
+		rec       func(MigrationSubject) MigrationRecord
+		wantReady bool
+	}{
+		{
+			name: "iterating",
+			rec: func(s MigrationSubject) MigrationRecord {
+				return NewMigrationRecordIterating(s, MigrationCheckpoint{})
+			},
+		},
+		{
+			name: "iterated",
+			rec:  func(s MigrationSubject) MigrationRecord { return NewMigrationRecordIterated(s) },
+		},
+		{
+			name: "merged",
+			rec:  func(s MigrationSubject) MigrationRecord { return NewMigrationRecordMerged(s) },
+		},
+		{
+			name: "swapped but not promoted",
+			rec: func(s MigrationSubject) MigrationRecord {
+				return NewMigrationRecordSwapped(s, s.Properties, map[string]string{propName: s.CanonicalDirs[propName]})
+			},
+		},
+		{
+			name: "promoted",
+			rec: func(s MigrationSubject) MigrationRecord {
+				return NewMigrationRecordPromoted(s, s.Properties, map[string]string{propName: s.CanonicalDirs[propName]})
+			},
+			wantReady: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := testCtx()
+			className := "RangeableReadiness_" + uuid.NewString()[:8]
+			shd, idx := testShardWithSettings(t, ctx, rangeableEnabledTestClass(className),
+				enthnsw.UserConfig{Skip: true}, false, false, false)
+			shard := shd.(*Shard)
+			defer shard.Shutdown(context.Background())
+			require.True(t, shard.IsRangeableLocallyReady(propName),
+				"fixture: a property whose rangeable bucket exists defaults to ready")
+
+			task, _ := newFilterableToRangeableTask(t, idx, className, propName)
+			subject := task.migrationSubject(shard, []string{propName}, time.Now())
+			require.NoError(t, task.putMigrationRecord(shard, tt.rec(subject)))
+
+			markInFlightRangeableMigrationsNotReady(shard)
+
+			require.Equal(t, tt.wantReady, shard.IsRangeableLocallyReady(propName))
+		})
+	}
+}
+
+// rangeableEnabledTestClass is [newFilterableToRangeableTestClass] with the
+// rangeable index already on, which is what a load sees once the migration's
+// schema effect is committed cluster-wide: shard init creates the canonical
+// rangeable bucket whether or not anything ever promoted data into it.
+func rangeableEnabledTestClass(className string) *models.Class {
+	class := newFilterableToRangeableTestClass(className)
+	on := true
+	class.Properties[0].IndexRangeFilters = &on
+	return class
 }

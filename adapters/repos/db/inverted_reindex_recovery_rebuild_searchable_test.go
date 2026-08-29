@@ -319,7 +319,7 @@ func TestRecoveryConvergence_RebuildSearchable_FromEachState(t *testing.T) {
 			// left for it to do.
 			rec2, ok := task2.migrationRecord(shard2)
 			require.Truef(t, ok, "post-recovery record must exist (case %q)", tc.name)
-			if !rec2.PointerSwapped() {
+			if !rec2.FlipDecided() {
 				if err := task2.RunSwapOnShard(ctx, shard2); err != nil {
 					t.Logf("explicit RunSwapOnShard (case %q): %v", tc.name, err)
 				}

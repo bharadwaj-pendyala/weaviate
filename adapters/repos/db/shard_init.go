@@ -242,20 +242,25 @@ func (s *Shard) NotifyReady() {
 
 // markInFlightRangeableMigrationsNotReady flips the per-prop entry in
 // Shard.rangeableLocalReady to false for every rangeable migration on this
-// shard whose flip decision is not yet durable. See [Shard.rangeableLocalReady]
-// for the rationale. Idempotent and safe on shards with no rangeable migration.
+// shard that has not been promoted onto its canonical directory. See
+// [Shard.rangeableLocalReady] for the rationale. Idempotent and safe on shards
+// with no rangeable migration.
 //
 // Property names come from the record rather than from the tracker dir's name:
 // that name joins multiple properties with "_", so its decoder cannot tell
 // "price_cents" (one property) from ["price", "cents"] (two).
 //
-// A migration whose flip is decided is left untouched — reconciliation has
-// promoted it, or will at the load that can rename its directory safely — and
-// so is a property no record names; both fall back to the default-true policy
-// in [Shard.IsRangeableLocallyReady]. A record that does not decode cannot be
-// answered per property, since the property list is exactly what could not be
-// read: it marks the whole shard undecidable, which the same policy reads as
-// not ready.
+// Only a promoted migration is left untouched, along with a property no record
+// names; both fall back to the default-true policy in
+// [Shard.IsRangeableLocallyReady]. A decided flip is not enough: the flip
+// decision is recorded before the first pointer moves, and it lives only in the
+// process that made it, so a decided-but-unpromoted record at load means the
+// canonical rangeable directory is the empty one initNonVector just recreated.
+// Reconciliation runs immediately above and promotes what it can, so a record
+// still short of Promoted here is one it declined. A record that does not decode
+// cannot be answered per property, since the property list is exactly what could
+// not be read: it marks the whole shard undecidable, which the same policy reads
+// as not ready.
 func markInFlightRangeableMigrationsNotReady(s *Shard) {
 	if s.migrationRecords == nil {
 		return
@@ -264,7 +269,8 @@ func markInFlightRangeableMigrationsNotReady(s *Shard) {
 		s.rangeableUndecidable.Store(true)
 	}
 	for _, rec := range s.migrationRecords.Records() {
-		if rec.Subject().Key.StrategyCode != StrategyCodeFilterableToRangeable || rec.PointerSwapped() {
+		if rec.Subject().Key.StrategyCode != StrategyCodeFilterableToRangeable ||
+			rec.State() == MigrationStatePromoted {
 			continue
 		}
 		for _, propName := range rec.Subject().Properties {

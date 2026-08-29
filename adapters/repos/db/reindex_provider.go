@@ -2808,7 +2808,15 @@ func (p *ReindexProvider) sealLocalTask(desc distributedtask.TaskDescriptor) (fu
 	}
 	p.sealedTasks[desc]++
 
+	// Single-shot, like [unitClaims.take]: a second call on the same release
+	// would decrement a count another caller is holding and free that
+	// caller's seal.
+	dropped := false
 	return p.releaseOf(func() {
+		if dropped {
+			return
+		}
+		dropped = true
 		if p.sealedTasks[desc]--; p.sealedTasks[desc] <= 0 {
 			delete(p.sealedTasks, desc)
 		}

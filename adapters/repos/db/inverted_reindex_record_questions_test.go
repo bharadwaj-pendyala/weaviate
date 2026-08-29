@@ -42,7 +42,7 @@ func TestMigrationRecordQuestions(t *testing.T) {
 		record             MigrationRecord
 		wantState          MigrationState
 		wantStagedComplete bool
-		wantPointerSwapped bool
+		wantFlipDecided    bool
 		wantIterationDone  bool
 	}{
 		{
@@ -50,7 +50,7 @@ func TestMigrationRecordQuestions(t *testing.T) {
 			record:             iterating,
 			wantState:          MigrationStateIterating,
 			wantStagedComplete: false,
-			wantPointerSwapped: false,
+			wantFlipDecided:    false,
 			wantIterationDone:  false,
 		},
 		{
@@ -58,7 +58,7 @@ func TestMigrationRecordQuestions(t *testing.T) {
 			record:             iterated,
 			wantState:          MigrationStateIterated,
 			wantStagedComplete: false,
-			wantPointerSwapped: false,
+			wantFlipDecided:    false,
 			wantIterationDone:  true,
 		},
 		{
@@ -66,7 +66,7 @@ func TestMigrationRecordQuestions(t *testing.T) {
 			record:             merged,
 			wantState:          MigrationStateMerged,
 			wantStagedComplete: true,
-			wantPointerSwapped: false,
+			wantFlipDecided:    false,
 			wantIterationDone:  true,
 		},
 		{
@@ -74,7 +74,7 @@ func TestMigrationRecordQuestions(t *testing.T) {
 			record:             swapped,
 			wantState:          MigrationStateSwapped,
 			wantStagedComplete: true,
-			wantPointerSwapped: true,
+			wantFlipDecided:    true,
 			wantIterationDone:  true,
 		},
 		{
@@ -82,7 +82,7 @@ func TestMigrationRecordQuestions(t *testing.T) {
 			record:             promoted,
 			wantState:          MigrationStatePromoted,
 			wantStagedComplete: true,
-			wantPointerSwapped: true,
+			wantFlipDecided:    true,
 			wantIterationDone:  true,
 		},
 	}
@@ -91,7 +91,7 @@ func TestMigrationRecordQuestions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.wantState, tt.record.State())
 			require.Equal(t, tt.wantStagedComplete, tt.record.StagedDataComplete())
-			require.Equal(t, tt.wantPointerSwapped, tt.record.PointerSwapped())
+			require.Equal(t, tt.wantFlipDecided, tt.record.FlipDecided())
 			require.Equal(t, tt.wantIterationDone, tt.record.IterationComplete())
 		})
 	}

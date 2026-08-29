@@ -778,6 +778,78 @@ func TestAuditOrphanReindexTrackersReclaimsTrackersNoRecordNames(t *testing.T) {
 	}
 }
 
+// TestAuditLeavesAMarkerCarryingTrackerARecordNames pins the completion
+// marker as the first thing the audit asks about every tracker, not only about
+// the ones no record names.
+//
+// A pre-record release recorded a completed migration by dropping merged.mig
+// or tidied.mig into the tracker directory, and the staged directories that
+// tracker names are the live data. After an upgrade, rehydrate adopts the
+// marker-era generation and writes a record for it, which is exactly what
+// takes the tracker off the record-less arm — so the marker would never be
+// read, and a task that has since gone away would hand the only copy of the
+// migration's output to the reclaimers.
+func TestAuditLeavesAMarkerCarryingTrackerARecordNames(t *testing.T) {
+	const (
+		trackerName = "searchable_retokenize_title_1"
+		taskID      = "Books:change-tokenization:title:ab12"
+	)
+
+	tests := []struct {
+		name        string
+		marker      string
+		wantStatus  AuditOutcomeStatus
+		wantOrphans int
+	}{
+		{
+			name:       "the marker says the staged data is the live data",
+			marker:     "merged.mig",
+			wantStatus: AuditStatusRan,
+		},
+		{
+			name:       "the other marker name counts too",
+			marker:     "tidied.mig",
+			wantStatus: AuditStatusRan,
+		},
+		{
+			name:        "the same tracker without a marker is a reclaimable orphan",
+			wantStatus:  AuditStatusOrphansFound,
+			wantOrphans: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := testCtx()
+			shd, idx := testShard(t, ctx, "AuditMarkerRecordNamed")
+
+			// Iterating, so the record itself does not exempt the tracker,
+			// and the marker is the only evidence that could.
+			dir := mkAuditTracker(t, shd.(*Shard).pathLSM(), trackerName, taskID, 7,
+				auditFixtureUnit, MigrationStateIterating, "title")
+			if tt.marker != "" {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, tt.marker), nil, 0o600))
+			}
+			writePreAgedQuarantineSentinel(t, dir)
+			mtime := processStartTime.Add(-time.Hour)
+			require.NoError(t, os.Chtimes(dir, mtime, mtime))
+
+			db := &DB{
+				indices: map[string]*Index{indexID(idx.Config.ClassName): idx},
+				config:  Config{RootPath: idx.Config.RootPath},
+			}
+			outcome, err := db.AuditOrphanReindexTrackers(ctx,
+				func(string, uint64) bool { return false }, logrus.New())
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.wantStatus, outcome.Status)
+			assert.Equal(t, tt.wantOrphans, outcome.OrphansFound)
+			assert.Equal(t, tt.marker == "", !dirExists(t, dir),
+				"a tracker carrying a completion marker must survive the sweep")
+		})
+	}
+}
+
 // TestAuditOrphanReindexTrackersHonorsUnreadableRecords pins that a shard
 // with even one undecodable record reclaims nothing, since deletion isn't
 // reversible and the record-less liveness check alone can't prove otherwise.

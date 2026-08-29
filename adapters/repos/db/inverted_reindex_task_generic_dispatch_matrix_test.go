@@ -31,7 +31,7 @@ import (
 // [TestRunSwapOnShard_RecordAwareDispatch] (MapToBlockmax only) across every
 // strategy.
 //
-// Promoted has no row: the dispatch branches on PointerSwapped, which
+// Promoted has no row: the dispatch branches on FlipDecided, which
 // Promoted answers exactly as Swapped does, and Promoted is only ever
 // produced by a load, never in-process.
 

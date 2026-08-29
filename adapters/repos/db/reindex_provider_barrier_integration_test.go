@@ -145,7 +145,7 @@ func TestReindexProviderBarrierIntegration_OnGroupCompletedPrep(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, MigrationStateMerged, recPost.State(),
 		"post-PREP: RunPrepareOnShard advanced the record from Iterated to Merged")
-	assert.False(t, recPost.PointerSwapped(),
+	assert.False(t, recPost.FlipDecided(),
 		"post-PREP: the flip must NOT be decided yet, that is OnSwapRequested's job")
 }
 
