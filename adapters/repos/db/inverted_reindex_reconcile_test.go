@@ -1744,3 +1744,118 @@ func TestReconcilePromotedRepairsEveryPropertyItCan(t *testing.T) {
 		})
 	}
 }
+
+// TestNoRecordReclaimsAnotherRecordsCanonicalDirectory pins the collision one
+// record cannot see. Every record on a shard is validated alone, so two
+// individually valid records can still name one directory — record 1 as
+// something it owns and may reclaim, record 2 as where its property serves
+// from. The reclaim is an os.RemoveAll of live data, and record 2 is never
+// consulted.
+func TestNoRecordReclaimsAnotherRecordsCanonicalDirectory(t *testing.T) {
+	// contested is the directory both records name. Record 2 serves from it;
+	// record 1 must never remove it.
+	const contested = "m_42_contested"
+
+	tests := []struct {
+		name string
+		// stagedIsContested puts record 1's claim on the contested directory in
+		// its staged role rather than its sidecar role. The two roles are
+		// reclaimed by different code, so both have to be covered.
+		stagedIsContested bool
+		// stagedThere says whether record 1's own staged directory is on disk
+		// when its teardown runs. A promotion's aftermath has it gone; the
+		// other teardowns run on a record that never promoted.
+		stagedThere bool
+		// sweep plants record 1 in the state whose teardown reclaims owned
+		// directories.
+		sweep func(f *reconcileFixture, subject MigrationSubject)
+	}{
+		{
+			name: "the closure sweep of a promoted record",
+			sweep: func(f *reconcileFixture, subject MigrationSubject) {
+				f.put(NewMigrationRecordPromoted(subject, []string{"title"},
+					map[string]string{"title": "property_title"}))
+			},
+		},
+		{
+			name:              "the discard of a cancelled record, which reclaims its staged directory",
+			stagedIsContested: true,
+			stagedThere:       true,
+			sweep: func(f *reconcileFixture, subject MigrationSubject) {
+				f.tasks = append(f.tasks,
+					testTask(subject.TaskID, subject.Key.TaskVersion, distributedtask.TaskStatusCancelled))
+				f.put(NewMigrationRecordIterated(subject))
+			},
+		},
+		{
+			name:        "the retirement of a superseded record, which reclaims its sidecar directory",
+			stagedThere: true,
+			sweep:       plantSupersededPair,
+		},
+		{
+			name:              "the retirement of a superseded record, which reclaims its staged directory",
+			stagedIsContested: true,
+			stagedThere:       true,
+			sweep:             plantSupersededPair,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newReconcileFixture(t)
+			f.class = testClassWithTokenization(models.PropertyTokenizationLowercase, "title")
+
+			// Record 2: still running, serving its property from the contested
+			// directory. Nothing about it is unusual on its own.
+			victim := testMigrationSubject(50, StrategyCodeEnableFilterable, "title")
+			victim.CanonicalDirs = map[string]string{"title": contested}
+			victim.StagedDirs = map[string]string{"title": "m_50_title"}
+			victim.SidecarDirs = nil
+			f.tasks = append(f.tasks,
+				testTask(victim.TaskID, victim.Key.TaskVersion, distributedtask.TaskStatusStarted))
+			f.put(NewMigrationRecordIterating(victim, MigrationCheckpoint{}))
+
+			// Record 1 owns the same directory, in one of the two roles a
+			// record may reclaim.
+			subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
+			if tt.stagedIsContested {
+				subject.StagedDirs = map[string]string{"title": contested}
+			} else {
+				subject.SidecarDirs = map[string]string{"title": contested}
+			}
+
+			planted := []string{contested, "m_50_title", "property_title"}
+			if tt.stagedThere && !tt.stagedIsContested {
+				planted = append(planted, subject.StagedDirs["title"])
+			}
+			f.mkdirs(planted...)
+			tt.sweep(f, subject)
+
+			f.reconcile()
+
+			require.True(t, f.exists(contested),
+				"the sweeping record must not remove a directory another record serves from")
+			require.Equal(t, contested, f.contentOf(contested),
+				"and it must be the same directory, not one something re-created")
+			_, stillThere := f.state(victim.Key)
+			require.True(t, stillThere, "the record that serves from it is untouched")
+			require.True(t, f.logged("refusing to reclaim"),
+				"an operator has to be told a directory was left behind and why")
+			require.True(t, f.logged(victim.Key.String()),
+				"and which record it was left for, since nothing else attributes it")
+		})
+	}
+}
+
+// plantSupersededPair plants record 1 as a completed migration and the
+// later-versioned record on the same property whose flip retires it.
+func plantSupersededPair(f *reconcileFixture, subject MigrationSubject) {
+	f.put(NewMigrationRecordMerged(subject))
+	successor := testMigrationSubject(99, StrategyCodeSearchableRetokenize, "title")
+	successor.CanonicalDirs = map[string]string{"title": "property_title"}
+	successor.StagedDirs = map[string]string{"title": "m_99_title"}
+	successor.SidecarDirs = nil
+	f.mkdirs("m_99_title")
+	f.put(NewMigrationRecordSwapped(successor, []string{"title"},
+		map[string]string{"title": "property_title"}))
+}

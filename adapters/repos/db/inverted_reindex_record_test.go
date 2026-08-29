@@ -106,6 +106,16 @@ func TestMigrationRecordRoundTrip(t *testing.T) {
 			record:    NewMigrationRecordMerged(testMigrationSubject(7, StrategyCodeSearchableMapToBlockmax)),
 			wantState: MigrationStateMerged,
 		},
+		{
+			// An empty handle is the ordinary "this record names none", and
+			// two properties naming none are not two properties naming one
+			// directory. Without that reading the one-owner check refuses a
+			// record nothing is wrong with.
+			name: "two properties that displaced nothing still name one owner each",
+			record: NewMigrationRecordSwapped(testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title", "body"),
+				[]string{"title", "body"}, map[string]string{"title": "", "body": ""}),
+			wantState: MigrationStateSwapped,
+		},
 	}
 
 	for _, tt := range tests {

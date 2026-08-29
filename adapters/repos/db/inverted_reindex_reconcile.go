@@ -878,6 +878,9 @@ func (r *migrationReconciler) reclaimOwnedDirs(all []MigrationRecord, subject Mi
 		if migrationDirClaimedAsDisplaced(all, subject, dir) {
 			continue
 		}
+		if !r.mayReclaim(all, subject, dir) {
+			continue
+		}
 		if err := os.RemoveAll(r.path(dir)); err != nil {
 			r.logger.WithField("dir", dir).Errorf("remove migration directory: %v", err)
 		}
@@ -892,6 +895,22 @@ func (r *migrationReconciler) reclaimOwnedDirs(all []MigrationRecord, subject Mi
 		}
 	}
 	return remaining
+}
+
+// mayReclaim refuses to hand another record's canonical directory to
+// os.RemoveAll. Skip and log rather than refuse the load: refusing freezes
+// every migration on the shard, while skipping leaks one directory and keeps
+// the data, which is the same trade [migrationDirClaimedAsDisplaced] already
+// makes.
+func (r *migrationReconciler) mayReclaim(all []MigrationRecord, subject MigrationSubject, dir string) bool {
+	holder, taken := migrationDirIsAnotherRecordsCanonical(all, subject, dir)
+	if !taken {
+		return true
+	}
+	r.logger.WithField("record", subject.Key.String()).WithField("dir", dir).Errorf(
+		"refusing to reclaim %q: record %s serves a property from it; leaving it for that record to answer for",
+		dir, holder)
+	return false
 }
 
 // migrationOwnedDirs lists what the migration created and a sweep may

@@ -64,6 +64,35 @@ func migrationSupersedes(candidate MigrationRecord, subject MigrationSubject) bo
 	return key != subject.Key && key.TaskVersion > subject.Key.TaskVersion && candidate.PointerSwapped()
 }
 
+// migrationDirIsAnotherRecordsCanonical reports whether any other record on
+// the shard names dir as a canonical directory — the one role no record may
+// reclaim, because it is where that record's property serves from.
+//
+// [validateOneOwnerPerDirectory] cannot see this: encode and decode each see
+// one record. Two individually valid records still collide, and the harm is
+// the same as within one — an os.RemoveAll of live data — with the sweeping
+// record none the wiser.
+//
+// The rule is deliberately narrow. Records legitimately share canonical names
+// across versions, and legitimately chain staged onto displaced; only naming
+// another record's canonical directory as one's own to reclaim is never
+// legitimate, since a staged or sidecar handle carries a strategy and
+// generation a canonical name does not.
+func migrationDirIsAnotherRecordsCanonical(all []MigrationRecord, subject MigrationSubject, dir string) (MigrationRecordKey, bool) {
+	for _, other := range all {
+		key := other.Subject().Key
+		if key == subject.Key {
+			continue
+		}
+		for _, canonical := range other.Subject().CanonicalDirs {
+			if canonical == dir {
+				return key, true
+			}
+		}
+	}
+	return MigrationRecordKey{}, false
+}
+
 // migrationDirClaimedAsDisplaced reports whether a surviving later-versioned
 // record claims dir as what its flip displaced. A predecessor that flipped
 // but never promoted still holds live data at that staged name — exactly
@@ -171,6 +200,9 @@ func (r *migrationReconciler) retireOneSealed(ctx context.Context, all []Migrati
 	// Every property is gone or has become a successor's responsibility,
 	// so the record has nothing left to answer for.
 	for _, dir := range subject.SidecarDirs {
+		if !r.mayReclaim(all, subject, dir) {
+			continue
+		}
 		if err := os.RemoveAll(r.path(dir)); err != nil {
 			r.logger.WithField("dir", dir).Errorf("remove sidecar directory of a superseded migration: %v", err)
 		}
@@ -193,6 +225,9 @@ func (r *migrationReconciler) retireProperty(ctx context.Context, all []Migratio
 
 	dir := subject.StagedDirs[prop]
 	if dir == "" || migrationDirClaimedAsDisplaced(all, subject, dir) {
+		return nil
+	}
+	if !r.mayReclaim(all, subject, dir) {
 		return nil
 	}
 	if err := os.RemoveAll(r.path(dir)); err != nil {
