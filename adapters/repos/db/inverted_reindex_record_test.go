@@ -91,7 +91,7 @@ func TestMigrationRecordRoundTrip(t *testing.T) {
 		{
 			name: "swapped carries the promotion it started, which is the only thing that makes a missing staged dir readable",
 			record: NewMigrationRecordSwapped(testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title"),
-				[]string{"title"}, displaced).WithPromotionStarted("title", []string{"segment-1.db", "segment-2.db"}),
+				[]string{"title"}, displaced).WithPromotionAt("title", migrationPromotionStarted),
 			wantState: MigrationStateSwapped,
 		},
 		{
@@ -172,26 +172,24 @@ func TestMigrationRecordPromotionAcrossBuilds(t *testing.T) {
 		},
 		{
 			name:        "a record this build wrote",
-			key:         "promotionOutput",
-			value:       map[string]any{"title": []string{"segment-1.db"}},
+			key:         "promotion",
+			value:       map[string]any{"title": "started"},
 			wantStarted: true,
-			wantOutput:  []string{"segment-1.db"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			output, started := readBack(t, tt.key, tt.value).PromotionOutput("title")
-			require.Equal(t, tt.wantStarted, started)
-			require.Equal(t, tt.wantOutput, output)
+			mark := readBack(t, tt.key, tt.value).PromotionOf("title")
+			require.Equal(t, tt.wantStarted, mark != "")
 		})
 	}
 
 	t.Run("this build writes no key an earlier build would promote on", func(t *testing.T) {
-		flip := flipBlockOf(t, swapped.WithPromotionStarted("title", []string{"segment-1.db"}))
+		flip := flipBlockOf(t, swapped.WithPromotionAt("title", migrationPromotionStarted))
 		require.NotContains(t, flip, "promoting",
 			"an earlier build reads that key as licence to promote whatever directory it finds under the canonical name")
-		require.Contains(t, flip, "promotionOutput")
+		require.Contains(t, flip, "promotion")
 	})
 }
 
@@ -342,27 +340,41 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 			data: valid(func(env map[string]any) {
 				env["state"] = string(MigrationStateSwapped)
 				env["flip"] = map[string]any{
-					"flipped":         []string{"title"},
-					"displacedDirs":   map[string]any{"title": "property_title"},
-					"promotionOutput": map[string]any{"body": []string{"segment-1.db"}},
+					"flipped":       []string{"title"},
+					"displacedDirs": map[string]any{"title": "property_title"},
+					"promotion":     map[string]any{"body": "started"},
 				}
 			}),
 			wantErr: `records a promotion of property "body", which it does not name`,
 		},
 		{
-			// The output names are compared against what a directory holds, so
-			// one that is not a single file inside one describes a directory
-			// no promotion could have produced.
-			name: "promotion output that is not a single file inside a directory",
+			// Only a swapped record is part way through a promotion. On any
+			// other state the mark describes a step that state has already
+			// left behind, and re-encoding the record drops it silently.
+			name: "a promotion mark on a state that has no promotion to be part way through",
+			data: valid(func(env map[string]any) {
+				env["state"] = string(MigrationStatePromoted)
+				env["flip"] = map[string]any{
+					"flipped":       []string{"title"},
+					"displacedDirs": map[string]any{"title": "property_title"},
+					"promotion":     map[string]any{"title": "finished"},
+				}
+			}),
+			wantErr: `in state "promoted" carries promotion marks, which only a swapped record does`,
+		},
+		{
+			// A mark this build cannot read is a claim about how far a
+			// promotion got that it has no way to act on.
+			name: "a promotion mark this build does not know",
 			data: valid(func(env map[string]any) {
 				env["state"] = string(MigrationStateSwapped)
 				env["flip"] = map[string]any{
-					"flipped":         []string{"title"},
-					"displacedDirs":   map[string]any{"title": "property_title"},
-					"promotionOutput": map[string]any{"title": []string{"../property_body/segment-1.db"}},
+					"flipped":       []string{"title"},
+					"displacedDirs": map[string]any{"title": "property_title"},
+					"promotion":     map[string]any{"title": "bogus"},
 				}
 			}),
-			wantErr: `records promotion output "../property_body/segment-1.db" for property "title", which is not a single file inside a directory`,
+			wantErr: `records unknown promotion mark "bogus" for property "title"`,
 		},
 		// The same harm in every remaining pairing of the four roles a record
 		// hands out: one property's teardown closes or deletes the directory

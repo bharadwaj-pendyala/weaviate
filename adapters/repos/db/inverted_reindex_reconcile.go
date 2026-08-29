@@ -17,7 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/sirupsen/logrus"
 	"github.com/weaviate/weaviate/cluster/distributedtask"
@@ -380,62 +379,37 @@ func (r *migrationReconciler) promoteSealed(rec MigrationRecordSwapped,
 // load re-creates the canonical directory, empty, for every property in the
 // schema, and a strategy pre-creates it when arming, so its presence is no
 // evidence of anything — least of all that a rename put the migration's data
-// there.
+// there. Nor are the files inside it: the store renames, compacts and rewrites
+// its own segments, so a name that was there when the rename ran is not there
+// a restart later.
 //
-// So the rename writes down what it is about to do before doing it: the
-// property, and the segment files it is moving. A missing staged directory
-// then reads as this migration's own rename only for a property the record
-// names, and only while the directory under the canonical name still holds
-// one of the files that rename moved.
-//
-// Both halves are load-bearing, and each covers what the other cannot. Without
-// the property, a staged directory an index DELETE removed would read as a
-// rename that never ran. Without the files, a canonical directory that same
-// DELETE removed and the next shard load re-created, empty, would read as that
-// rename's output — writing Promoted over a bucket holding none of the data
-// the record says is under that name.
+// So the record carries the answer instead. The rename is bracketed by two
+// writes, a start and a finish, with nothing between them, and every later
+// pass reads the finish rather than the disk. Only a process that stopped
+// between those two statements leaves a start standing, and
+// [migrationReconciler.settleInterruptedPromotion] resolves that in the very
+// next pass — before any bucket on the shard opens — so it is never carried
+// forward.
 func (r *migrationReconciler) promoteProperty(rec MigrationRecordSwapped, prop string,
 	dirs promotionDirs,
 ) (MigrationRecordSwapped, bool, error) {
 	subject := rec.Subject()
 	staged, canonical, displaced := dirs.staged, dirs.canonical, dirs.displaced
+	switch rec.PromotionOf(prop) {
+	case migrationPromotionFinished:
+		return r.confirmPromotionSurvives(rec, prop, canonical)
+	case migrationPromotionLost:
+		r.logger.WithField("record", subject.Key.String()).Errorf(
+			"property %q was promoted onto %q and that directory is gone; preserving the record and promoting nothing",
+			prop, canonical)
+		return rec, false, nil
+	}
 	stagedThere, err := r.dirExists(staged)
 	if err != nil {
 		return rec, false, err
 	}
 	if !stagedThere {
-		output, started := rec.PromotionOutput(prop)
-		if !started {
-			r.logger.WithField("record", subject.Key.String()).Errorf(
-				"property %q lost its staged directory %q to something that is not its promotion, which never started; "+
-					"preserving the record and promoting nothing", prop, staged)
-			return rec, false, nil
-		}
-		canonicalThere, err := r.dirExists(canonical)
-		if err != nil {
-			return rec, false, err
-		}
-		if canonicalThere {
-			itsOwn, err := r.holdsPromotionOutput(canonical, output)
-			if err != nil {
-				return rec, false, err
-			}
-			if !itsOwn {
-				r.logger.WithField("record", subject.Key.String()).Errorf(
-					"property %q started a promotion of %d segment file(s) onto %q, and the directory now under that name holds none of them; "+
-						"it replaced the one the rename produced, so preserving the record and promoting nothing",
-					prop, len(output), canonical)
-				return rec, false, nil
-			}
-			return rec, true, nil
-		}
-		// A record must not promote a subject that no longer exists. Restore
-		// materializes a class tree file by file, so a directory that was
-		// empty has nothing to materialize and is gone after it.
-		r.logger.WithField("record", subject.Key.String()).Errorf(
-			"property %q has neither its staged directory %q nor its canonical directory %q; preserving the record and promoting nothing",
-			prop, staged, canonical)
-		return rec, false, nil
+		return r.settleInterruptedPromotion(rec, prop, staged, canonical)
 	}
 
 	// Displaced directories have exactly one owner: the record that displaced
@@ -462,15 +436,7 @@ func (r *migrationReconciler) promoteProperty(rec MigrationRecordSwapped, prop s
 		}
 	}
 
-	// Nothing stands between this write and the rename it licenses, so a
-	// started promotion that outlives the pass is one whose rename is the
-	// reason the staged directory is gone, and the files it names are the
-	// ones that rename put under the canonical name.
-	output, err := r.segmentFilesIn(staged)
-	if err != nil {
-		return rec, false, err
-	}
-	started := rec.WithPromotionStarted(prop, output)
+	started := rec.WithPromotionAt(prop, migrationPromotionStarted)
 	if err := r.store.Put(started); err != nil {
 		return rec, false, fmt.Errorf(
 			"record the promotion of property %q before renaming %q onto %q: %w", prop, staged, canonical, err)
@@ -480,69 +446,94 @@ func (r *migrationReconciler) promoteProperty(rec MigrationRecordSwapped, prop s
 	if err := r.rename(staged, canonical); err != nil {
 		return r.abandonPromotion(rec, prop, staged), false, err
 	}
-	return rec, true, nil
+
+	finished := rec.WithPromotionAt(prop, migrationPromotionFinished)
+	if err := r.store.Put(finished); err != nil {
+		// The rename ran, so the property is promoted whatever this write did.
+		// The next pass reaches the same answer from the start still standing.
+		r.logger.WithField("record", subject.Key.String()).Errorf(
+			"record the finished promotion of property %q: %v", prop, err)
+		return rec, true, nil
+	}
+	return finished, true, nil
 }
 
-// migrationSegmentFilePrefix starts the name of every segment an LSM bucket
-// holds, and of the files derived from one. Each name carries the nanosecond
-// its segment was written, so a bucket created after another was destroyed
-// never writes a file under one of the destroyed one's names.
-const migrationSegmentFilePrefix = "segment-"
-
-// segmentFilesIn lists the segment files a bucket directory holds: what a
-// promotion's rename moves onto the canonical name.
-func (r *migrationReconciler) segmentFilesIn(dir string) ([]string, error) {
-	entries, err := os.ReadDir(r.path(dir))
+// confirmPromotionSurvives re-reads the one thing a record cannot carry: that
+// the directory the rename produced is still there. Reconciliation runs before
+// any bucket on the shard opens, so a directory an index DELETE removed is
+// still absent here — no load has re-created it yet — and the answer is
+// written down as lost the first time it is no.
+func (r *migrationReconciler) confirmPromotionSurvives(rec MigrationRecordSwapped,
+	prop, canonical string,
+) (MigrationRecordSwapped, bool, error) {
+	there, err := r.dirExists(canonical)
 	if err != nil {
-		return nil, fmt.Errorf("list the segment files of %q: %w", dir, err)
+		return rec, false, err
 	}
-	files := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasPrefix(entry.Name(), migrationSegmentFilePrefix) {
-			files = append(files, entry.Name())
-		}
+	if there {
+		return rec, true, nil
 	}
-	slices.Sort(files)
-	return files, nil
+	r.logger.WithField("record", rec.Subject().Key.String()).Errorf(
+		"property %q was promoted onto %q and that directory is gone, so the data this migration renamed onto it is gone; "+
+			"preserving the record and promoting nothing", prop, canonical)
+	lost := rec.WithPromotionAt(prop, migrationPromotionLost)
+	if err := r.store.Put(lost); err != nil {
+		r.logger.WithField("record", rec.Subject().Key.String()).Errorf(
+			"record that the promoted directory of property %q is gone: %v", prop, err)
+		return rec, false, nil
+	}
+	return lost, false, nil
 }
 
-// holdsPromotionOutput reports whether the directory at dir is still the one a
-// promotion's rename produced.
+// settleInterruptedPromotion decides a promotion that recorded its start and
+// never recorded its finish, which is the one state no completed shard load
+// can produce: the two writes bracket the rename with nothing between them.
 //
-// One surviving name settles it: a segment file's name carries the nanosecond
-// it was written, so a bucket created after this one was destroyed never
-// writes a file under any of these names. One is also all that can be asked:
-// once the promoted bucket serves, compaction replaces its segments with
-// merged ones under new names, and a bucket compacted past every recorded
-// name reads here as replaced. That refuses — preserving the record, the
-// data, and a per-load error — which is the direction to be wrong in.
-//
-// A rename that moved no segment produces an empty bucket, so an empty bucket
-// is what has to be there — and a bucket that a shard load re-created is
-// exactly as empty, which costs nothing: the data that promotion put under the
-// canonical name was none.
-func (r *migrationReconciler) holdsPromotionOutput(dir string, output []string) (bool, error) {
-	present, err := r.segmentFilesIn(dir)
+// Reconciliation runs before any bucket on the shard opens, so the directory
+// under the canonical name is still exactly what the rename left it — or the
+// rename never ran, and the canonical directory the promotion removed before
+// recording its start is still absent. Both answers are written down here, so
+// no later pass asks the disk again and no load's empty re-creation can be
+// read as this rename's output.
+func (r *migrationReconciler) settleInterruptedPromotion(rec MigrationRecordSwapped,
+	prop, staged, canonical string,
+) (MigrationRecordSwapped, bool, error) {
+	subject := rec.Subject()
+	if rec.PromotionOf(prop) != migrationPromotionStarted {
+		r.logger.WithField("record", subject.Key.String()).Errorf(
+			"property %q lost its staged directory %q to something that is not its promotion, which never started; "+
+				"preserving the record and promoting nothing", prop, staged)
+		return rec, false, nil
+	}
+	canonicalThere, err := r.dirExists(canonical)
 	if err != nil {
-		return false, err
+		return rec, false, err
 	}
-	if len(output) == 0 {
-		return len(present) == 0, nil
-	}
-	for _, name := range output {
-		if slices.Contains(present, name) {
-			return true, nil
+	if !canonicalThere {
+		r.logger.WithField("record", subject.Key.String()).Errorf(
+			"property %q has neither its staged directory %q nor its canonical directory %q, so its rename never ran; "+
+				"preserving the record and promoting nothing", prop, staged, canonical)
+		abandoned := rec.WithPromotionAbandoned(prop)
+		if err := r.store.Put(abandoned); err != nil {
+			r.logger.WithField("record", subject.Key.String()).Errorf(
+				"take back the started promotion of property %q whose rename never ran: %v", prop, err)
+			return rec, false, nil
 		}
+		return abandoned, false, nil
 	}
-	return false, nil
+	finished := rec.WithPromotionAt(prop, migrationPromotionFinished)
+	if err := r.store.Put(finished); err != nil {
+		return rec, false, fmt.Errorf("record the finished promotion of property %q: %w", prop, err)
+	}
+	return finished, true, nil
 }
 
-// abandonPromotion takes back what a rename that returned instead of running
-// recorded — but only while the staged directory it was to move is still
-// there. [diskio.RenameAndSync] moves the directory first and syncs after, so
-// an error can come from the sync of a rename that already ran; taking the
-// record back there would leave every later pass with a canonical directory
-// it has no way to recognize as this promotion's output.
+// abandonPromotion takes back the start a rename that returned instead of
+// running recorded — but only while the staged directory it was to move is
+// still there. [diskio.RenameAndSync] moves the directory first and syncs
+// after, so an error can come from the sync of a rename that already ran;
+// taking the start back there would leave every later pass reading a promoted
+// canonical directory as one no rename of this property produced.
 //
 // A write that fails here is logged and left: the record is then merely less
 // precise than it should be, which is not worth failing a shard load over,
