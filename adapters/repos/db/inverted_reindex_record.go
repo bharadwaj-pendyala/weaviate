@@ -207,6 +207,11 @@ type MigrationRecordMerged struct {
 type MigrationRecordSwapped struct {
 	migrationRecordBase
 	migrationFlipBlock
+	// promoting names the properties whose promotion rename has been started.
+	// It is written before the rename runs, which is what lets a later pass
+	// tell a staged directory the rename consumed from one something else
+	// removed. See [migrationReconciler.promoteProperty].
+	promoting []string
 }
 
 type MigrationRecordPromoted struct {
@@ -227,7 +232,35 @@ func NewMigrationRecordMerged(subject MigrationSubject) MigrationRecordMerged {
 }
 
 func NewMigrationRecordSwapped(subject MigrationSubject, flipped []string, displacedDirs map[string]string) MigrationRecordSwapped {
-	return MigrationRecordSwapped{migrationRecordBase{subject}, migrationFlipBlock{flipped, displacedDirs}}
+	return MigrationRecordSwapped{migrationRecordBase{subject}, migrationFlipBlock{flipped, displacedDirs}, nil}
+}
+
+// PromotionStarted reports whether a promotion of prop recorded its intent
+// before renaming. Without that intent a missing staged directory is not this
+// migration's doing, so nothing at the canonical name is its output.
+func (r MigrationRecordSwapped) PromotionStarted(prop string) bool {
+	return slices.Contains(r.promoting, prop)
+}
+
+// WithPromotionStarted records that prop's rename is about to run.
+func (r MigrationRecordSwapped) WithPromotionStarted(prop string) MigrationRecordSwapped {
+	if r.PromotionStarted(prop) {
+		return r
+	}
+	r.promoting = append(slices.Clone(r.promoting), prop)
+	slices.Sort(r.promoting)
+	return r
+}
+
+// WithPromotionAbandoned drops prop's intent after a rename that returned
+// instead of running, so an intent only ever outlives the pass that renamed.
+func (r MigrationRecordSwapped) WithPromotionAbandoned(prop string) MigrationRecordSwapped {
+	if !r.PromotionStarted(prop) {
+		return r
+	}
+	r.promoting = slices.DeleteFunc(slices.Clone(r.promoting),
+		func(p string) bool { return p == prop })
+	return r
 }
 
 func NewMigrationRecordPromoted(subject MigrationSubject, flipped []string, displacedDirs map[string]string) MigrationRecordPromoted {
@@ -252,6 +285,7 @@ const migrationRecordFormatVersion = 1
 type migrationFlipEnvelope struct {
 	Flipped       []string          `json:"flipped,omitempty"`
 	DisplacedDirs map[string]string `json:"displacedDirs,omitempty"`
+	Promoting     []string          `json:"promoting,omitempty"`
 }
 
 type migrationRecordEnvelope struct {
@@ -288,6 +322,7 @@ func (r MigrationRecordMerged) toEnvelope() migrationRecordEnvelope {
 func (r MigrationRecordSwapped) toEnvelope() migrationRecordEnvelope {
 	env := newMigrationRecordEnvelope(MigrationStateSwapped, r.subject)
 	env.Flip = r.migrationFlipBlock.toEnvelope()
+	env.Flip.Promoting = r.promoting
 	return env
 }
 
@@ -330,7 +365,28 @@ func validateMigrationEnvelope(e migrationRecordEnvelope) error {
 	if err := validateMigrationHandles(e); err != nil {
 		return err
 	}
+	if err := validatePromotingNamesSubjectProperties(e); err != nil {
+		return err
+	}
 	return validateOneOwnerPerDirectory(e)
+}
+
+// validatePromotingNamesSubjectProperties refuses a promotion intent for a
+// property the record does not carry. Promotion reads the intent to decide
+// that a missing staged directory is its own rename's doing, so an intent
+// nothing in the subject accounts for is exactly the claim that must not be
+// taken on trust.
+func validatePromotingNamesSubjectProperties(e migrationRecordEnvelope) error {
+	if e.Flip == nil {
+		return nil
+	}
+	for _, prop := range e.Flip.Promoting {
+		if !slices.Contains(e.Subject.Properties, prop) {
+			return fmt.Errorf("record %q records a promotion of property %q, which it does not name",
+				e.Subject.Key, prop)
+		}
+	}
+	return nil
 }
 
 // validateOneOwnerPerDirectory refuses a record that names one directory
@@ -412,7 +468,9 @@ func decodeMigrationRecord(data []byte) (MigrationRecord, error) {
 		if err := env.requireBlocks(migrationBlocks{flip: true}); err != nil {
 			return nil, err
 		}
-		return NewMigrationRecordSwapped(env.Subject, env.Flip.Flipped, env.Flip.DisplacedDirs), nil
+		swapped := NewMigrationRecordSwapped(env.Subject, env.Flip.Flipped, env.Flip.DisplacedDirs)
+		swapped.promoting = env.Flip.Promoting
+		return swapped, nil
 	case MigrationStatePromoted:
 		if err := env.requireBlocks(migrationBlocks{flip: true}); err != nil {
 			return nil, err

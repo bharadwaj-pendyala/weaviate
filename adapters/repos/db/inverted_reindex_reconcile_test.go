@@ -437,8 +437,12 @@ func TestReconcileMergedDisposition(t *testing.T) {
 // one: three strategies pre-create an empty canonical bucket at arming time.
 func TestReconcileSwappedProbe(t *testing.T) {
 	tests := []struct {
-		name             string
-		present          []string
+		name    string
+		present []string
+		// promoting is what the record says about a rename of "title" having
+		// started. A canonical directory means one thing with it and nothing
+		// at all without it, since a shard load re-creates one either way.
+		promoting        []string
 		wantState        MigrationState
 		wantCanonical    string
 		wantCanonicalDir bool
@@ -458,9 +462,17 @@ func TestReconcileSwappedProbe(t *testing.T) {
 			wantCanonicalDir: true,
 		},
 		{
-			name:             "canonical only: promotion already ran, the retire arm must not fire",
+			name:             "canonical only, the rename that took the staged directory is recorded: finish the promotion",
 			present:          []string{"property_title"},
+			promoting:        []string{"title"},
 			wantState:        MigrationStatePromoted,
+			wantCanonical:    "property_title",
+			wantCanonicalDir: true,
+		},
+		{
+			name:             "canonical only, no rename recorded: something else took the staged directory, promote nothing",
+			present:          []string{"property_title"},
+			wantState:        MigrationStateSwapped,
 			wantCanonical:    "property_title",
 			wantCanonicalDir: true,
 		},
@@ -479,7 +491,11 @@ func TestReconcileSwappedProbe(t *testing.T) {
 
 			subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 			f.mkdirs(tt.present...)
-			f.put(NewMigrationRecordSwapped(subject, []string{"title"}, map[string]string{"title": "property_title"}))
+			rec := NewMigrationRecordSwapped(subject, []string{"title"}, map[string]string{"title": "property_title"})
+			for _, prop := range tt.promoting {
+				rec = rec.WithPromotionStarted(prop)
+			}
+			f.put(rec)
 
 			f.reconcile()
 

@@ -89,6 +89,12 @@ func TestMigrationRecordRoundTrip(t *testing.T) {
 			wantState: MigrationStateSwapped,
 		},
 		{
+			name: "swapped carries the promotion it started, which is the only thing that makes a missing staged dir readable",
+			record: NewMigrationRecordSwapped(testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title"),
+				[]string{"title"}, displaced).WithPromotionStarted("title"),
+			wantState: MigrationStateSwapped,
+		},
+		{
 			name:      "promoted keeps the flip block so a partly failed retirement is still attributable",
 			record:    NewMigrationRecordPromoted(testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title"), []string{"title"}, displaced),
 			wantState: MigrationStatePromoted,
@@ -252,6 +258,21 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 				sidecars["body"] = sidecars["title"]
 			}),
 			wantErr: `names directory "m_42_title_sidecar" as both the sidecar directory of property "body" and the sidecar directory of property "title"`,
+		},
+		{
+			// The intent is what lets promotion read a missing staged
+			// directory as its own rename's doing, so one for a property the
+			// record does not carry is the claim that must not be trusted.
+			name: "a promotion recorded for a property the record does not name",
+			data: valid(func(env map[string]any) {
+				env["state"] = string(MigrationStateSwapped)
+				env["flip"] = map[string]any{
+					"flipped":       []string{"title"},
+					"displacedDirs": map[string]any{"title": "property_title"},
+					"promoting":     []string{"body"},
+				}
+			}),
+			wantErr: `records a promotion of property "body", which it does not name`,
 		},
 		// The same harm in every remaining pairing of the four roles a record
 		// hands out: one property's teardown closes or deletes the directory

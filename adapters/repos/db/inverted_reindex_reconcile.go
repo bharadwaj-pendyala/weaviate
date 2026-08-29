@@ -351,8 +351,11 @@ func (r *migrationReconciler) promoteSealed(rec MigrationRecordSwapped,
 		}
 
 		displaced, _ := rec.DisplacedDir(prop)
-		promoted, err := r.promoteProperty(subject, prop,
+		updated, promoted, err := r.promoteProperty(rec, prop,
 			promotionDirs{staged: staged, canonical: canonical, displaced: displaced})
+		// The record carries every promotion intent written so far, so the
+		// next property acts on the same one this property just widened.
+		rec = updated
 		if err != nil {
 			settled = false
 			r.logger.WithField("record", subject.Key.String()).Errorf("promote property %q: %v", prop, err)
@@ -369,25 +372,45 @@ func (r *migrationReconciler) promoteSealed(rec MigrationRecordSwapped,
 	return r.store.Put(NewMigrationRecordPromoted(subject, rec.Flipped(), rec.displacedDirs))
 }
 
-// promoteProperty guards every destructive arm on the staged directory's
-// presence: only the promotion rename removes it, so a missing one proves the
-// canonical name already holds the data. Directory contents are never
-// inspected — strategies pre-create an empty canonical bucket when arming.
-func (r *migrationReconciler) promoteProperty(subject MigrationSubject, prop string,
+// promoteProperty renames one property's staged directory onto its canonical
+// name, and is idempotent across a crash in the middle of that rename.
+//
+// Which of the two it is doing is not readable from the directories. A shard
+// load re-creates the canonical directory, empty, for every property in the
+// schema, and a strategy pre-creates it when arming, so its presence is no
+// evidence of anything — least of all that a rename put the migration's data
+// there. Contents say no more: an empty canonical bucket is a legitimate
+// state both before and after a promotion.
+//
+// So the evidence is written rather than inferred. The rename records its
+// intent on the record first, and only a property that intent names may have
+// a missing staged directory read as its own rename's work. Everything else
+// with a missing staged directory lost it to something outside this
+// migration — an index DELETE takes both directories at once — and promoting
+// there would write Promoted over a bucket holding none of the data the
+// record says is under that name.
+func (r *migrationReconciler) promoteProperty(rec MigrationRecordSwapped, prop string,
 	dirs promotionDirs,
-) (bool, error) {
+) (MigrationRecordSwapped, bool, error) {
+	subject := rec.Subject()
 	staged, canonical, displaced := dirs.staged, dirs.canonical, dirs.displaced
 	stagedThere, err := r.dirExists(staged)
 	if err != nil {
-		return false, err
+		return rec, false, err
 	}
 	if !stagedThere {
+		if !rec.PromotionStarted(prop) {
+			r.logger.WithField("record", subject.Key.String()).Errorf(
+				"property %q lost its staged directory %q to something that is not its promotion, which never started; "+
+					"preserving the record and promoting nothing", prop, staged)
+			return rec, false, nil
+		}
 		canonicalThere, err := r.dirExists(canonical)
 		if err != nil {
-			return false, err
+			return rec, false, err
 		}
 		if canonicalThere {
-			return true, nil
+			return rec, true, nil
 		}
 		// A record must not promote a subject that no longer exists. Restore
 		// materializes a class tree file by file, so a directory that was
@@ -395,7 +418,7 @@ func (r *migrationReconciler) promoteProperty(subject MigrationSubject, prop str
 		r.logger.WithField("record", subject.Key.String()).Errorf(
 			"property %q has neither its staged directory %q nor its canonical directory %q; preserving the record and promoting nothing",
 			prop, staged, canonical)
-		return false, nil
+		return rec, false, nil
 	}
 
 	// Displaced directories have exactly one owner: the record that displaced
@@ -404,24 +427,53 @@ func (r *migrationReconciler) promoteProperty(subject MigrationSubject, prop str
 	if displaced != "" && displaced != canonical {
 		displacedThere, err := r.dirExists(displaced)
 		if err != nil {
-			return false, err
+			return rec, false, err
 		}
 		if displacedThere {
 			if err := os.RemoveAll(r.path(displaced)); err != nil {
-				return false, fmt.Errorf("remove displaced directory %q: %w", displaced, err)
+				return rec, false, fmt.Errorf("remove displaced directory %q: %w", displaced, err)
 			}
 		}
 	}
 	canonicalThere, err := r.dirExists(canonical)
 	if err != nil {
-		return false, err
+		return rec, false, err
 	}
 	if canonicalThere {
 		if err := os.RemoveAll(r.path(canonical)); err != nil {
-			return false, fmt.Errorf("remove canonical directory %q the promotion replaces: %w", canonical, err)
+			return rec, false, fmt.Errorf("remove canonical directory %q the promotion replaces: %w", canonical, err)
 		}
 	}
-	return true, r.rename(staged, canonical)
+
+	// Nothing stands between this write and the rename it licenses, so an
+	// intent that outlives the pass is one whose rename is the reason the
+	// staged directory is gone.
+	started := rec.WithPromotionStarted(prop)
+	if err := r.store.Put(started); err != nil {
+		return rec, false, fmt.Errorf(
+			"record the promotion of property %q before renaming %q onto %q: %w", prop, staged, canonical, err)
+	}
+	rec = started
+
+	if err := r.rename(staged, canonical); err != nil {
+		return r.abandonPromotion(rec, prop), false, err
+	}
+	return rec, true, nil
+}
+
+// abandonPromotion takes back the intent of a rename that returned instead of
+// running. A write that fails here is logged and left: the record is then
+// merely less precise than it should be, which is not worth failing a shard
+// load over, and the next pass re-runs the rename anyway because the staged
+// directory is still there.
+func (r *migrationReconciler) abandonPromotion(rec MigrationRecordSwapped, prop string) MigrationRecordSwapped {
+	abandoned := rec.WithPromotionAbandoned(prop)
+	if err := r.store.Put(abandoned); err != nil {
+		r.logger.WithField("record", rec.Subject().Key.String()).Errorf(
+			"take back the promotion intent of property %q after its rename failed: %v", prop, err)
+		return rec
+	}
+	return abandoned
 }
 
 // promotionDirs are the three directories a promotion of one property acts on.
