@@ -37,9 +37,9 @@ import (
 // Two restarts per journey, not one: promotion acts on the first load, and
 // what that load leaves behind is only visible on the second.
 //
-// Both sub-journeys assert the operator-visible invariants across those loads:
-// an index the operator deleted stays deleted, an index nobody touched keeps
-// answering, and an index rebuilt after the DELETE keeps its contents.
+// Both sub-journeys assert that an index the operator deleted stays deleted
+// and an index nobody touched keeps answering. Only the re-enable journey goes
+// on to assert that an index rebuilt after the DELETE keeps its contents.
 func testDeleteDuringDeferredPromotion(t *testing.T, compose *docker.DockerCompose) {
 	t.Run("delete then re-enable across three loads", func(t *testing.T) {
 		testDeleteThenReEnableAcrossLoads(t, compose)
@@ -96,7 +96,7 @@ func testDeleteBesideALiveIndexAcrossLoads(t *testing.T, compose *docker.DockerC
 	taskID := reindexhelpers.SubmitIndexUpsert(t, restURI, class, "name", "searchable",
 		`{"tokenization":"field"}`)
 	reindexhelpers.AwaitReindexFinished(t, restURI, taskID)
-	require.Equal(t, numObjects, bm25HitsOnProp(t, class, "alpha", "name"),
+	require.Equal(t, numObjects, bm25HitsForProp(t, class, "name", "alpha"),
 		"fixture: the searchable index must answer before the DELETE")
 
 	// The trigger: only the filterable half is deleted. The searchable half
@@ -105,7 +105,7 @@ func testDeleteBesideALiveIndexAcrossLoads(t *testing.T, compose *docker.DockerC
 
 	for i := 1; i <= 2; i++ {
 		restartWeaviate(t, compose, fmt.Sprintf("load %d after the DELETE", i))
-		require.Equalf(t, numObjects, bm25HitsOnProp(t, class, "alpha", "name"),
+		require.Equalf(t, numObjects, bm25HitsForProp(t, class, "name", "alpha"),
 			"load %d after deleting the filterable index emptied the live searchable index", i)
 	}
 }
@@ -144,9 +144,9 @@ func testDeleteThenReEnableAcrossLoads(t *testing.T, compose *docker.DockerCompo
 		reindexhelpers.AwaitReindexFinished(t, restURI, taskID)
 		requireSearchableEnabled(t, class, prop)
 	}
-	require.Equal(t, numObjects, bm25HitsOnProp(t, class, "fox", "kept"),
+	require.Equal(t, numObjects, bm25HitsForProp(t, class, "kept", "fox"),
 		"fixture: the surviving property's index must answer before the DELETE")
-	require.Equal(t, numObjects, bm25HitsOnProp(t, class, "hound", "dropped"),
+	require.Equal(t, numObjects, bm25HitsForProp(t, class, "dropped", "hound"),
 		"fixture: the deleted property's index must answer before the DELETE")
 
 	// The trigger: an ordinary index DELETE, while both migrations are still
@@ -161,7 +161,7 @@ func testDeleteThenReEnableAcrossLoads(t *testing.T, compose *docker.DockerCompo
 	requireSearchableDisabledf(t, class, "dropped",
 		"the load after the DELETE re-enabled an index the operator removed; the schema now "+
 			"advertises a searchable index nothing rebuilt")
-	require.Equal(t, numObjects, bm25HitsOnProp(t, class, "fox", "kept"),
+	require.Equal(t, numObjects, bm25HitsForProp(t, class, "kept", "fox"),
 		"the load after the DELETE emptied the untouched property's index")
 
 	// Re-enable, then two more loads. This is where the deleted migration's
@@ -173,15 +173,15 @@ func testDeleteThenReEnableAcrossLoads(t *testing.T, compose *docker.DockerCompo
 		`{"tokenization":"word"}`)
 	reindexhelpers.AwaitReindexFinished(t, restURI, taskID)
 	requireSearchableEnabled(t, class, "dropped")
-	require.Equal(t, numObjects, bm25HitsOnProp(t, class, "hound", "dropped"),
+	require.Equal(t, numObjects, bm25HitsForProp(t, class, "dropped", "hound"),
 		"re-enabling after the DELETE must rebuild the index")
 
 	for i := 1; i <= 2; i++ {
 		restartWeaviate(t, compose, fmt.Sprintf("load %d after the re-enable", i))
 		requireSearchableEnabled(t, class, "dropped")
-		require.Equalf(t, numObjects, bm25HitsOnProp(t, class, "hound", "dropped"),
+		require.Equalf(t, numObjects, bm25HitsForProp(t, class, "dropped", "hound"),
 			"load %d after the re-enable emptied the rebuilt index", i)
-		require.Equalf(t, numObjects, bm25HitsOnProp(t, class, "fox", "kept"),
+		require.Equalf(t, numObjects, bm25HitsForProp(t, class, "kept", "fox"),
 			"load %d after the re-enable emptied the untouched property's index", i)
 	}
 }
@@ -206,24 +206,6 @@ func requireSearchableDisabledf(t *testing.T, class, prop, msg string, args ...i
 		}
 	}
 	require.FailNowf(t, "property not found", "%s.%s", class, prop)
-}
-
-// bm25HitsOnProp is [bm25Hits] against a named property rather than "body".
-func bm25HitsOnProp(t *testing.T, class, query, prop string) int {
-	t.Helper()
-	gqlQuery := fmt.Sprintf(`{
-		Get {
-			%s(bm25: {query: %q, properties: [%q]}, limit: 10000) {
-				_additional { id }
-			}
-		}
-	}`, class, query, prop)
-	ids, err := runGraphQLQuery(t, class, gqlQuery)
-	if err != nil {
-		t.Logf("bm25 query for %q on %q errored: %v", query, prop, err)
-		return 0
-	}
-	return len(ids)
 }
 
 // TestSuppress_DeleteDuringDeferredPromotion keeps this file compiling in

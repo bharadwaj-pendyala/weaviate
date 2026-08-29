@@ -54,9 +54,9 @@ func deriveScope(regs []migrationScopeReg) (migrationDoubleWriteScope, []string)
 	// A registration that carries no overlay entry for a property it mirrors
 	// is not abstaining from the question: it is asking for the property to be
 	// analyzed exactly as the live schema describes it, which is a different
-	// answer from any forced one — and five of the eight strategies ask for
-	// nothing else. Comparing over the mirrored properties rather than over
-	// the overlay entries is what puts that answer into the comparison.
+	// answer from any forced one, and it is what most strategies ask for.
+	// Comparing over the mirrored properties rather than over the overlay
+	// entries is what puts that answer into the comparison.
 	wanted := map[string]inverted.PropertyOverlay{}
 	for _, reg := range regs {
 		for prop := range reg.props {
@@ -119,9 +119,16 @@ type propValueIndexState struct {
 	// overlay is not every mirror's answer. Checked once per mirrored write,
 	// so the normal path stays at one analysis.
 	overlaysDiverge bool
-	// analyses is folded in at publication because the snapshot is immutable
-	// after it: deriving it per write allocates once per mirrored object for
-	// the whole lifetime of a migration.
+	// analyses names what one mirrored write owes. Normally one entry: every
+	// registration analyzes each property the same way, so a single analysis
+	// serves them all. Two migrations that overlay one property differently
+	// need one each, because the terms the older one's staged copy must
+	// receive are not the terms the newer one's must, and the derived scope
+	// carries only the most recent arm's answer.
+	//
+	// Folded in at publication because the snapshot is immutable after it:
+	// deriving it per write allocates once per mirrored object for the whole
+	// lifetime of a migration.
 	analyses []doubleWriteAnalysis
 }
 
@@ -268,16 +275,6 @@ type doubleWriteAnalysis struct {
 	del     []deleteCallbackEntry
 }
 
-// doubleWriteAnalyses names the analyses one mirrored write owes. Normally
-// one: every registration analyzes each property the same way, so a single
-// analysis serves them all. Two migrations that overlay one property
-// differently need one each, because the terms the older one's staged copy
-// must receive are not the terms the newer one's must, and the derived scope
-// carries only the most recent arm's answer.
-func (st *propValueIndexState) doubleWriteAnalyses() []doubleWriteAnalysis {
-	return st.analyses
-}
-
 // buildDoubleWriteAnalyses derives them. [Shard.mutatePropValueIndexState] is
 // its only caller, so a mirrored write reads the folded field instead.
 func (st *propValueIndexState) buildDoubleWriteAnalyses() []doubleWriteAnalysis {
@@ -339,11 +336,10 @@ func (s *Shard) analyzeForDoubleWrite(obj *storobj.Object, a doubleWriteAnalysis
 }
 
 // mirrorAddToIngest analyzes obj once per armed mirror that needs its own
-// answer and fires that mirror's add callback with it. Analysis and firing are
-// one operation on purpose: analyzing once and firing everything is how the
-// older mirror ends up with the newer arm's terms.
+// answer and fires that mirror's add callback with it. Every mirror receives
+// the terms its own overlay produced, and no other's.
 func (s *Shard) mirrorAddToIngest(st *propValueIndexState, docID uint64, obj *storobj.Object) error {
-	for _, analysis := range st.doubleWriteAnalyses() {
+	for _, analysis := range st.analyses {
 		props, err := s.analyzeForDoubleWrite(obj, analysis)
 		if err != nil {
 			return err
@@ -357,11 +353,10 @@ func (s *Shard) mirrorAddToIngest(st *propValueIndexState, docID uint64, obj *st
 	return nil
 }
 
-// mirrorDeleteFromIngest is [Shard.mirrorAddToIngest]'s delete leg. It has to
-// analyze the same way: a stale term the mirror never removes outlives the
-// migration in the staged copy.
+// mirrorDeleteFromIngest is [Shard.mirrorAddToIngest]'s delete leg, analyzing
+// the same way so each mirror removes exactly the terms it added.
 func (s *Shard) mirrorDeleteFromIngest(st *propValueIndexState, docID uint64, obj *storobj.Object) error {
-	for _, analysis := range st.doubleWriteAnalyses() {
+	for _, analysis := range st.analyses {
 		props, err := s.analyzeForDoubleWrite(obj, analysis)
 		if err != nil {
 			return err
@@ -409,30 +404,18 @@ func (s *Shard) migrationDoubleWriteDelete(st *propValueIndexState, prevObject *
 // (weaviate/0-weaviate-issues#298). The returned func disarms one property of
 // this registration and no other registration's claim on it.
 //
-// Disarm REMOVES the callbacks (by id) in the SAME atomic mutate that drops the
-// scope. Two consequences:
+// Disarm REMOVES the callbacks (by id) in the SAME atomic mutate that drops
+// the scope. That keeps the slice bounded by the migrations in flight, and it
+// makes a {scope-absent, callback-present} state — which a writer would
+// double-write through — unobservable. An in-flight writer still holding the
+// pre-disarm snapshot lands in this record's own bucket or in nothing at all:
+// resolveScopedDoubleWriteBucket takes the canonical name only while it
+// denotes the bucket that mirror armed on.
 //
-//   - No unbounded growth. Earlier this only flagged the closures disabled and
-//     left them in the slice, so every past migration's pair stayed on the hot
-//     write path forever — O(migrations) per-write cost plus a slow leak on
-//     long-lived shards. Removing them keeps the slice bounded by the number of
-//     migrations in flight.
-//   - No disabled-flag guard needed. A flag was only ever required because the
-//     old disarm dropped the scope while leaving the callbacks present,
-//     transiently exposing a {scope-absent, callback-present} state a writer
-//     would double-write through. Removing callback and scope together makes
-//     that torn state unobservable, so the flag is redundant. An in-flight
-//     writer still holding the pre-disarm snapshot lands in this record's own
-//     bucket or in nothing at all: resolveScopedDoubleWriteBucket takes the
-//     canonical name only while it denotes the bucket that mirror armed on.
-//
-// Disarming a subset re-registers the pair over the properties left, rather
-// than removing it: the actor that disarms owns one property of the scope —
-// a successor's retirement takes over only the properties it overlaps.
-// Rebuilding keeps the write path carrying one pair per migration rather
-// than one per property, since every callback fires for every analyzed
-// property and a pair per property would cost the square of the property
-// count on every write.
+// Disarming a subset re-registers the pair over the properties left rather
+// than removing it: the actor that disarms owns one property of the scope,
+// and a pair per property would cost the square of the property count on
+// every write, since every callback fires for every analyzed property.
 //
 // makeCallbacks receives the properties still armed and must build a pair
 // scoped to exactly them.

@@ -972,7 +972,7 @@ func (t *ShardReindexTaskGeneric) OnAfterLsmInit(ctx context.Context, shard *Sha
 			return err
 		}
 		if len(props) == 0 {
-			logger.Debug("every staged directory is already promoted. nothing to open")
+			logger.Debug("no staged directory left to open: each is either promoted or named by another generation")
 			return nil
 		}
 		logger.Debug("merged, not swapped. starting ingest buckets")

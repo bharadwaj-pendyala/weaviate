@@ -40,8 +40,11 @@ func TestMultiNode_RestartInsideMergedBarrier_CommitsAndServes(t *testing.T) {
 	defer dumpContainerLogs(ctx, t, compose)
 
 	const (
-		className    = "MergedBarrierRestart"
-		totalObjects = 20_000
+		className = "MergedBarrierRestart"
+		// The kill has to land inside PREPARING, and this test rejects the two
+		// other statuses the poll helper returns on. 50k is what the sibling
+		// crash tests use to keep that window reachable.
+		totalObjects = 50_000
 		// The restarted node. Node 1 stays up so the test always has a REST
 		// endpoint to submit and poll through.
 		restartedNode = 2

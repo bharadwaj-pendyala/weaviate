@@ -148,8 +148,9 @@ func (s *FilterableToRangeableStrategy) MakeDeleteCallback(bucketNamer func(stri
 // [*Shard.IsRangeableLocallyReady] and falls back to the filterable
 // bucket walk while the rangeable bucket is empty. See
 // `Shard.rangeableLocalReady` for the full GH https://github.com/weaviate/0-weaviate-issues/issues/212
-// Issue C rationale. The post-runtimeSwap finalize flips the prop back
-// to "ready" once the flip decision is recorded.
+// Issue C rationale. Only
+// [FilterableToRangeableStrategy.OnMigrationComplete] flips the prop
+// back to "ready".
 func (s *FilterableToRangeableStrategy) PreReindexHook(shard *Shard, props []string) {
 	ctx := context.Background()
 	for _, propName := range props {

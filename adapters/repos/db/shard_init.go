@@ -252,7 +252,10 @@ func (s *Shard) NotifyReady() {
 //
 // Only a promoted migration is left untouched, along with a property no record
 // names; both fall back to the default-true policy in
-// [Shard.IsRangeableLocallyReady]. A decided flip is not enough: the flip
+// [Shard.IsRangeableLocallyReady]. Promoted covers a superseded property too,
+// whose canonical directory holds a successor's data — safe here because
+// property_<p>_rangeable is built by exactly one strategy code, so the
+// superseding record is another rangeable record this same scan answers. A decided flip is not enough: the flip
 // decision is recorded before the first pointer moves, and it lives only in the
 // process that made it, so a decided-but-unpromoted record at load means the
 // canonical rangeable directory is the empty one initNonVector just recreated.
@@ -261,6 +264,11 @@ func (s *Shard) NotifyReady() {
 // cannot be answered per property, since the property list is exactly what could
 // not be read: it marks the whole shard undecidable, which the same policy reads
 // as not ready.
+//
+// The mark can be permanent. Only OnMigrationComplete clears it, and
+// [migrationReconciler.promoteProperty] has terminal arms that leave a record
+// at Swapped for good, so such a shard falls back to the filterable walk on
+// every load until an operator resubmits the migration.
 func markInFlightRangeableMigrationsNotReady(s *Shard) {
 	if s.migrationRecords == nil {
 		return

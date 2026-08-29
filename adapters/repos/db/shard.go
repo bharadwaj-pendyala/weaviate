@@ -406,8 +406,8 @@ type Shard struct {
 	// True means the local rangeable bucket has all the data for this
 	// property — either the property was created with
 	// IndexRangeFilters=true (no migration ever ran) or an
-	// enable-rangeable / repair-rangeable migration completed locally
-	// (the flip decision was made durable in [runtimeSwap]).
+	// enable-rangeable / repair-rangeable migration ran
+	// OnMigrationComplete on this shard, which is the only writer of true.
 	//
 	// False means the rangeable bucket is mid-migration on THIS replica:
 	// a PreReindexHook created an empty main bucket but the per-shard
@@ -425,8 +425,9 @@ type Shard struct {
 	// Read on every range-filter query plan, so kept under a fast
 	// RWMutex rather than a sync.Map. Default value (missing key)
 	// returns true via IsRangeableLocallyReady — at shard init we
-	// pessimistically set false for any migration whose flip is not yet
-	// durable, and OnMigrationComplete flips it back to true.
+	// pessimistically set false for any rangeable migration that is not
+	// yet promoted (a decided flip is not enough), and
+	// OnMigrationComplete flips it back to true.
 	rangeableLocalReadyMu sync.RWMutex
 	rangeableLocalReady   map[string]bool
 
@@ -774,9 +775,9 @@ func (s *Shard) isFallbackToSearchable() bool {
 //
 // Returns true when:
 //   - The per-shard map has an explicit `true` entry. Set by
-//     [setRangeableLocallyReady] after a local
-//     enable-rangeable / repair-rangeable migration's swap completes
-//     (the durable flip decision + OnMigrationComplete), OR
+//     [setRangeableLocallyReady] from a local enable-rangeable /
+//     repair-rangeable migration's OnMigrationComplete, which is the
+//     only writer of true, OR
 //   - There is no explicit entry in the map AND the rangeable bucket
 //     for this prop exists in the LSM store. This covers native
 //     rangeable props (created with IndexRangeFilters=true, bucket
@@ -785,8 +786,9 @@ func (s *Shard) isFallbackToSearchable() bool {
 //     in-memory only and starts empty).
 //
 // Returns false when:
-//   - The per-shard map has an explicit `false` entry (set by the
-//     migration's PreReindexHook), OR
+//   - The per-shard map has an explicit `false` entry, written either
+//     by the migration's PreReindexHook or, at shard init, by
+//     [markInFlightRangeableMigrationsNotReady], OR
 //   - There is no explicit entry AND the rangeable bucket does not
 //     exist in the LSM store yet. This catches the narrow window where
 //     another replica's runtimeSwap has already flipped the
