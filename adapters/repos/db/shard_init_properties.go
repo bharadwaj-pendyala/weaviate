@@ -356,7 +356,7 @@ func cleanStaleMigrationDirsIn(ctx context.Context, scope migrationDirScope,
 		if err := os.RemoveAll(path); err != nil {
 			logger.WithField("path", path).
 				Errorf("failed to clean up stale migration directory after index DELETE: %v; "+
-					"subsequent re-enable will fail loudly on the stale completion state until "+
+					"subsequent re-enable will fail loudly on the migration record until "+
 					"this directory is removed manually", err)
 		}
 	}
@@ -368,7 +368,7 @@ func cleanStaleMigrationDirsIn(ctx context.Context, scope migrationDirScope,
 // (propName, indexType) on this shard. Mirrors the DELETE-handler cleanup
 // (updatePropertyBuckets) on the CANCEL→retry axis: after a cancel, the
 // next submit must start from a clean slate, otherwise the retry sees a
-// stale in-flight state + partial __reindex/__ingest sidecars from the
+// stale record + partial __reindex/__ingest sidecars from the
 // cancelled run, short-circuits the iteration to a 50-entry no-op, flips
 // the schema flag, and reports success against an empty-or-partial bucket.
 // Same Sev 1 family as the DELETE-then-re-enable silent failure fixed in
@@ -384,15 +384,15 @@ func cleanStaleMigrationDirsIn(ctx context.Context, scope migrationDirScope,
 //  2. Sidecar directories on disk are removed.
 //
 //  3. The .migrations/<dir>/ tracker for this (prop, indexType) tuple is
-//     removed, taking its payload.mig and its completion state with it.
-//     That also frees the generation: the next task picks one above the
-//     highest tracker directory name left on disk.
+//     removed, taking its payload.mig with it. The record in
+//     .migrations/records/ deliberately survives, so a retry cannot be
+//     handed the generation the abandoned run still claims.
 //
 // Failures to remove an individual directory at steps 2/3 are logged but not
 // propagated: the caller (cancel handler / submit handler) cannot meaningfully
-// recover, and the defense in depth in OnAfterLsmInitAsync (the
-// stale-completion check) will still fail loudly rather than silently report
-// success if a partial directory survives. Step 1 errors ARE propagated
+// recover, and the defense in depth in OnAfterLsmInitAsync (the record check)
+// will still fail loudly rather than silently report success if a partial
+// directory survives. Step 1 errors ARE propagated
 // because they indicate a bucket can't be cleanly disconnected from the LSM
 // layer — proceeding to remove its files would corrupt the store. So is a
 // .migrations that cannot be listed at all: the preserve pass reads that same
