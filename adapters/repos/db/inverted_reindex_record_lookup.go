@@ -15,24 +15,29 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync/atomic"
 
 	"github.com/sirupsen/logrus"
 )
+
+// migrationRecordReads counts the record-set reads [migrationRecordsAt] has
+// attempted. One read per shard is the cost every caller is written for; a
+// probe that reads once per tuple or once per property instead shows up only
+// as startup latency, so the count is pinned by assertion rather than left to
+// be noticed.
+var migrationRecordReads atomic.Uint64
 
 // migrationRecordsAt reads one shard's records straight from disk, for sweeps
 // and gates deciding about a cold tenant. someRecordsUnreadable scopes
 // withholding to the whole shard; recordSetUnreadable is the stronger fault
 // (nothing could be read), so a caller that would report clean must fail open.
 func migrationRecordsAt(lsmPath string, logger logrus.FieldLogger) (records []MigrationRecord, someRecordsUnreadable, recordSetUnreadable bool) {
+	migrationRecordReads.Add(1)
 	store := NewMigrationRecordStore(lsmPath, logger)
 	if err := store.Load(); err != nil {
 		logger.WithField("path", store.Dir()).Errorf("read migration records: %v", err)
 		return nil, true, true
 	}
-	// One line per read, even on the healthy path — a per-tuple read
-	// regression would otherwise be invisible until startup latency shows it.
-	logger.WithField("path", store.Dir()).WithField("records", len(store.Records())).
-		Debug("read migration records")
 	return store.Records(), len(store.Unreadable()) > 0, false
 }
 

@@ -16,11 +16,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/sirupsen/logrus"
 	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/require"
 	"github.com/weaviate/weaviate/cluster/distributedtask"
@@ -426,12 +424,12 @@ func TestLocalCallbacksDoneReadsEachShardsRecordsOnce(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			logger, hook := logrustest.NewNullLogger()
-			logger.SetLevel(logrus.DebugLevel)
+			logger, _ := logrustest.NewNullLogger()
 			p := NewReindexProvider(
 				&DB{indices: map[string]*Index{indexID(entschema.ClassName(className)): idx}},
 				nil, nil, logger, node, nil, ctx)
 
+			readsBefore := migrationRecordReads.Load()
 			done := p.LocalCallbacksDone(&distributedtask.Task{
 				Namespace:      ReindexNamespace,
 				TaskDescriptor: distributedtask.TaskDescriptor{ID: "T_cost", Version: 1},
@@ -440,13 +438,8 @@ func TestLocalCallbacksDoneReadsEachShardsRecordsOnce(t *testing.T) {
 			}, node)
 			require.Equal(t, tt.wantDone, done)
 
-			reads := 0
-			for _, entry := range hook.AllEntries() {
-				if strings.Contains(entry.Message, "read migration records") {
-					reads++
-				}
-			}
-			require.Equal(t, 1, reads, "one read per shard, whatever the payload's tuple count")
+			require.Equal(t, uint64(1), migrationRecordReads.Load()-readsBefore,
+				"one read per shard, whatever the payload's tuple count")
 			require.False(t, cold.isLoaded())
 		})
 	}

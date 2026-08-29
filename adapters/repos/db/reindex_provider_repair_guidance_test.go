@@ -323,12 +323,12 @@ func TestHasLocalPostMergeStateReadsEachShardsRecordsOnce(t *testing.T) {
 	mkMigrationRecordFor(t, concrete.pathLSM(), postMergeTrackerDir(t, "title"),
 		"T_cancel", 1, "u1__n1", ReindexTypeChangeTokenization, MigrationStateIterating, "title")
 
-	logger, hook := logrustest.NewNullLogger()
-	logger.SetLevel(logrus.DebugLevel)
+	logger, _ := logrustest.NewNullLogger()
 	p := NewReindexProvider(
 		&DB{indices: map[string]*Index{indexID(entschema.ClassName("C")): idx}},
 		nil, nil, logger, "n1", nil, ctx)
 
+	readsBefore := migrationRecordReads.Load()
 	require.False(t, p.hasLocalPostMergeState(ctx, &ReindexTaskPayload{
 		MigrationType: ReindexTypeChangeTokenization,
 		Collection:    "C",
@@ -336,13 +336,7 @@ func TestHasLocalPostMergeStateReadsEachShardsRecordsOnce(t *testing.T) {
 		UnitToShard:   map[string]string{"u1": shard.Name(), "u2": shard.Name()},
 	}))
 
-	reads := 0
-	for _, entry := range hook.AllEntries() {
-		if strings.Contains(entry.Message, "read migration records") {
-			reads++
-		}
-	}
-	require.Equal(t, 1, reads,
+	require.Equal(t, uint64(1), migrationRecordReads.Load()-readsBefore,
 		"one read for the one shard the payload names, whatever the property count")
 }
 

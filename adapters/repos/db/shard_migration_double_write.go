@@ -119,6 +119,12 @@ type propValueIndexState struct {
 	// overlay is not every mirror's answer. Checked once per mirrored write,
 	// so the normal path stays at one analysis.
 	overlaysDiverge bool
+	// conflicts is the standing set of properties two live registrations
+	// analyze differently. Carried so the warning can be emitted on the
+	// transition: re-deriving it costs nothing, but re-reporting it would
+	// cost one line per still-conflicting property on every mutation, and a
+	// per-property teardown mutates once per property.
+	conflicts []string
 	// analyses names what one mirrored write owes. Normally one entry: every
 	// registration analyzes each property the same way, so a single analysis
 	// serves them all. Two migrations that overlay one property differently
@@ -474,17 +480,26 @@ func (s *Shard) registerDoubleWriteWithScope(props []string, overlay map[string]
 }
 
 // mutateScopeRegs re-derives the scope from whatever registrations fn leaves
-// behind, in the same atomic transition, so the two can never drift apart. The
-// conflict report is logged after the mutex is released.
+// behind, in the same atomic transition, so the two can never drift apart.
+// Only properties whose conflict is new are reported, and only after the mutex
+// is released.
 func (s *Shard) mutateScopeRegs(fn func(cur propValueIndexState) propValueIndexState) {
-	var conflicts []string
+	var appeared []string
 	s.mutatePropValueIndexState(func(cur propValueIndexState) propValueIndexState {
+		standing := cur.conflicts
 		cur = fn(cur)
+		var conflicts []string
 		cur.scope, conflicts = deriveScope(cur.scopeRegs)
 		cur.overlaysDiverge = len(conflicts) > 0
+		cur.conflicts = conflicts
+		for _, prop := range conflicts {
+			if !slices.Contains(standing, prop) {
+				appeared = append(appeared, prop)
+			}
+		}
 		return cur
 	})
-	for _, prop := range conflicts {
+	for _, prop := range appeared {
 		// Each mirror is served its own analysis from here on, so this costs
 		// an extra analysis per write rather than wrong terms. Still worth
 		// telling an operator: it means two migrations are live on one
