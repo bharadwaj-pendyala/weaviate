@@ -50,9 +50,9 @@ func testMigrationSubject(version uint64, code MigrationStrategyCode, props ...s
 	subject.CanonicalDirs = map[string]string{}
 	subject.SidecarDirs = map[string]string{}
 	for _, prop := range props {
-		subject.StagedDirs[prop] = fmt.Sprintf("m_%d_%s", version, prop)
+		subject.StagedDirs[prop] = fmt.Sprintf("property_%s__g%d_ingest", prop, version)
 		subject.CanonicalDirs[prop] = "property_" + prop
-		subject.SidecarDirs[prop] = fmt.Sprintf("m_%d_%s_sidecar", version, prop)
+		subject.SidecarDirs[prop] = fmt.Sprintf("property_%s__s%d_reindex", prop, version)
 	}
 	return subject
 }
@@ -177,9 +177,9 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 		return valid(func(env map[string]any) {
 			subject := env["subject"].(map[string]any)
 			subject["properties"] = []string{"title", "body"}
-			subject["stagedDirs"].(map[string]any)["body"] = "m_42_body"
+			subject["stagedDirs"].(map[string]any)["body"] = "property_body__g42_ingest"
 			subject["canonicalDirs"].(map[string]any)["body"] = "property_body"
-			subject["sidecarDirs"].(map[string]any)["body"] = "m_42_body_sidecar"
+			subject["sidecarDirs"].(map[string]any)["body"] = "property_body__s42_reindex"
 			mutate(subject, env)
 		})
 	}
@@ -264,7 +264,7 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 					"displacedDirs": map[string]any{"title": subject["stagedDirs"].(map[string]any)["title"]},
 				}
 			}),
-			wantErr: `names directory "m_42_title" as both the staged directory of property "title" and the displaced directory of property "title"`,
+			wantErr: `names directory "property_title__g42_ingest" as both the staged directory of property "title" and the displaced directory of property "title"`,
 		},
 		{
 			// Promoting title removes body's only staged copy, and body then
@@ -275,7 +275,7 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 				subject := env["subject"].(map[string]any)
 				subject["properties"] = []string{"title", "body"}
 				staged := subject["stagedDirs"].(map[string]any)
-				staged["body"] = "m_42_body"
+				staged["body"] = "property_body__g42_ingest"
 				subject["canonicalDirs"].(map[string]any)["body"] = "property_body"
 				env["state"] = string(MigrationStateSwapped)
 				env["flip"] = map[string]any{
@@ -283,7 +283,7 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 					"displacedDirs": map[string]any{"title": staged["body"]},
 				}
 			}),
-			wantErr: `names directory "m_42_body" as both the staged directory of property "body" and the displaced directory of property "title"`,
+			wantErr: `names directory "property_body__g42_ingest" as both the staged directory of property "body" and the displaced directory of property "title"`,
 		},
 		{
 			// ShutdownStagedBuckets closes the directory the property it is
@@ -296,7 +296,7 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 				sidecars := subject["sidecarDirs"].(map[string]any)
 				sidecars["body"] = sidecars["title"]
 			}),
-			wantErr: `names directory "m_42_title_sidecar" as both the sidecar directory of property "body" and the sidecar directory of property "title"`,
+			wantErr: `names directory "property_title__s42_reindex" as both the sidecar directory of property "body" and the sidecar directory of property "title"`,
 		},
 		{
 			// A started promotion is what lets a missing staged directory read
@@ -351,21 +351,21 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 				staged := subject["stagedDirs"].(map[string]any)
 				staged["body"] = staged["title"]
 			}),
-			wantErr: `names directory "m_42_title" as both the staged directory of property "body" and the staged directory of property "title"`,
+			wantErr: `names directory "property_title__g42_ingest" as both the staged directory of property "body" and the staged directory of property "title"`,
 		},
 		{
 			name: "a property staged into another property's sidecar directory",
 			data: twoProperties(func(subject, _ map[string]any) {
 				subject["stagedDirs"].(map[string]any)["body"] = subject["sidecarDirs"].(map[string]any)["title"]
 			}),
-			wantErr: `names directory "m_42_title_sidecar" as both the staged directory of property "body" and the sidecar directory of property "title"`,
+			wantErr: `names directory "property_title__s42_reindex" as both the staged directory of property "body" and the sidecar directory of property "title"`,
 		},
 		{
 			name: "a property staged into its own sidecar directory",
 			data: twoProperties(func(subject, _ map[string]any) {
 				subject["stagedDirs"].(map[string]any)["title"] = subject["sidecarDirs"].(map[string]any)["title"]
 			}),
-			wantErr: `names directory "m_42_title_sidecar" as both the staged directory of property "title" and the sidecar directory of property "title"`,
+			wantErr: `names directory "property_title__s42_reindex" as both the staged directory of property "title" and the sidecar directory of property "title"`,
 		},
 		{
 			name: "two properties naming the same canonical directory",
@@ -405,7 +405,7 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 			data: valid(func(env map[string]any) {
 				env["subject"].(map[string]any)["sidecarDirs"].(map[string]any)["title"] = "property_body_searchable"
 			}),
-			wantErr: `names sidecar directory "property_body_searchable", which is a property's own bucket rather than a sidecar of one`,
+			wantErr: `names sidecar directory "property_body_searchable", which is not shaped like a sidecar of a property bucket`,
 		},
 		{
 			name: "a flip that displaced a sidecar directory",
@@ -416,7 +416,7 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 					"displacedDirs": map[string]any{"title": subject["sidecarDirs"].(map[string]any)["body"]},
 				}
 			}),
-			wantErr: `names directory "m_42_body_sidecar" as both the sidecar directory of property "body" and the displaced directory of property "title"`,
+			wantErr: `names directory "property_body__s42_reindex" as both the sidecar directory of property "body" and the displaced directory of property "title"`,
 		},
 		{
 			name: "a flip that displaced another property's canonical directory",
@@ -435,10 +435,10 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 				env["state"] = string(MigrationStateSwapped)
 				env["flip"] = map[string]any{
 					"flipped":       []string{"title", "body"},
-					"displacedDirs": map[string]any{"title": "m_41_shared", "body": "m_41_shared"},
+					"displacedDirs": map[string]any{"title": "property_shared__g41_ingest", "body": "property_shared__g41_ingest"},
 				}
 			}),
-			wantErr: `names directory "m_41_shared" as both the displaced directory of property "body" and the displaced directory of property "title"`,
+			wantErr: `names directory "property_shared__g41_ingest" as both the displaced directory of property "body" and the displaced directory of property "title"`,
 		},
 		{
 			// Reclaiming this handle hands the shard's whole migration tree
@@ -465,7 +465,7 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 			data: valid(func(env map[string]any) {
 				env["subject"].(map[string]any)["stagedDirs"].(map[string]any)["title"] = "property_body_searchable"
 			}),
-			wantErr: `names staged directory "property_body_searchable", which is a property's own bucket rather than a sidecar of one`,
+			wantErr: `names staged directory "property_body_searchable", which is not shaped like a sidecar of a property bucket`,
 		},
 		{
 			// removeTrackerDir joins this onto .migrations, so the tracker
@@ -975,7 +975,7 @@ func TestDecodeMigrationRecordRejectsEscapingHandles(t *testing.T) {
 			place: func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) {
 				s.StagedDirs = map[string]string{"title": h}
 			},
-			handle: "m_42_..title",
+			handle: "property_..title__g42_ingest",
 		},
 		{
 			// No writer emits a nested handle: every one is a strategy prefix
@@ -985,7 +985,7 @@ func TestDecodeMigrationRecordRejectsEscapingHandles(t *testing.T) {
 			place: func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) {
 				s.SidecarDirs = map[string]string{"title": h}
 			},
-			handle: "m_42_tracker/searchable/title", wantErr: true,
+			handle: "property_tracker__g42_ingest/searchable/title", wantErr: true,
 		},
 		{
 			name:   "an empty handle is the ordinary names-none",
@@ -1022,7 +1022,7 @@ func TestDecodeMigrationRecordRejectsEscapingHandles(t *testing.T) {
 		{
 			name: "a poisoned staged-dirs key",
 			place: func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) {
-				s.StagedDirs = map[string]string{h: "m_42_title"}
+				s.StagedDirs = map[string]string{h: "property_title__g42_ingest"}
 			},
 			handle: "../../evil", wantErr: true,
 		},
@@ -1036,14 +1036,14 @@ func TestDecodeMigrationRecordRejectsEscapingHandles(t *testing.T) {
 		{
 			name: "a poisoned sidecar-dirs key",
 			place: func(s *MigrationSubject, _ *migrationFlipEnvelope, h string) {
-				s.SidecarDirs = map[string]string{h: "m_42_title"}
+				s.SidecarDirs = map[string]string{h: "property_title__g42_ingest"}
 			},
 			handle: "../../evil", wantErr: true,
 		},
 		{
 			name: "a poisoned displaced-dirs key",
 			place: func(_ *MigrationSubject, f *migrationFlipEnvelope, h string) {
-				f.DisplacedDirs = map[string]string{h: "m_42_title"}
+				f.DisplacedDirs = map[string]string{h: "property_title__g42_ingest"}
 			},
 			handle: "../../evil", wantErr: true,
 		},
@@ -1130,7 +1130,7 @@ func TestTheWriterRefusesWhatTheLoaderWouldReject(t *testing.T) {
 				s.StagedDirs = map[string]string{"title": "property_body_searchable"}
 			},
 			because: "a staged handle is reclaimed on every teardown path, so a live bucket named there is deleted",
-			wantErr: `names staged directory "property_body_searchable", which is a property's own bucket rather than a sidecar of one`,
+			wantErr: `names staged directory "property_body_searchable", which is not shaped like a sidecar of a property bucket`,
 		},
 		{
 			name: "a staged directory that is the object store",
@@ -1183,6 +1183,12 @@ func TestTheLargestRecordTheWriterCanBuildFitsTheLoadersBound(t *testing.T) {
 		s := fmt.Sprintf("%s_%d_", role, i)
 		return s + strings.Repeat("x", maxDirEntryNameBytes-len(s))
 	}
+	// Staged and sidecar handles must carry the shape the writer emits.
+	longestSidecar := func(role string, i int) string {
+		s := fmt.Sprintf("property_%s_%d__", role, i)
+		const tail = "_ingest"
+		return s + strings.Repeat("x", maxDirEntryNameBytes-len(s)-len(tail)) + tail
+	}
 
 	subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize)
 	subject.TrackerDir = longest("tracker", 0)
@@ -1194,9 +1200,9 @@ func TestTheLargestRecordTheWriterCanBuildFitsTheLoadersBound(t *testing.T) {
 	for i := range subject.Properties {
 		prop := longest("property", i)
 		subject.Properties[i] = prop
-		subject.StagedDirs[prop] = longest("staged", i)
+		subject.StagedDirs[prop] = longestSidecar("staged", i)
 		subject.CanonicalDirs[prop] = longest("canonical", i)
-		subject.SidecarDirs[prop] = longest("sidecar", i)
+		subject.SidecarDirs[prop] = longestSidecar("sidecar", i)
 		displaced[prop] = longest("displaced", i)
 	}
 
@@ -1237,7 +1243,7 @@ func TestTheLargestRecordTheWriterCanBuildFitsTheLoadersBound(t *testing.T) {
 func TestAnOversizedRecordIsRefusedByTheWriterToo(t *testing.T) {
 	subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 	for i := 0; i < 40_000; i++ {
-		pad := fmt.Sprintf("m_42_pad_%06d%s", i, strings.Repeat("x", 200))
+		pad := fmt.Sprintf("property_pad__g42%06d%s_ingest", i, strings.Repeat("x", 200))
 		subject.SidecarDirs[fmt.Sprintf("pad_%06d", i)] = pad
 	}
 	oversized := NewMigrationRecordMerged(subject)
@@ -1277,13 +1283,13 @@ func TestEveryPropertyBucketCarriesTheMigrationPrefix(t *testing.T) {
 		helpers.BucketRangeableFromPropNameLSM("title"),
 	} {
 		require.True(t, strings.HasPrefix(bucket, migrationPropertyBucketPrefix), bucket)
-		require.True(t, migrationHandleIsLiveBucket(bucket),
+		require.False(t, migrationHandleIsSidecarShaped(bucket),
 			"a property's own bucket must never pass as a migration's staged copy")
 	}
 	// And a sidecar of one must still pass, or the rule refuses what the
 	// writer emits.
-	require.False(t, migrationHandleIsLiveBucket("property_title_searchable__retokenize_ingest_1"))
-	require.False(t, migrationHandleIsLiveBucket("property_title_searchable__blockmax_map_2"))
-	require.False(t, migrationHandleIsLiveBucket("m_42_title"),
+	require.True(t, migrationHandleIsSidecarShaped("property_title_searchable__retokenize_ingest_1"))
+	require.True(t, migrationHandleIsSidecarShaped("property_title_searchable__blockmax_map_2"))
+	require.True(t, migrationHandleIsSidecarShaped("property_title__g42_ingest"),
 		"a handle that is no property bucket names nothing the shard serves from")
 }

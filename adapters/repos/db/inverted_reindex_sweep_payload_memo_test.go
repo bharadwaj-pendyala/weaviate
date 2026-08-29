@@ -98,7 +98,7 @@ func TestSweepReadsEachTrackerPayloadAtMostOnce(t *testing.T) {
 	recorded := writeSweepMemoFixtures(t)
 	const answeredByRecord = "enable_filterable_cat_dog_1"
 	mkMigrationRecord(t, recorded, answeredByRecord, MigrationStateIterating,
-		map[string]string{"cat": "staged_cat", "dog": "staged_dog"})
+		map[string]string{"cat": "property_cat__g1_ingest", "dog": "property_dog__g1_ingest"})
 
 	withRecord := migrationSweepStateFor(recorded, "cat", logger)
 	cleanStaleMigrationDirsAt(t.Context(), recorded, "cat", "filterable", logger, withRecord)

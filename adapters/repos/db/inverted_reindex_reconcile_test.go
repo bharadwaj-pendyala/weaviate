@@ -339,7 +339,7 @@ func TestReconcileMergedDisposition(t *testing.T) {
 			wantState:      MigrationStatePromoted,
 			wantRecord:     true,
 			wantStagedGone: true,
-			wantCanonical:  "m_42_title",
+			wantCanonical:  "property_title__g42_ingest",
 		},
 		{
 			name:           "task cancelled: discard the staged copy, leave the canonical bucket alone",
@@ -379,7 +379,7 @@ func TestReconcileMergedDisposition(t *testing.T) {
 			wantState:      MigrationStatePromoted,
 			wantRecord:     true,
 			wantStagedGone: true,
-			wantCanonical:  "m_42_title",
+			wantCanonical:  "property_title__g42_ingest",
 		},
 		{
 			// Two absences at once, which is the one reading a node still
@@ -433,9 +433,9 @@ func TestReconcileMergedDisposition(t *testing.T) {
 			subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 			subject.TaskID = taskID
 			if tt.noStagedDir {
-				f.mkdirs("m_42_title_sidecar", "property_title")
+				f.mkdirs("property_title__s42_reindex", "property_title")
 			} else {
-				f.mkdirs("m_42_title", "m_42_title_sidecar", "property_title")
+				f.mkdirs("property_title__g42_ingest", "property_title__s42_reindex", "property_title")
 			}
 			f.put(NewMigrationRecordMerged(subject))
 
@@ -446,7 +446,7 @@ func TestReconcileMergedDisposition(t *testing.T) {
 			if tt.wantRecord {
 				require.Equal(t, tt.wantState, state)
 			}
-			require.Equal(t, !tt.wantStagedGone, f.exists("m_42_title"))
+			require.Equal(t, !tt.wantStagedGone, f.exists("property_title__g42_ingest"))
 			require.True(t, f.exists("property_title"), "the canonical bucket must survive every disposition")
 			require.Equal(t, tt.wantCanonical, f.contentOf("property_title"))
 			f.requireMigrationDirsTrackRecords()
@@ -478,16 +478,16 @@ func TestReconcileSwappedProbe(t *testing.T) {
 	}{
 		{
 			name:             "both present: whether or not the crash beat the first flip, the probe reads the same two handles",
-			present:          []string{"m_42_title", "property_title"},
+			present:          []string{"property_title__g42_ingest", "property_title"},
 			wantState:        MigrationStatePromoted,
-			wantCanonical:    "m_42_title",
+			wantCanonical:    "property_title__g42_ingest",
 			wantCanonicalDir: true,
 		},
 		{
 			name:             "staged only: the displaced directory is already gone, promote",
-			present:          []string{"m_42_title"},
+			present:          []string{"property_title__g42_ingest"},
 			wantState:        MigrationStatePromoted,
-			wantCanonical:    "m_42_title",
+			wantCanonical:    "property_title__g42_ingest",
 			wantCanonicalDir: true,
 		},
 		{
@@ -607,7 +607,7 @@ func TestAbandonPromotionKeepsARenameThatAlreadyMoved(t *testing.T) {
 					filepath.Join(f.lsmPath, "property_title"), []byte("not a directory"), 0o600))
 				r := newMigrationReconciler(f.store, f.lsmPath, f.logger, f.deps())
 				updated, promoted, err := r.promoteProperty(rec, f.store.Records(), "title",
-					promotionDirs{staged: "m_42_title", canonical: "property_title"})
+					promotionDirs{staged: "property_title__g42_ingest", canonical: "property_title"})
 				require.Error(t, err, "fixture: the rename has to fail for there to be anything to take back")
 				require.False(t, promoted)
 				return updated
@@ -620,7 +620,7 @@ func TestAbandonPromotionKeepsARenameThatAlreadyMoved(t *testing.T) {
 			name: "the staged directory is gone, so the rename moved it before failing",
 			drive: func(t *testing.T, f *reconcileFixture, rec MigrationRecordSwapped) MigrationRecordSwapped {
 				r := newMigrationReconciler(f.store, f.lsmPath, f.logger, f.deps())
-				return r.abandonPromotion(rec, "title", "m_42_title")
+				return r.abandonPromotion(rec, "title", "property_title__g42_ingest")
 			},
 			wantKept: true,
 			reason:   "only the record says which directory under the canonical name this promotion produced",
@@ -632,7 +632,7 @@ func TestAbandonPromotionKeepsARenameThatAlreadyMoved(t *testing.T) {
 			f := newReconcileFixture(t)
 			subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 			if tt.stagedThere {
-				f.mkdirs("m_42_title")
+				f.mkdirs("property_title__g42_ingest")
 			}
 			rec := NewMigrationRecordSwapped(subject, []string{"title"},
 				map[string]string{"title": "property_title"}).
@@ -682,7 +682,7 @@ func TestReconcileFlippedMigrationIgnoresAbandonedTask(t *testing.T) {
 
 			subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 			f.tasks = []*distributedtask.Task{testTask(subject.TaskID, 42, distributedtask.TaskStatusCancelled)}
-			f.mkdirs("m_42_title", "property_title")
+			f.mkdirs("property_title__g42_ingest", "property_title")
 			f.put(tt.record(subject))
 
 			f.reconcile()
@@ -724,47 +724,47 @@ func TestReconcileReverseEdge(t *testing.T) {
 		{
 			name:      "iterated with every owned directory on disk: stay iterated",
 			plant:     func(s MigrationSubject) MigrationRecord { return NewMigrationRecordIterated(s) },
-			present:   []string{"m_42_title", "m_42_title_sidecar", "property_title"},
+			present:   []string{"property_title__g42_ingest", "property_title__s42_reindex", "property_title"},
 			wantState: MigrationStateIterated,
 		},
 		{
 			name:        "iterated and the directory the rebuild wrote into is gone",
 			plant:       func(s MigrationSubject) MigrationRecord { return NewMigrationRecordIterated(s) },
-			present:     []string{"m_42_title", "property_title"},
+			present:     []string{"property_title__g42_ingest", "property_title"},
 			wantState:   MigrationStateIterating,
 			wantRestart: true,
 		},
 		{
 			name:        "iterated and the directory the mirror writes into is gone",
 			plant:       func(s MigrationSubject) MigrationRecord { return NewMigrationRecordIterated(s) },
-			present:     []string{"m_42_title_sidecar", "property_title"},
+			present:     []string{"property_title__s42_reindex", "property_title"},
 			wantState:   MigrationStateIterating,
 			wantRestart: true,
 		},
 		{
 			name:      "a checkpoint with every owned directory on disk keeps its place",
 			plant:     checkpointed,
-			present:   []string{"m_42_title", "m_42_title_sidecar", "property_title"},
+			present:   []string{"property_title__g42_ingest", "property_title__s42_reindex", "property_title"},
 			wantState: MigrationStateIterating,
 		},
 		{
 			name:        "a checkpoint whose rebuild directory is gone restarts",
 			plant:       checkpointed,
-			present:     []string{"m_42_title", "property_title"},
+			present:     []string{"property_title__g42_ingest", "property_title"},
 			wantState:   MigrationStateIterating,
 			wantRestart: true,
 		},
 		{
 			name:        "a checkpoint whose mirror directory is gone restarts",
 			plant:       checkpointed,
-			present:     []string{"m_42_title_sidecar", "property_title"},
+			present:     []string{"property_title__s42_reindex", "property_title"},
 			wantState:   MigrationStateIterating,
 			wantRestart: true,
 		},
 		{
 			name:      "no checkpoint with every owned directory on disk keeps its place",
 			plant:     uncheckpointed,
-			present:   []string{"m_42_title", "m_42_title_sidecar", "property_title"},
+			present:   []string{"property_title__g42_ingest", "property_title__s42_reindex", "property_title"},
 			wantState: MigrationStateIterating,
 		},
 		{
@@ -773,14 +773,14 @@ func TestReconcileReverseEdge(t *testing.T) {
 			// mirror's directory is the one that went missing.
 			name:        "no checkpoint and the directory the mirror writes into is gone",
 			plant:       uncheckpointed,
-			present:     []string{"m_42_title_sidecar", "property_title"},
+			present:     []string{"property_title__s42_reindex", "property_title"},
 			wantState:   MigrationStateIterating,
 			wantRestart: true,
 		},
 		{
 			name:        "no checkpoint and the directory the rebuild writes into is gone",
 			plant:       uncheckpointed,
-			present:     []string{"m_42_title", "property_title"},
+			present:     []string{"property_title__g42_ingest", "property_title"},
 			wantState:   MigrationStateIterating,
 			wantRestart: true,
 		},
@@ -862,7 +862,7 @@ func TestReconcileNotUnderstoodWithholdsEverything(t *testing.T) {
 
 	subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 	f.tasks = []*distributedtask.Task{testTask(subject.TaskID, 42, distributedtask.TaskStatusCancelled)}
-	f.mkdirs("m_42_title", "property_title")
+	f.mkdirs("property_title__g42_ingest", "property_title")
 	f.put(NewMigrationRecordMerged(subject))
 	require.NoError(t, os.WriteFile(filepath.Join(f.store.Dir(), "99_enable_searchable.json"), []byte("{"), 0o600))
 
@@ -871,7 +871,7 @@ func TestReconcileNotUnderstoodWithholdsEverything(t *testing.T) {
 	state, present := f.state(subject.Key)
 	require.True(t, present, "a cancelled migration is not discarded while an unreadable record stands")
 	require.Equal(t, MigrationStateMerged, state)
-	require.True(t, f.exists("m_42_title"))
+	require.True(t, f.exists("property_title__g42_ingest"))
 	require.Empty(t, f.mirror.disarmed)
 }
 
@@ -906,14 +906,14 @@ func TestReconcilePromotedClosure(t *testing.T) {
 			// The other half of that rule: a directory the record still owns
 			// IS work, and one load settles it whatever the schema says.
 			name:       "a leftover with the effect still not visible: reclaim it and keep the record",
-			leftovers:  []string{"m_42_title_sidecar"},
+			leftovers:  []string{"property_title__s42_reindex"},
 			class:      testClassWithTokenization(models.PropertyTokenizationWord, "title"),
 			wantRecord: true,
 			wantWarn:   "effect is not in the schema",
 		},
 		{
 			name:       "a leftover from a retirement that partly failed is reclaimed, then the record goes",
-			leftovers:  []string{"m_42_title_sidecar"},
+			leftovers:  []string{"property_title__s42_reindex"},
 			class:      testClassWithTokenization(models.PropertyTokenizationLowercase, "title"),
 			wantRecord: false,
 		},
@@ -979,7 +979,7 @@ func TestReconcilePromotedRepairsATornPromotion(t *testing.T) {
 		{
 			name:           "the rename never reached disk: re-promote, do not reclaim",
 			stagedThere:    true,
-			wantContentAt:  "m_42_title",
+			wantContentAt:  "property_title__g42_ingest",
 			wantStagedGone: true,
 			wantRecordGone: true,
 		},
@@ -1036,7 +1036,7 @@ func TestReconcilePromotedRepairsATornPromotion(t *testing.T) {
 			subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 			var planted []string
 			if tt.stagedThere {
-				planted = append(planted, "m_42_title")
+				planted = append(planted, "property_title__g42_ingest")
 			}
 			if tt.canonicalThere {
 				planted = append(planted, "property_title")
@@ -1046,7 +1046,7 @@ func TestReconcilePromotedRepairsATornPromotion(t *testing.T) {
 
 			f.reconcile()
 
-			require.Equal(t, !tt.wantStagedGone, f.exists("m_42_title"))
+			require.Equal(t, !tt.wantStagedGone, f.exists("property_title__g42_ingest"))
 			if tt.wantContentAt == "" {
 				require.False(t, f.exists("property_title"))
 			} else {
@@ -1070,7 +1070,7 @@ func TestReconcileCommitEdgeWritesItsVerdictFirst(t *testing.T) {
 	f.class = testClassWithTokenization(models.PropertyTokenizationLowercase, "title")
 
 	subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
-	f.mkdirs("m_42_title", "property_title")
+	f.mkdirs("property_title__g42_ingest", "property_title")
 	f.put(NewMigrationRecordMerged(subject))
 
 	// Fail the action that follows the verdict: renaming the staged directory
@@ -1240,7 +1240,7 @@ func TestReconcileWithClusterTasksSettlesWhatTheLoadWithheld(t *testing.T) {
 			if tt.migrationType != "" {
 				subject.MigrationType = tt.migrationType
 			}
-			f.mkdirs("m_42_title", "m_42_title_sidecar", "property_title")
+			f.mkdirs("property_title__g42_ingest", "property_title__s42_reindex", "property_title")
 			f.put(NewMigrationRecordMerged(subject))
 			if tt.unreadable {
 				require.NoError(t, os.WriteFile(
@@ -1276,12 +1276,12 @@ func TestReconcileWithClusterTasksSettlesWhatTheLoadWithheld(t *testing.T) {
 				"the canonical bucket survives every disposition this pass takes")
 
 			if tt.wantState == "" {
-				require.False(t, f.exists("m_42_title"), "the staged copy of an abandoned migration goes")
+				require.False(t, f.exists("property_title__g42_ingest"), "the staged copy of an abandoned migration goes")
 				require.Equal(t, []string{subject.Key.String() + "/title"}, f.mirror.disarmed,
 					"the mirror is disarmed before its target is removed")
 				return
 			}
-			require.True(t, f.exists("m_42_title"),
+			require.True(t, f.exists("property_title__g42_ingest"),
 				"promotion renames a directory whose buckets are open by now; it belongs to the next load")
 
 			if tt.wantState != MigrationStateSwapped {
@@ -1291,8 +1291,8 @@ func TestReconcileWithClusterTasksSettlesWhatTheLoadWithheld(t *testing.T) {
 			f.reconcile()
 			state, _ = f.state(subject.Key)
 			require.Equal(t, MigrationStatePromoted, state)
-			require.False(t, f.exists("m_42_title"))
-			require.Equal(t, "m_42_title", f.contentOf("property_title"))
+			require.False(t, f.exists("property_title__g42_ingest"))
+			require.Equal(t, "property_title__g42_ingest", f.contentOf("property_title"))
 		})
 	}
 }
@@ -1317,8 +1317,8 @@ func TestReconcileWithClusterTasksLeavesADecidedFlipAlone(t *testing.T) {
 				return NewMigrationRecordSwapped(subject, []string{"title"},
 					map[string]string{"title": "property_title"})
 			},
-			planted:   []string{"m_42_title", "m_42_title_sidecar", "property_title"},
-			liveAt:    "m_42_title",
+			planted:   []string{"property_title__g42_ingest", "property_title__s42_reindex", "property_title"},
+			liveAt:    "property_title__g42_ingest",
 			wantState: MigrationStateSwapped,
 		},
 		{
@@ -1327,7 +1327,7 @@ func TestReconcileWithClusterTasksLeavesADecidedFlipAlone(t *testing.T) {
 				return NewMigrationRecordPromoted(subject, []string{"title"},
 					map[string]string{"title": "property_title"})
 			},
-			planted:   []string{"m_42_title_sidecar", "property_title"},
+			planted:   []string{"property_title__s42_reindex", "property_title"},
 			liveAt:    "property_title",
 			wantState: MigrationStatePromoted,
 		},
@@ -1382,32 +1382,32 @@ func TestReconcilePerShardDivergentStatesConverge(t *testing.T) {
 			arrange: func(f *reconcileFixture) {
 				subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 				subject.TaskID = taskID
-				f.mkdirs("m_42_title", "property_title")
+				f.mkdirs("property_title__g42_ingest", "property_title")
 				f.put(NewMigrationRecordSwapped(subject, []string{"title"},
 					map[string]string{"title": "property_title"}))
 			},
 			wantState:  MigrationStatePromoted,
 			wantRecord: true,
-			wantLive:   "m_42_title",
+			wantLive:   "property_title__g42_ingest",
 		},
 		{
 			name: "still merged when the task finished: commit, then promote",
 			arrange: func(f *reconcileFixture) {
 				subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 				subject.TaskID = taskID
-				f.mkdirs("m_42_title", "property_title")
+				f.mkdirs("property_title__g42_ingest", "property_title")
 				f.put(NewMigrationRecordMerged(subject))
 			},
 			wantState:  MigrationStatePromoted,
 			wantRecord: true,
-			wantLive:   "m_42_title",
+			wantLive:   "property_title__g42_ingest",
 		},
 		{
 			name: "rebuild never finished: the cluster's verdict does not complete it",
 			arrange: func(f *reconcileFixture) {
 				subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 				subject.TaskID = taskID
-				f.mkdirs("m_42_title", "m_42_title_sidecar", "property_title")
+				f.mkdirs("property_title__g42_ingest", "property_title__s42_reindex", "property_title")
 				f.put(NewMigrationRecordIterating(subject, MigrationCheckpoint{}))
 			},
 			wantState:  MigrationStateIterating,
@@ -1447,7 +1447,7 @@ func TestReconcilePerShardDivergentStatesConverge(t *testing.T) {
 			if sh.wantRecord {
 				require.Equal(t, sh.wantState, state)
 			}
-			require.Equal(t, sh.wantStaged, f.exists("m_42_title"))
+			require.Equal(t, sh.wantStaged, f.exists("property_title__g42_ingest"))
 			require.Equal(t, sh.wantLive, f.contentOf("property_title"),
 				"each shard serves what its own records and directories say")
 			f.requireMigrationDirsTrackRecords()
@@ -1468,7 +1468,7 @@ func TestPromotionWithholdsOnADirectoryItCannotStat(t *testing.T) {
 	}{
 		{
 			name:      "a staged directory that stats cleanly promotes",
-			stagedDir: func(*reconcileFixture) string { return "m_20_title" },
+			stagedDir: func(*reconcileFixture) string { return "property_title__g20_ingest" },
 			wantState: MigrationStatePromoted,
 		},
 		{
@@ -1477,7 +1477,7 @@ func TestPromotionWithholdsOnADirectoryItCannotStat(t *testing.T) {
 			// path element: a separator would no longer decode as a handle.
 			name: "a staged directory that cannot be stat'd promotes nothing",
 			stagedDir: func(*reconcileFixture) string {
-				return strings.Repeat("m", 300)
+				return "property_p__" + strings.Repeat("m", 300-len("property_p__")-len("_ingest")) + "_ingest"
 			},
 			wantState: MigrationStateSwapped,
 		},
@@ -1487,7 +1487,7 @@ func TestPromotionWithholdsOnADirectoryItCannotStat(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newReconcileFixture(t)
 			f.class = testClassWithTokenization(models.PropertyTokenizationLowercase, "title")
-			f.mkdirs("m_20_title", "property_title")
+			f.mkdirs("property_title__g20_ingest", "property_title")
 
 			subject := testMigrationSubject(20, StrategyCodeSearchableRetokenize, "title")
 			subject.StagedDirs["title"] = tt.stagedDir(f)
@@ -1576,40 +1576,40 @@ func TestEveryTeardownArmSealsTheUnit(t *testing.T) {
 			name: "the discard arm",
 			arrange: func(f *reconcileFixture) {
 				f.tasks = []*distributedtask.Task{testTask(taskID, 42, distributedtask.TaskStatusCancelled)}
-				f.mkdirs("m_42_title", "m_42_title_sidecar", "property_title")
+				f.mkdirs("property_title__g42_ingest", "property_title__s42_reindex", "property_title")
 				f.put(NewMigrationRecordMerged(subjectOf(42)))
 			},
-			heldDirs: []string{"m_42_title", "m_42_title_sidecar"},
+			heldDirs: []string{"property_title__g42_ingest", "property_title__s42_reindex"},
 		},
 		{
 			name: "the promotion arm, which removes the displaced directory before it renames",
 			arrange: func(f *reconcileFixture) {
 				subject := subjectOf(42)
-				f.mkdirs("m_42_title", "property_title")
+				f.mkdirs("property_title__g42_ingest", "property_title")
 				f.put(NewMigrationRecordSwapped(subject, []string{"title"},
 					map[string]string{"title": "property_title"}))
 			},
-			heldDirs: []string{"m_42_title"},
+			heldDirs: []string{"property_title__g42_ingest"},
 		},
 		{
 			name: "the promoted closure sweep",
 			arrange: func(f *reconcileFixture) {
 				subject := subjectOf(42)
-				f.mkdirs("m_42_title_sidecar", "property_title")
+				f.mkdirs("property_title__s42_reindex", "property_title")
 				f.put(NewMigrationRecordPromoted(subject, []string{"title"},
 					map[string]string{"title": "property_title"}))
 			},
-			heldDirs: []string{"m_42_title_sidecar"},
+			heldDirs: []string{"property_title__s42_reindex"},
 		},
 		{
 			name: "supersession's per-property retirement",
 			arrange: func(f *reconcileFixture) {
 				f.tasks = []*distributedtask.Task{testTask(taskID, 10, distributedtask.TaskStatusStarted)}
-				f.mkdirs("m_10_title", "m_10_title_sidecar", "m_20_title", "property_title")
+				f.mkdirs("property_title__g10_ingest", "property_title__s10_reindex", "property_title__g20_ingest", "property_title")
 				f.put(NewMigrationRecordMerged(subjectOf(10)))
 				f.put(swappedOn(20, "title"))
 			},
-			heldDirs: []string{"m_10_title", "m_10_title_sidecar"},
+			heldDirs: []string{"property_title__g10_ingest", "property_title__s10_reindex"},
 		},
 	}
 
@@ -1700,7 +1700,7 @@ func TestAPoisonedRecordCannotSweepTheMigrationTree(t *testing.T) {
 			// A second, ordinary record: what the poisoned one would take with
 			// it, and the reason this costs more than one leaked directory.
 			bystander := testMigrationSubject(50, StrategyCodeEnableFilterable, "title")
-			f.mkdirs("m_50_title", "property_title")
+			f.mkdirs("property_title__g50_ingest", "property_title")
 			f.put(NewMigrationRecordMerged(bystander))
 
 			poisoned := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
@@ -1769,18 +1769,18 @@ func TestReconcilePromotedRepairsEveryPropertyItCan(t *testing.T) {
 			subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, tt.props...)
 			// title holds a directory under both names; body's data never
 			// reached its canonical name.
-			f.mkdirs("m_42_title", "property_title", "m_42_body")
+			f.mkdirs("property_title__g42_ingest", "property_title", "property_body__g42_ingest")
 			f.put(NewMigrationRecordPromoted(subject, tt.props,
 				map[string]string{"title": "property_title", "body": "property_body"}))
 
 			f.reconcile()
 
 			require.True(t, f.exists("property_body"), "the sibling's repair rename must still run")
-			require.Equal(t, "m_42_body", f.contentOf("property_body"),
+			require.Equal(t, "property_body__g42_ingest", f.contentOf("property_body"),
 				"and it must move the sibling's own data, not an empty bucket")
-			require.False(t, f.exists("m_42_body"), "which leaves nothing at the staged name")
+			require.False(t, f.exists("property_body__g42_ingest"), "which leaves nothing at the staged name")
 
-			require.True(t, f.exists("m_42_title"), "the undecidable property keeps both its directories")
+			require.True(t, f.exists("property_title__g42_ingest"), "the undecidable property keeps both its directories")
 			require.True(t, f.exists("property_title"))
 			_, present := f.state(subject.Key)
 			require.True(t, present, "and the record that attributes them survives")
@@ -1800,7 +1800,7 @@ func TestReconcilePromotedRepairsEveryPropertyItCan(t *testing.T) {
 func TestNoRecordReclaimsAnotherRecordsCanonicalDirectory(t *testing.T) {
 	// contested is the directory both records name. Record 2 serves from it;
 	// record 1 must never remove it.
-	const contested = "m_42_contested"
+	const contested = "property_contested__g42_ingest"
 
 	tests := []struct {
 		name string
@@ -1855,7 +1855,7 @@ func TestNoRecordReclaimsAnotherRecordsCanonicalDirectory(t *testing.T) {
 			// directory. Nothing about it is unusual on its own.
 			victim := testMigrationSubject(50, StrategyCodeEnableFilterable, "title")
 			victim.CanonicalDirs = map[string]string{"title": contested}
-			victim.StagedDirs = map[string]string{"title": "m_50_title"}
+			victim.StagedDirs = map[string]string{"title": "property_title__g50_ingest"}
 			victim.SidecarDirs = nil
 			f.tasks = append(f.tasks,
 				testTask(victim.TaskID, victim.Key.TaskVersion, distributedtask.TaskStatusStarted))
@@ -1870,7 +1870,7 @@ func TestNoRecordReclaimsAnotherRecordsCanonicalDirectory(t *testing.T) {
 				subject.SidecarDirs = map[string]string{"title": contested}
 			}
 
-			planted := []string{contested, "m_50_title", "property_title"}
+			planted := []string{contested, "property_title__g50_ingest", "property_title"}
 			if tt.stagedThere && !tt.stagedIsContested {
 				planted = append(planted, subject.StagedDirs["title"])
 			}
@@ -1899,9 +1899,9 @@ func plantSupersededPair(f *reconcileFixture, subject MigrationSubject) {
 	f.put(NewMigrationRecordMerged(subject))
 	successor := testMigrationSubject(99, StrategyCodeSearchableRetokenize, "title")
 	successor.CanonicalDirs = map[string]string{"title": "property_title"}
-	successor.StagedDirs = map[string]string{"title": "m_99_title"}
+	successor.StagedDirs = map[string]string{"title": "property_title__g99_ingest"}
 	successor.SidecarDirs = nil
-	f.mkdirs("m_99_title")
+	f.mkdirs("property_title__g99_ingest")
 	f.put(NewMigrationRecordSwapped(successor, []string{"title"},
 		map[string]string{"title": "property_title"}))
 }

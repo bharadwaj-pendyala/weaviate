@@ -159,7 +159,7 @@ func TestCleanStaleMigrationDirsAt_PreservesCompletedGens(t *testing.T) {
 				// Directory names are opaque to every reader of a record, so
 				// the staged one only has to be this migration's own.
 				mkMigrationRecord(t, lsm, tracker.dir, tracker.state,
-					map[string]string{tracker.prop: "staged_" + tracker.dir})
+					map[string]string{tracker.prop: "property_" + tracker.prop + "__" + tracker.dir + "_ingest"})
 			}
 
 			cleanStaleMigrationDirsAt(t.Context(), lsm, tc.propName, tc.idxType, logger, nil)

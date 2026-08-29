@@ -50,13 +50,13 @@ func TestAPromotionRefusesToReplaceAnotherRecordsData(t *testing.T) {
 
 			// The bystander: an ordinary in-flight migration of another
 			// property, naming the contested directory in a live-data role.
-			const contested = "m_41_contested"
+			const contested = "property_contested__g41_ingest"
 			bystander := testMigrationSubject(41, StrategyCodeEnableFilterable, "body")
 			migrationDirsInRole(bystander, tt.role)["body"] = contested
 			f.put(NewMigrationRecordIterating(bystander, MigrationCheckpoint{}))
 
 			subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
-			f.mkdirs("m_42_title", contested, "property_title")
+			f.mkdirs("property_title__g42_ingest", contested, "property_title")
 			f.put(NewMigrationRecordSwapped(subject, []string{"title"},
 				map[string]string{"title": contested}))
 
@@ -115,7 +115,7 @@ func TestCommitMergedRefusesARecordItCouldNeverPromote(t *testing.T) {
 
 	subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 	subject.CanonicalDirs["title"] = ""
-	f.mkdirs("m_42_title")
+	f.mkdirs("property_title__g42_ingest")
 	f.tasks = []*distributedtask.Task{testTask(subject.TaskID, 42, distributedtask.TaskStatusFinished)}
 	f.put(NewMigrationRecordMerged(subject))
 
@@ -128,7 +128,7 @@ func TestCommitMergedRefusesARecordItCouldNeverPromote(t *testing.T) {
 	}
 	require.True(t, f.logged("refusing to commit the flip"),
 		"the refusal has to say why, or an operator sees a migration that simply stops")
-	require.Equal(t, "m_42_title", f.contentOf("m_42_title"),
+	require.Equal(t, "property_title__g42_ingest", f.contentOf("property_title__g42_ingest"),
 		"and the staged data the flip would have promoted is untouched")
 }
 
@@ -140,14 +140,14 @@ func TestADiscardKeepsAnotherRecordsStagedCopy(t *testing.T) {
 	f := newReconcileFixture(t)
 	f.class = testClassWithTokenization(models.PropertyTokenizationWord, "title")
 
-	const contested = "m_shared_staged"
+	const contested = "property_shared__g1_ingest"
 	bystander := testMigrationSubject(41, StrategyCodeEnableFilterable, "body")
 	bystander.StagedDirs["body"] = contested
 	f.put(NewMigrationRecordIterating(bystander, MigrationCheckpoint{}))
 
 	cancelled := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 	cancelled.StagedDirs["title"] = contested
-	f.mkdirs(contested, "m_42_title_sidecar")
+	f.mkdirs(contested, "property_title__s42_reindex")
 	f.tasks = []*distributedtask.Task{
 		testTask(bystander.TaskID, 41, distributedtask.TaskStatusStarted),
 		testTask(cancelled.TaskID, 42, distributedtask.TaskStatusCancelled),

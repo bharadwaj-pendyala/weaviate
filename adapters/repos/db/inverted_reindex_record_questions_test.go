@@ -105,14 +105,14 @@ func TestMigrationRecordOwnsBucket(t *testing.T) {
 		dir  string
 		want bool
 	}{
-		{name: "a staged directory of a covered property", dir: "m_42_title", want: true},
-		{name: "a staged directory of the other covered property", dir: "m_42_body", want: true},
-		{name: "a sidecar directory the migration created", dir: "m_42_title_sidecar", want: true},
+		{name: "a staged directory of a covered property", dir: "property_title__g42_ingest", want: true},
+		{name: "a staged directory of the other covered property", dir: "property_body__g42_ingest", want: true},
+		{name: "a sidecar directory the migration created", dir: "property_title__s42_reindex", want: true},
 		{
 			name: "the canonical directory, which predates the migration and must never be reclaimed by it",
 			dir:  "property_title", want: false,
 		},
-		{name: "another migration's directory", dir: "m_43_title", want: false},
+		{name: "another migration's directory", dir: "property_title__g43_ingest", want: false},
 		{name: "no directory at all", dir: "", want: false},
 	}
 
@@ -127,7 +127,7 @@ func TestMigrationRecordOwnsBucket(t *testing.T) {
 	// would report the "nothing survives unattributed" invariant satisfied on
 	// exactly the directory that leaks.
 	ghost := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title", "body")
-	ghost.SidecarDirs["ghost"] = "m_42_ghost_sidecar"
-	require.NotContains(t, migrationOwnedDirs(ghost), "m_42_ghost_sidecar")
-	require.False(t, NewMigrationRecordMerged(ghost).OwnsBucket("m_42_ghost_sidecar"))
+	ghost.SidecarDirs["ghost"] = "property_ghost__s42_reindex"
+	require.NotContains(t, migrationOwnedDirs(ghost), "property_ghost__s42_reindex")
+	require.False(t, NewMigrationRecordMerged(ghost).OwnsBucket("property_ghost__s42_reindex"))
 }

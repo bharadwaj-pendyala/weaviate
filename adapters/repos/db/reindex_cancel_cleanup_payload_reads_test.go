@@ -59,7 +59,7 @@ func writeTracker(t *testing.T, lsm string, tr tracker) {
 	}
 	staged := map[string]string{}
 	for _, prop := range tr.props {
-		staged[prop] = "staged_" + prop + "_" + tr.dir
+		staged[prop] = "property_" + prop + "__" + tr.dir + "_ingest"
 	}
 	mkMigrationRecord(t, lsm, tr.dir, tr.record, staged)
 }
@@ -478,7 +478,7 @@ func TestGatePayloadReadCount(t *testing.T) {
 					record: MigrationStateSwapped,
 				},
 			},
-			sidecars: []string{"staged_price_cents_enable_filterable_price_cents_1"},
+			sidecars: []string{"property_price_cents__enable_filterable_price_cents_1_ingest"},
 			// A recorded flip awaiting promotion is exactly what only a load
 			// finishes, so the gate holds this shard open rather than skipping
 			// it — the reason its wantStale is false without the shard being
