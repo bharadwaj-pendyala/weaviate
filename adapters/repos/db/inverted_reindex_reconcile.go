@@ -446,7 +446,17 @@ func (r *migrationReconciler) promoteSealed(rec MigrationRecordSwapped,
 	for _, prop := range subject.Properties {
 		// A superseded property is retired by supersession; probing it here
 		// would read a successor's removal as a promotion that already ran.
+		//
+		// But superseded says retirement OWNS this property, not that it has
+		// RUN, and Promoted asserts a disk shape rather than a decision — so it
+		// has to wait for the shape. retireOneSealed writes down exactly that
+		// contract ("a directory whose removal failed must keep the record
+		// naming it; the next load retries"), and writing Promoted here is what
+		// takes the retry away.
 		if migrationPropertySuperseded(all, subject, prop) {
+			if !r.supersededPropertyIsRetired(all, subject, prop) {
+				settled = false
+			}
 			continue
 		}
 
@@ -478,6 +488,36 @@ func (r *migrationReconciler) promoteSealed(rec MigrationRecordSwapped,
 		return nil
 	}
 	return r.store.Put(NewMigrationRecordPromoted(subject, rec.Flipped(), rec.displacedDirs))
+}
+
+// supersededPropertyIsRetired reports whether retirement has actually run for
+// one superseded property, read from the disk inside the same sealed section
+// that writes the record.
+//
+// Two shapes count as retired: the staged directory is gone, or a surviving
+// successor claims it as what its own flip displaced — in which case that
+// successor owns it, and the second reader skips it under the identical
+// predicate. Nothing can re-create the directory between this probe and the
+// write, because reconciliation runs before any bucket on the shard opens.
+func (r *migrationReconciler) supersededPropertyIsRetired(all []MigrationRecord,
+	subject MigrationSubject, prop string,
+) bool {
+	staged := subject.StagedDirs[prop]
+	if staged == "" || migrationDirClaimedAsDisplaced(all, subject, staged) {
+		return true
+	}
+	there, err := r.dirExists(staged)
+	if err != nil {
+		r.logger.WithField("record", subject.Key.String()).Errorf(
+			"confirm the staged directory of superseded property %q is gone: %v", prop, err)
+		return false
+	}
+	if there {
+		r.logger.WithField("record", subject.Key.String()).Warnf(
+			"property %q is superseded but its staged directory %q is still on disk, so its retirement "+
+				"has not run; keeping the record, which is what lets the next load retry", prop, staged)
+	}
+	return !there
 }
 
 // promoteProperty renames one property's staged directory onto its canonical
@@ -757,6 +797,15 @@ func (r *migrationReconciler) repromoteWhatTheRecordOutran(all []MigrationRecord
 			continue
 		}
 		if migrationDirClaimedAsDisplaced(all, subject, staged) {
+			continue
+		}
+		if migrationPropertySuperseded(all, subject, prop) {
+			// Retirement owns this property's staged directory, and the
+			// displaced claim is strictly narrower than supersession: a
+			// successor that flipped from the canonical name — the ordinary
+			// post-restart shape — records displaced == canonical, so the claim
+			// is absent while supersession still holds. Renaming here would put
+			// this record's rebuild over the successor's.
 			continue
 		}
 		stagedThere, err := r.dirExists(staged)

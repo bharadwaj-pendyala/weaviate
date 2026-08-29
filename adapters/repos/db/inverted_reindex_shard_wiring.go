@@ -252,7 +252,7 @@ func (s *Shard) warnAboutLegacyMarkerMigrations() {
 		// which would make the marker a leftover rather than the live claim.
 		return
 	}
-	trackers, listed := migrationLegacyMarkerTrackersAt(s.pathLSM(), s.migrationRecords.Records(), "", nil)
+	trackers, listed := migrationLegacyMarkerTrackersAt(s.pathLSM(), "", nil)
 	if !listed {
 		// This is the one line an operator sees at load; every removal on this
 		// shard stays withheld until the directory can be listed.

@@ -498,7 +498,6 @@ type taskProps struct {
 // lookup answers for one tracker dir. The memo is keyed by dir alone — safe
 // because the answer is a pure function of the directory: no strategy prefix
 // is a prefix of another, so at most one can ever satisfy a given dir name.
-//
 func (c *taskPropsCache) lookup(migDir string) taskProps {
 	if c == nil {
 		answer, _ := readTaskProps(migDir)
@@ -517,7 +516,6 @@ func (c *taskPropsCache) lookup(migDir string) taskProps {
 	}
 	return answer
 }
-
 
 // count is how many payloads this cache had to read; a refusal opens none.
 func (c *taskPropsCache) count() int {

@@ -38,8 +38,9 @@ func disableSearchableIndexOnProp(t *testing.T, ctx context.Context, shard *Shar
 	t.Helper()
 	main := helpers.BucketSearchableFromPropNameLSM(propName)
 	require.NoError(t, shard.removeBucket(ctx, main))
-	shard.cleanStaleMigrationDirs(ctx, propName, "searchable", &taskPropsCache{})
-	shard.cleanStaleSidecarDirs(main)
+	sweep := migrationSweepStateFor(shard.pathLSM(), propName, shard.index.logger)
+	shard.cleanStaleMigrationDirs(ctx, propName, "searchable", sweep)
+	shard.cleanStaleSidecarDirs(ctx, main, sweep.committed)
 }
 
 // TestPromotionNeverRenamesAStagedDirTheLoadCreated pins that a load leaves a

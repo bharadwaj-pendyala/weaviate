@@ -291,6 +291,17 @@ func (s *MigrationRecordStore) Remove(key MigrationRecordKey) error {
 	return nil
 }
 
+// migrationFrozenStoreRemedy is what an operator can do about a record this
+// build cannot read. The freeze is deliberate — the file is the only thing
+// that attributes the directories it names — so the way out is to make the
+// file readable, not to write past it.
+//
+// The freeze is counted in the node-wide migration_records_not_understood_total
+// counter; which shard it is about is in the load's own log line.
+const migrationFrozenStoreRemedy = "The named file under <shard>/lsm/.migrations/records/ is the only " +
+	"thing that attributes the directories it names, so nothing here may write past it. " +
+	"Run the build that wrote it, or remove that file by hand once you have confirmed what it claims"
+
 // mayWrite is the one gate every write passes. The artifact a fault covers is
 // exactly what the freeze exists to preserve, and what a write would put in
 // its place is a guess about the migration nobody could read — so both Put and
@@ -303,11 +314,12 @@ func (s *MigrationRecordStore) mayWrite(key MigrationRecordKey) error {
 		switch u.Scope {
 		case MigrationRecordFaultStore:
 			return fmt.Errorf("refusing to write migration record %q: this build could not read %q, "+
-				"so it cannot tell what is already recorded here: %s", key, u.FileName, u.Reason)
+				"so it cannot tell what is already recorded here: %s. "+
+				"%s", key, u.FileName, u.Reason, migrationFrozenStoreRemedy)
 		case MigrationRecordFaultFile:
 			if u.FileName == name {
-				return fmt.Errorf("refusing to write migration record %q over a file this build could not read: %s",
-					key, u.Reason)
+				return fmt.Errorf("refusing to write migration record %q over a file this build could not read: %s. "+
+					"%s", key, u.Reason, migrationFrozenStoreRemedy)
 			}
 		}
 	}

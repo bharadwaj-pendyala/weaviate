@@ -168,33 +168,33 @@ func migrationSuffixes(migName string) *migrationBucketSuffixes {
 	switch {
 	case strings.HasPrefix(migName, MigrationDirSearchableMapToBlockmax):
 		return &migrationBucketSuffixes{
-			sourceBucketName: func(p string) string { return "property_" + p + "_searchable" },
+			sourceBucketName:   func(p string) string { return "property_" + p + "_searchable" },
 			ingestSuffix:       "__blockmax_ingest",
 			legacyBackupSuffix: "__blockmax_map",
 		}
 	case strings.HasPrefix(migName, MigrationDirFilterableRoaringsetRefresh):
 		return &migrationBucketSuffixes{
-			sourceBucketName: func(p string) string { return "property_" + p },
+			sourceBucketName:   func(p string) string { return "property_" + p },
 			ingestSuffix:       "__roaringset_ingest",
 			legacyBackupSuffix: "__roaringset_backup",
 		}
 	case strings.HasPrefix(migName, MigrationDirPrefixFilterableToRangeable):
 		return &migrationBucketSuffixes{
-			sourceBucketName: func(p string) string { return "property_" + p + "_rangeable" },
+			sourceBucketName:   func(p string) string { return "property_" + p + "_rangeable" },
 			ingestSuffix:       "__rangeable_ingest",
 			legacyBackupSuffix: "__rangeable_backup",
 		}
 	// Per-property dir names: "searchable_retokenize_<propName>"
 	case strings.HasPrefix(migName, MigrationDirPrefixSearchableRetokenize):
 		return &migrationBucketSuffixes{
-			sourceBucketName: func(p string) string { return "property_" + p + "_searchable" },
+			sourceBucketName:   func(p string) string { return "property_" + p + "_searchable" },
 			ingestSuffix:       "__retokenize_ingest",
 			legacyBackupSuffix: "__retokenize_backup",
 		}
 	// Per-property dir names: "filterable_retokenize_<propName>"
 	case strings.HasPrefix(migName, MigrationDirPrefixFilterableRetokenize):
 		return &migrationBucketSuffixes{
-			sourceBucketName: func(p string) string { return "property_" + p },
+			sourceBucketName:   func(p string) string { return "property_" + p },
 			ingestSuffix:       "__filt_retokenize_ingest",
 			legacyBackupSuffix: "__filt_retokenize_backup",
 		}
@@ -203,7 +203,7 @@ func migrationSuffixes(migName string) *migrationBucketSuffixes {
 	// authoritative in the migration's record; the dir name is informational.
 	case strings.HasPrefix(migName, MigrationDirPrefixEnableFilterable):
 		return &migrationBucketSuffixes{
-			sourceBucketName: func(p string) string { return "property_" + p },
+			sourceBucketName:   func(p string) string { return "property_" + p },
 			ingestSuffix:       "__enable_filterable_ingest",
 			legacyBackupSuffix: "__enable_filterable_backup",
 		}
@@ -211,7 +211,7 @@ func migrationSuffixes(migName string) *migrationBucketSuffixes {
 	// EnableSearchableStrategy.MigrationDirName).
 	case strings.HasPrefix(migName, MigrationDirPrefixEnableSearchable):
 		return &migrationBucketSuffixes{
-			sourceBucketName: func(p string) string { return "property_" + p + "_searchable" },
+			sourceBucketName:   func(p string) string { return "property_" + p + "_searchable" },
 			ingestSuffix:       "__enable_searchable_ingest",
 			legacyBackupSuffix: "__enable_searchable_backup",
 		}
@@ -219,7 +219,7 @@ func migrationSuffixes(migName string) *migrationBucketSuffixes {
 	// RebuildSearchableStrategy.MigrationDirName).
 	case strings.HasPrefix(migName, MigrationDirPrefixRebuildSearchable):
 		return &migrationBucketSuffixes{
-			sourceBucketName: func(p string) string { return "property_" + p + "_searchable" },
+			sourceBucketName:   func(p string) string { return "property_" + p + "_searchable" },
 			ingestSuffix:       "__rebuild_searchable_ingest",
 			legacyBackupSuffix: "__rebuild_searchable_backup",
 		}

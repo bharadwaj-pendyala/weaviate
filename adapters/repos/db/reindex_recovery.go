@@ -133,14 +133,14 @@ func DiscoverInFlightReindexTasks(
 				// reconstructed here MUST use the same gen as the in-flight
 				// state on disk, otherwise their SourceBucketName / Reindex
 				// SuffixName paths won't match the on-disk dirs.
-				_, generation, parseOk := parseMigrationDirName(migEntry.Name())
+				trackerPrefix, generation, parseOk := parseMigrationDirName(migEntry.Name())
 				if !parseOk {
 					logger.WithField("migrationDir", migDir).
 						Warn("reindex recovery: migration dir name missing _<gen> suffix; skipping")
 					continue
 				}
 
-				tasks, err := buildRecoveryTasks(rec, shardName, generation, logger, schemaManager)
+				tasks, err := buildRecoveryTasks(rec, shardName, trackerPrefix, generation, logger, schemaManager)
 				if err != nil {
 					logger.WithField("migrationDir", migDir).
 						Warnf("reindex recovery: skipping migration; cannot build tasks: %v", err)
@@ -176,8 +176,9 @@ func DiscoverInFlightReindexTasks(
 //
 // A recorded flip stays inside the window until promotion runs: the flip
 // lives only in the process that made it, so after a restart the property is
-// served from the canonical directory again. Past promotion, the staged copy
-// IS that directory — nothing left to mirror.
+// served from the canonical directory again. Past promotion there is nothing
+// left to mirror — usually because the staged copy became that directory, and
+// otherwise because the promotion settled by writing the property off.
 func loadReindexRecoveryRecord(migDir string, records []MigrationRecord,
 	logger logrus.FieldLogger,
 ) (reindexRecoveryRecord, bool) {
@@ -241,6 +242,7 @@ func loadReindexRecoveryRecord(migDir string, records []MigrationRecord,
 func buildRecoveryTasks(
 	rec reindexRecoveryRecord,
 	shardName string,
+	trackerPrefix string,
 	generation int,
 	logger logrus.FieldLogger,
 	schemaManager *schema.Manager,
@@ -285,18 +287,35 @@ func buildRecoveryTasks(
 			return nil, fmt.Errorf("change-tokenization requires bucketStrategy")
 		}
 		propName := payload.Properties[0]
-		raw = []*ShardReindexTaskGeneric{
-			NewRuntimeSearchableRetokenizeTask(
-				logger, propName, payload.TargetTokenization,
-				payload.Collection, payload.BucketStrategy, payload.Collection,
-				generation,
-			),
-			NewRuntimeFilterableRetokenizeTask(
-				logger,
-				propName, payload.TargetTokenization,
-				payload.Collection, payload.Collection,
-				generation,
-			),
+		// The tracker directory names which half of the fan-out this recovery
+		// is for, and only that half has state on disk. Building both gives the
+		// other one a valid record key, so it writes a durable Iterating record
+		// and arms a mirror for a migration nothing ever started — and only
+		// then fails, at the swap, with "target bucket not found". The live
+		// path asks the schema the same question
+		// ([ReindexProvider.propertyHasFilterableBucket]); here the directory
+		// answers it, and it answers before anything is written.
+		switch {
+		case strings.HasPrefix(trackerPrefix, MigrationDirPrefixSearchableRetokenize):
+			raw = []*ShardReindexTaskGeneric{
+				NewRuntimeSearchableRetokenizeTask(
+					logger, propName, payload.TargetTokenization,
+					payload.Collection, payload.BucketStrategy, payload.Collection,
+					generation,
+				),
+			}
+		case strings.HasPrefix(trackerPrefix, MigrationDirPrefixFilterableRetokenize):
+			raw = []*ShardReindexTaskGeneric{
+				NewRuntimeFilterableRetokenizeTask(
+					logger,
+					propName, payload.TargetTokenization,
+					payload.Collection, payload.Collection,
+					generation,
+				),
+			}
+		default:
+			return nil, fmt.Errorf(
+				"tracker directory %q names neither half of a change-tokenization migration", trackerPrefix)
 		}
 	case ReindexTypeChangeTokenizationFilterable:
 		if len(payload.Properties) != 1 {

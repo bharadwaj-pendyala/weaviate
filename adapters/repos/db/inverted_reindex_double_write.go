@@ -46,6 +46,16 @@ func resolveScopedDoubleWriteBucket(shard *Shard, property *inverted.Property,
 	}
 	bucketName = bucketNamer(property.Name)
 	if bucket = shard.store.Bucket(bucketName); bucket != nil {
+		// The staged name is checked for identity for the same reason the
+		// canonical fallback below is: a generation is reclaimed once its
+		// tracker directory is gone ([nextMigrationGeneration] takes the max of
+		// what is on disk), so a successor can open a bucket at the very name
+		// this mirror armed on after this one's was shut down. Following the
+		// name there writes this migration's target-form rows into the
+		// successor's data.
+		if armedBucket, known := armed.buckets[property.Name]; known && bucket != armedBucket {
+			return nil, bucketName, true
+		}
 		return bucket, bucketName, false
 	}
 

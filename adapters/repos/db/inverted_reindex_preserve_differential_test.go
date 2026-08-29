@@ -66,7 +66,7 @@ func TestThePreserveSetKeepsWhatTheMergeBaseKept(t *testing.T) {
 				lsm := shard.pathLSM()
 
 				const tracker = "searchable_retokenize_title_1"
-				mkTrackerDir(t, lsm, tracker, marker)
+				mkCompletedTracker(t, lsm, tracker, marker)
 				switch payload {
 				case "present":
 					mkRecoveryPayload(t, lsm, tracker, preserveDifferentialProp)
@@ -102,6 +102,15 @@ func sidecarDataFor(dir string) string {
 	return "segment-of-" + dir
 }
 
+// mkCompletedTracker plants a tracker directory and the completion marker that
+// says its staged data became the property's data.
+func mkCompletedTracker(t *testing.T, lsmPath, name, marker string) {
+	t.Helper()
+	mkTrackerDir(t, lsmPath, name)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(lsmPath, migrationsDir, name, marker), []byte("x"), 0o600))
+}
+
 func mkSidecarWithData(t *testing.T, lsmPath, name string) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Join(lsmPath, name), 0o755))
@@ -134,7 +143,7 @@ func TestAnUnreadableCompletionMarkerWithholds(t *testing.T) {
 	lsm := shard.pathLSM()
 
 	const tracker = "searchable_retokenize_title_1"
-	mkTrackerDir(t, lsm, tracker, "tidied.mig")
+	mkCompletedTracker(t, lsm, tracker, "tidied.mig")
 	mkRecoveryPayload(t, lsm, tracker, preserveDifferentialProp)
 	for _, sc := range preserveDifferentialDirs {
 		mkSidecarWithData(t, lsm, sc.dir)

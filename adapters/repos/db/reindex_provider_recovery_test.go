@@ -296,6 +296,14 @@ func TestLocalCallbacksDoneLeavesUnloadedShardsAlone(t *testing.T) {
 func TestBuildRecoveryTasksStampsTheIdentity(t *testing.T) {
 	// Every type the recovery switch dispatches. ReindexTypeRebuildSearchable
 	// is absent because that switch has no arm for it.
+	// trackerPrefix is the tracker directory this recovery is for, without its
+	// generation suffix. It decides which half of a change-tokenization
+	// fan-out has state on disk, and only that half is rebuilt.
+	type recoveryCase struct {
+		createReindexTasksEnumerationCase
+		name          string
+		trackerPrefix string
+	}
 	recoverable := []createReindexTasksEnumerationCase{
 		{mt: ReindexTypeChangeAlgorithm, payload: &ReindexTaskPayload{Collection: "MyClass", Properties: []string{"title"}}, wantNTasks: 1},
 		{mt: ReindexTypeRepairFilterable, payload: &ReindexTaskPayload{Collection: "MyClass", Properties: []string{"tag"}}, wantNTasks: 1},
@@ -329,18 +337,43 @@ func TestBuildRecoveryTasksStampsTheIdentity(t *testing.T) {
 		"a new migration type has to be classified here: either the recovery switch "+
 			"dispatches it and it belongs in this table, or it joins the one type that has no arm")
 
+	cases := make([]recoveryCase, 0, len(recoverable)+1)
+	for _, c := range recoverable {
+		prefix := ""
+		if c.mt == ReindexTypeChangeTokenization {
+			// Recovery rebuilds one half per tracker, so the row that named
+			// both becomes two rows of one.
+			c.wantNTasks = 1
+			cases = append(cases, recoveryCase{
+				createReindexTasksEnumerationCase: c,
+				name:                              string(c.mt) + "/filterable half",
+				trackerPrefix:                     MigrationDirPrefixFilterableRetokenize + "_title",
+			})
+			prefix = MigrationDirPrefixSearchableRetokenize + "_title"
+			cases = append(cases, recoveryCase{
+				createReindexTasksEnumerationCase: c,
+				name:                              string(c.mt) + "/searchable half",
+				trackerPrefix:                     prefix,
+			})
+			continue
+		}
+		cases = append(cases, recoveryCase{
+			createReindexTasksEnumerationCase: c, name: string(c.mt), trackerPrefix: prefix,
+		})
+	}
+
 	logger, _ := logrustest.NewNullLogger()
 	desc, unitID := testTaskIdentity()
 
-	for _, c := range recoverable {
-		t.Run(string(c.mt), func(t *testing.T) {
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
 			payload := *c.payload
 			payload.MigrationType = c.mt
 			rec := reindexRecoveryRecord{
 				TaskID: desc.ID, TaskVersion: desc.Version, UnitID: unitID, Payload: payload,
 			}
 
-			tasks, err := buildRecoveryTasks(rec, "shard-1", 1, logger, nil)
+			tasks, err := buildRecoveryTasks(rec, "shard-1", c.trackerPrefix, 1, logger, nil)
 			require.NoError(t, err)
 			require.Len(t, tasks, c.wantNTasks)
 

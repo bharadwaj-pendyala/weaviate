@@ -1594,6 +1594,22 @@ already the accepted limitation: this build preserves that data but cannot
 promote it, so the property answers from an empty bucket until an operator
 restores or downgrades (`migrationCompletionMarker`).
 
+Three things about that limitation are sharper than they read:
+
+- **The warning fires once, on the first load only.** That same load creates
+  the empty canonical directory, and `servesEmpty` compares the two names — so
+  from the second load on it reports nothing. An operator who missed the first
+  line has no second one.
+- **"Drain and promote before you change the binary" is not executable for a
+  multi-tenant collection.** The old build's only promoter runs per shard load,
+  so a tenant that has not been activated since its swap never promotes, and
+  never emits the warning either. There is no operation that drains them all.
+- **The preserve set no longer depends on reading the payload.** A
+  marker-carrying tracker whose property list cannot be learned — a v1.37.x
+  tracker has `tidied.mig` and no `payload.mig`, since payloads first ship in
+  v1.38.0 — withholds every removal on the shard rather than preserving
+  nothing.
+
 Downgrading is the mirror of it. A migration this build flipped and has not yet
 promoted keeps its live data under the staged name, and the record in
 `<shard>/lsm/.migrations/records/` is the only thing that says so. An older

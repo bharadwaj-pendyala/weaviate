@@ -49,14 +49,14 @@ func TestTheDeleteSweepParsesOnlyTheSweptPropertysTrackers(t *testing.T) {
 
 	for i := 0; i < unrelatedCompletedTrackers; i++ {
 		dir := fmt.Sprintf("enable_filterable_alpha%03d_1", i)
-		mkTrackerDir(t, lsm, dir, "tidied.mig")
+		mkCompletedTracker(t, lsm, dir, "tidied.mig")
 		mkRecoveryPayload(t, lsm, dir, fmt.Sprintf("alpha%03d", i))
 	}
 	// The swept property's own completed migration: its staged data is the
 	// property's only copy, so this one has to be read and preserved.
 	const sweptTracker = "enable_filterable_swept_1"
 	const sweptStaged = "property_swept__enable_filterable_ingest_1"
-	mkTrackerDir(t, lsm, sweptTracker, "tidied.mig")
+	mkCompletedTracker(t, lsm, sweptTracker, "tidied.mig")
 	mkRecoveryPayload(t, lsm, sweptTracker, "swept")
 	mkSidecarWithData(t, lsm, sweptStaged)
 
@@ -104,7 +104,7 @@ func TestAClassLevelCompletedTrackerIsAlwaysParsed(t *testing.T) {
 
 	const classTracker = "searchable_map_to_blockmax_1"
 	const classStaged = "property_swept_searchable__blockmax_ingest_1"
-	mkTrackerDir(t, lsm, classTracker, "merged.mig")
+	mkCompletedTracker(t, lsm, classTracker, "merged.mig")
 	mkRecoveryPayload(t, lsm, classTracker, "swept")
 	mkSidecarWithData(t, lsm, classStaged)
 

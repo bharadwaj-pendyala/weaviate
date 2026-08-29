@@ -760,6 +760,35 @@ func (t *ShardReindexTaskGeneric) requireCanonicalHoldsMigratedData(shard ShardL
 	return nil
 }
 
+// ensureCanonicalBucketsOpen re-opens the canonical buckets this completion is
+// about to advertise, and refuses the completion while any is still closed.
+//
+// By the time the completion gate is reached again the migration has already
+// flipped, so the canonical name denotes the promoted bucket — and a retry, a
+// restart, or a teardown may have left it closed. Committing the schema effect
+// over a closed bucket advertises an index nothing serves: every query for that
+// property fails loudly until some later load re-opens it.
+//
+// [ReindexStrategy.PreReindexHook] is the one function that already knows each
+// canonical bucket's name and options, and it is idempotent on an open one.
+func (t *ShardReindexTaskGeneric) ensureCanonicalBucketsOpen(ctx context.Context,
+	shard ShardLike, props []string,
+) error {
+	concrete, err := unwrapShard(ctx, shard)
+	if err != nil {
+		return fmt.Errorf("open the canonical buckets this completion advertises: %w", err)
+	}
+	t.strategy.PreReindexHook(concrete, props)
+	for _, propName := range props {
+		name := t.strategy.SourceBucketName(propName)
+		if concrete.store.Bucket(name) == nil {
+			return fmt.Errorf("refusing to report migration complete for property %q: its canonical bucket %q "+
+				"is not open, so the schema effect would advertise an index nothing serves", propName, name)
+		}
+	}
+	return nil
+}
+
 // finalizeMigrationAfterRecovery runs the strategy's OnMigrationComplete
 // hook and trims older on-disk generations. This is the rehydrate-path
 // equivalent of runtimeSwap's final two steps (lines 1103/1124),
@@ -772,7 +801,12 @@ func (t *ShardReindexTaskGeneric) finalizeMigrationAfterRecovery(
 	ctx context.Context, logger logrus.FieldLogger, shard ShardLike, props []string,
 ) error {
 	// Ordering contract: rebuild must run and be checked before
-	// OnMigrationComplete (see runtimeSwap for the full reasoning).
+	// OnMigrationComplete (see runtimeSwap for the full reasoning). The
+	// canonical buckets are opened ahead of both: the rebuild reads them, and
+	// the effect advertises them.
+	if err := t.ensureCanonicalBucketsOpen(ctx, shard, props); err != nil {
+		return err
+	}
 	if err := t.rebuildRangeableInMemoryReps(ctx, logger, shard, props); err != nil {
 		return err
 	}
@@ -957,9 +991,12 @@ func (t *ShardReindexTaskGeneric) OnAfterLsmInit(ctx context.Context, shard *Sha
 	// load serves the property from the canonical directory again — the one
 	// promotion removes before renaming the staged directory over it. Without
 	// the mirror below, every write taken until then is deleted by the
-	// promotion that follows. That reasoning holds only while the staged
-	// directory is still there: once promotion has renamed it away, there is
-	// nothing left to rename over the canonical name and nothing to mirror.
+	// promotion that follows.
+	//
+	// Promoted is the stop, and it is the record's answer rather than the
+	// disk's: a promotion can also settle by writing the property off (its
+	// directory was found gone, or a successor took the property over), in
+	// which case nothing was renamed and there is still nothing here to mirror.
 	if hasRecord && rec.State() == MigrationStatePromoted {
 		logger.Debug("migration already promoted. nothing to open")
 		return nil
@@ -1059,6 +1096,9 @@ func (t *ShardReindexTaskGeneric) OnAfterLsmInitAsync(ctx context.Context, shard
 		// Same ordering contract as runtimeSwap (see there for reasoning):
 		// this re-entry branch must recheck the rebuild too, or a retry
 		// could flip the schema without it ever succeeding.
+		if err = t.ensureCanonicalBucketsOpen(ctx, shard, props); err != nil {
+			return zerotime, false, err
+		}
 		if err = t.rebuildRangeableInMemoryReps(ctx, logger, shard, props); err != nil {
 			return zerotime, false, err
 		}
@@ -1471,9 +1511,20 @@ func (t *ShardReindexTaskGeneric) runtimeSwap(ctx context.Context,
 		if err := oldMainBucket.Shutdown(ctx); err != nil {
 			return fmt.Errorf("shutting down old main bucket for %q: %w", propName, err)
 		}
-		// Removed at the recorded handle rather than renamed aside. A derived
-		// backup name parks a crash's leftovers where no record points, and
-		// nothing attributes a directory no record names.
+		// The displaced directory is a predecessor's staged name whenever the
+		// predecessor flipped and never promoted, and retirement is what should
+		// have taken it: it runs above, but two of its arms skip silently — an
+		// unwrapShard failure, and a seal the live unit refuses. Removing it
+		// anyway takes that predecessor's only copy, so a directory another
+		// record still names in a live-data role is left for that record.
+		dir := filepath.Base(oldMainBucket.GetDir())
+		if key, role, held := migrationDirHeldByAnotherRecord(
+			migrationRecordsOf(shard), subject, dir, migrationLiveDataRoles); held {
+			logger.WithField("dir", dir).Warnf(
+				"leaving the displaced directory of %q in place: record %s names it as its %s, "+
+					"and its retirement has not run yet", propName, key, role)
+			continue
+		}
 		if err := os.RemoveAll(oldMainBucket.GetDir()); err != nil {
 			return fmt.Errorf("removing displaced dir for %q: %w", propName, err)
 		}
@@ -1578,7 +1629,7 @@ func trimPreserveSetOf(shard *Shard) (migrationTrimPreserve, bool) {
 		return migrationTrimPreserve{}, false
 	}
 	records := shard.migrationRecords.Records()
-	legacy, complete := migrationLegacyMarkerDirsAt(shard.pathLSM(), records)
+	legacy, complete := migrationLegacyMarkerDirsAt(shard.pathLSM())
 	if !complete {
 		return migrationTrimPreserve{}, false
 	}
@@ -1739,6 +1790,18 @@ func (t *ShardReindexTaskGeneric) migrationRecord(shard ShardLike) (MigrationRec
 		return nil, false
 	}
 	return store.Get(t.migrationRecordKey())
+}
+
+// migrationRecordsOf is the shard's whole record set, for a caller asking
+// whether some other migration still names a directory it is about to remove.
+// A shard with no store answers empty, which reads as "nobody else names it" —
+// the same answer the caller had before the question existed.
+func migrationRecordsOf(shard ShardLike) []MigrationRecord {
+	store := shard.migrationRecordStore()
+	if store == nil {
+		return nil
+	}
+	return store.Records()
 }
 
 // putMigrationRecord makes one transition durable. It refuses an incomplete

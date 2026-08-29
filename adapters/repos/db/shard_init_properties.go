@@ -188,7 +188,7 @@ func (s *Shard) updatePropertyBuckets(ctx context.Context,
 				return fmt.Errorf("cannot remove %s index for %s property: %w", indexType, prop.Name, err)
 			}
 			s.cleanStaleMigrationDirs(ctx, prop.Name, indexType, sweep)
-			s.cleanStaleSidecarDirs(mainBucket)
+			s.cleanStaleSidecarDirs(ctx, mainBucket, sweep.committed)
 		}
 		return nil
 	})
@@ -510,11 +510,43 @@ func mainBucketForPropertyIndex(propName, indexType string) (string, bool) {
 // Sidecar names are <mainBucket>__<strategy>_<role>[_<gen>]; see
 // [isSidecarDirOf] for why matching on the role word rather than the whole
 // suffix avoids reading a property's own name as a sidecar.
-func (s *Shard) cleanStaleSidecarDirs(mainBucketName string) {
-	// Nothing is preserved: the caller has just removed the property's main
-	// bucket, so a migration still staging data for it has nothing left to
-	// become.
-	s.cleanStaleSidecarDirsWithPreserved(mainBucketName, migrationPreservedState{})
+// The removal policy is unchanged: the caller has just removed the property's
+// main bucket, so a migration still staging data for it has nothing left to
+// become. What it did not do is disarm first, and that is the defect. A staged
+// bucket stays open and its mirror stays armed for as long as its migration is
+// unresolved, so removing the directory under it leaves the bucket writing into
+// a path that is gone: every write carrying that property fails until the
+// process restarts, and nothing re-aims the mirror.
+//
+// So the same three steps every other directory-removing path in this
+// subsystem takes, in the same order: disarm the mirror, shut the bucket down,
+// then remove. A bucket that would not shut down keeps its directory, because
+// removing it is exactly what causes the failure.
+//
+// committed is the shard's preserve state, which is where the mirror aimed at
+// a directory is named. Its preserve set is deliberately not consulted for the
+// removal itself.
+func (s *Shard) cleanStaleSidecarDirs(ctx context.Context, mainBucketName string,
+	committed migrationPreservedState,
+) {
+	keep := map[string]bool{}
+	for bucketName := range s.store.GetBucketsByName() {
+		if !isSidecarDirOf(bucketName, mainBucketName) {
+			continue
+		}
+		if key, prop, ok := committed.mirrorFor(bucketName); ok {
+			s.DisarmMigrationMirror(key, prop)
+		}
+		if err := s.store.ShutdownBucket(ctx, bucketName); err != nil &&
+			!errors.Is(err, lsmkv.ErrBucketNotFound) {
+			s.index.logger.WithField("bucket", bucketName).
+				Errorf("shutting down a stale sidecar bucket before removing its directory: %v; "+
+					"keeping the directory, since removing it under an open bucket fails every write "+
+					"carrying this property until the process restarts", err)
+			keep[bucketName] = true
+		}
+	}
+	s.cleanStaleSidecarDirsWithPreserved(mainBucketName, migrationPreservingOnly(keep))
 }
 
 // cleanStaleSidecarDirsWithPreserved removes matching sidecar dirs except

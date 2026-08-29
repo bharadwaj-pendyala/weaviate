@@ -105,7 +105,7 @@ func migrationPreservedStateFor(lsmPath, propName string, props *taskPropsCache,
 	records, someRecordsUnreadable, recordSetUnreadable := migrationRecordsAt(lsmPath, logger)
 	state := migrationPreservedStateFromRecords(records, someRecordsUnreadable, recordSetUnreadable)
 	state.settled = migrationReadSettledNote(lsmPath)
-	legacyTrackers, listed := migrationLegacyMarkerTrackersAt(lsmPath, records, propName, props)
+	legacyTrackers, listed := migrationLegacyMarkerTrackersAt(lsmPath, propName, props)
 	if someRecordsUnreadable && listed {
 		// The shard is already preserved whole, so what the trackers say
 		// changes nothing. The walk above still had to run: an unlistable
@@ -199,6 +199,13 @@ func (s migrationPreservedState) mirrorFor(dir string) (MigrationRecordKey, stri
 		}
 	}
 	return MigrationRecordKey{}, "", false
+}
+
+// migrationPreservingOnly is a preserve state naming exactly these
+// directories, for a caller that computed the set itself rather than reading it
+// off the shard's records.
+func migrationPreservingOnly(dirs map[string]bool) migrationPreservedState {
+	return migrationPreservedState{buckets: dirs}
 }
 
 func (s migrationPreservedState) preservesBucket(dir string) bool {
@@ -304,8 +311,7 @@ type migrationLegacyMarkerTracker struct {
 // upgrade, rehydrate adopts the marker-era generation and writes a record for
 // it, and that record is Iterating — which no preserve set covers, so asking
 // the record first would hand the marker's staged data to the reclaimers.
-func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord,
-	propName string, props *taskPropsCache,
+func migrationLegacyMarkerTrackersAt(lsmPath, propName string, props *taskPropsCache,
 ) (trackers []migrationLegacyMarkerTracker, listed bool) {
 	migsDir := filepath.Join(lsmPath, migrationsDir)
 	entries, err := os.ReadDir(migsDir)
@@ -369,9 +375,9 @@ func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord,
 // migrationLegacyMarkerDirsAt is the same answer as a name set, for removal
 // loops keeping their own record check. complete=false means names are
 // missing (unreadable payload, or unlistable directory), so callers must stop.
-func migrationLegacyMarkerDirsAt(lsmPath string, records []MigrationRecord) (dirs map[string]struct{}, complete bool) {
+func migrationLegacyMarkerDirsAt(lsmPath string) (dirs map[string]struct{}, complete bool) {
 	dirs = map[string]struct{}{}
-	trackers, listed := migrationLegacyMarkerTrackersAt(lsmPath, records, "", nil)
+	trackers, listed := migrationLegacyMarkerTrackersAt(lsmPath, "", nil)
 	if !listed {
 		return dirs, false
 	}
