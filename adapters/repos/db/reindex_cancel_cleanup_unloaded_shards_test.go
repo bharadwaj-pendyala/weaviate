@@ -1405,17 +1405,17 @@ func TestDirNamesCache(t *testing.T) {
 		logger, _ := test.NewNullLogger()
 
 		cache := &dirNamesCache{}
-		require.True(t, cache.committedMigrations(lsm, logger).preservesTracker(tracker))
+		require.True(t, cache.committedMigrations(lsm, nil, logger).preservesTracker(tracker))
 
 		// Removing the record is a change only a fresh read can see.
 		require.NoError(t, os.RemoveAll(
 			filepath.Join(lsm, ".migrations", migrationRecordsDirName)))
 
-		require.True(t, cache.committedMigrations(lsm, logger).preservesTracker(tracker),
+		require.True(t, cache.committedMigrations(lsm, nil, logger).preservesTracker(tracker),
 			"a second tuple of the same run must not pay for the same shard again")
 
 		var uncached *dirNamesCache
-		require.False(t, uncached.committedMigrations(lsm, logger).preservesTracker(tracker),
+		require.False(t, uncached.committedMigrations(lsm, nil, logger).preservesTracker(tracker),
 			"a nil cache holds nothing, so it reads the shard every time")
 	})
 

@@ -311,7 +311,7 @@ func hasStalePartialReindexState(
 	if err != nil {
 		return !os.IsNotExist(err), false
 	}
-	committed := dirs.committedMigrations(lsmPath, logger)
+	committed := dirs.committedMigrations(lsmPath, props, logger)
 	switch {
 	case committed.recordSetUnreadable, committed.migrationsDirUnlistable:
 		// Nothing about this shard could be read, so reporting it clean would
@@ -405,14 +405,20 @@ type dirNamesCache struct {
 // type) tuple over the same shards, and the answer can't change while a
 // sweep holds it: records are written only by a loaded shard's own engine or
 // by reconciliation, and a loaded shard has already left this sweep's path.
-func (c *dirNamesCache) committedMigrations(lsmPath string, logger logrus.FieldLogger) migrationPreservedState {
+//
+// props is the caller's payload memo. This reads every tracker on the shard,
+// so without it the payloads it parses are invisible to the caller counting
+// how much this sweep had to read.
+func (c *dirNamesCache) committedMigrations(lsmPath string, props *taskPropsCache,
+	logger logrus.FieldLogger,
+) migrationPreservedState {
 	if c == nil {
-		return migrationPreservedStateAt(lsmPath, logger)
+		return migrationPreservedStateFor(lsmPath, "", props, logger)
 	}
 	if state, ok := c.committed[lsmPath]; ok {
 		return state
 	}
-	state := migrationPreservedStateAt(lsmPath, logger)
+	state := migrationPreservedStateFor(lsmPath, "", props, logger)
 	if c.committed == nil {
 		c.committed = map[string]migrationPreservedState{}
 	}

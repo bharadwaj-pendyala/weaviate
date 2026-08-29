@@ -338,3 +338,33 @@ func survivingTrackerDirs(t *testing.T, lsm string) []string {
 	sort.Strings(names)
 	return names
 }
+
+// TestTheUnloadedGateCountsThePayloadsItReads pins that the gate's reported
+// read count covers every payload the call opened. The gate asks two
+// questions of one shard: which directories a committed migration owns, which
+// reads every tracker, and which of them this property's sweep could remove,
+// which reads only the trackers whose names could hold it. Counting the second
+// and not the first tells an operator a sweep was free while it was parsing
+// megabytes inside the RAFT apply.
+func TestTheUnloadedGateCountsThePayloadsItReads(t *testing.T) {
+	logger, _ := test.NewNullLogger()
+	lsm := t.TempDir()
+
+	// A completed migration of another property, with no record: its payload
+	// is what the shard-wide preserve read opens, and the "cat" sweep's own
+	// scope settles it by name without opening anything.
+	mkTrackerDir(t, lsm, "enable_filterable_dog_1", "tidied.mig")
+	mkRecoveryPayload(t, lsm, "enable_filterable_dog_1", "dog")
+
+	props := &taskPropsCache{}
+	hasStalePartialReindexState(lsm, "cat", "filterable", nil, props, logger)
+	require.Equal(t, 1, props.count(),
+		"the shard-wide preserve read opened this payload, so the gate has to charge for it")
+
+	// And having charged for it, the run keeps it: a second tuple over the
+	// same shard reads nothing more.
+	before := props.count()
+	hasStalePartialReindexState(lsm, "dog", "filterable", nil, props, logger)
+	require.Equal(t, before, props.count(),
+		"a payload one tuple paid for answers every later tuple of the same run")
+}
