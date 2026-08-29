@@ -207,11 +207,13 @@ type MigrationRecordMerged struct {
 type MigrationRecordSwapped struct {
 	migrationRecordBase
 	migrationFlipBlock
-	// promoting names the properties whose promotion rename has been started.
-	// It is written before the rename runs, which is what lets a later pass
-	// tell a staged directory the rename consumed from one something else
-	// removed. See [migrationReconciler.promoteProperty].
-	promoting []string
+	// promotionOutput maps a property whose promotion rename has been started
+	// to the segment files that rename moves onto the canonical name. Both
+	// halves are written before the rename runs: which properties it names
+	// tells a staged directory the rename consumed from one something else
+	// removed, and the file names tell the directory the rename produced from
+	// one that replaced it. See [migrationReconciler.promoteProperty].
+	promotionOutput map[string][]string
 }
 
 type MigrationRecordPromoted struct {
@@ -235,31 +237,36 @@ func NewMigrationRecordSwapped(subject MigrationSubject, flipped []string, displ
 	return MigrationRecordSwapped{migrationRecordBase{subject}, migrationFlipBlock{flipped, displacedDirs}, nil}
 }
 
-// PromotionStarted reports whether a promotion of prop recorded its intent
-// before renaming. Without that intent a missing staged directory is not this
-// migration's doing, so nothing at the canonical name is its output.
-func (r MigrationRecordSwapped) PromotionStarted(prop string) bool {
-	return slices.Contains(r.promoting, prop)
+// PromotionOutput returns the segment files a started promotion of prop moves
+// onto the canonical name, and whether any promotion of prop started at all.
+// Without a start, a missing staged directory is not this migration's doing,
+// so nothing at the canonical name is its output.
+func (r MigrationRecordSwapped) PromotionOutput(prop string) ([]string, bool) {
+	output, started := r.promotionOutput[prop]
+	return output, started
 }
 
-// WithPromotionStarted records that prop's rename is about to run.
-func (r MigrationRecordSwapped) WithPromotionStarted(prop string) MigrationRecordSwapped {
-	if r.PromotionStarted(prop) {
-		return r
-	}
-	r.promoting = append(slices.Clone(r.promoting), prop)
-	slices.Sort(r.promoting)
+// WithPromotionStarted records that prop's rename is about to run, and what it
+// is about to move.
+func (r MigrationRecordSwapped) WithPromotionStarted(prop string, output []string) MigrationRecordSwapped {
+	next := make(map[string][]string, len(r.promotionOutput)+1)
+	maps.Copy(next, r.promotionOutput)
+	next[prop] = slices.Clone(output)
+	r.promotionOutput = next
 	return r
 }
 
-// WithPromotionAbandoned drops prop's intent after a rename that returned
-// instead of running, so an intent only ever outlives the pass that renamed.
+// WithPromotionAbandoned drops what prop recorded before a rename that
+// returned instead of running, so a started promotion only ever outlives the
+// pass that renamed.
 func (r MigrationRecordSwapped) WithPromotionAbandoned(prop string) MigrationRecordSwapped {
-	if !r.PromotionStarted(prop) {
+	if _, started := r.promotionOutput[prop]; !started {
 		return r
 	}
-	r.promoting = slices.DeleteFunc(slices.Clone(r.promoting),
-		func(p string) bool { return p == prop })
+	next := make(map[string][]string, len(r.promotionOutput))
+	maps.Copy(next, r.promotionOutput)
+	delete(next, prop)
+	r.promotionOutput = next
 	return r
 }
 
@@ -285,7 +292,12 @@ const migrationRecordFormatVersion = 1
 type migrationFlipEnvelope struct {
 	Flipped       []string          `json:"flipped,omitempty"`
 	DisplacedDirs map[string]string `json:"displacedDirs,omitempty"`
-	Promoting     []string          `json:"promoting,omitempty"`
+	// PromotionOutput deliberately does not reuse the "promoting" key an
+	// earlier shape wrote. That key named properties only, which a build
+	// reading it would take as licence to promote without checking that the
+	// directory under the canonical name is still the rename's output. Under
+	// a new key, each build ignores the other's and promotes nothing.
+	PromotionOutput map[string][]string `json:"promotionOutput,omitempty"`
 }
 
 type migrationRecordEnvelope struct {
@@ -322,7 +334,7 @@ func (r MigrationRecordMerged) toEnvelope() migrationRecordEnvelope {
 func (r MigrationRecordSwapped) toEnvelope() migrationRecordEnvelope {
 	env := newMigrationRecordEnvelope(MigrationStateSwapped, r.subject)
 	env.Flip = r.migrationFlipBlock.toEnvelope()
-	env.Flip.Promoting = r.promoting
+	env.Flip.PromotionOutput = r.promotionOutput
 	return env
 }
 
@@ -365,25 +377,33 @@ func validateMigrationEnvelope(e migrationRecordEnvelope) error {
 	if err := validateMigrationHandles(e); err != nil {
 		return err
 	}
-	if err := validatePromotingNamesSubjectProperties(e); err != nil {
+	if err := validatePromotionOutput(e); err != nil {
 		return err
 	}
 	return validateOneOwnerPerDirectory(e)
 }
 
-// validatePromotingNamesSubjectProperties refuses a promotion intent for a
-// property the record does not carry. Promotion reads the intent to decide
-// that a missing staged directory is its own rename's doing, so an intent
-// nothing in the subject accounts for is exactly the claim that must not be
-// taken on trust.
-func validatePromotingNamesSubjectProperties(e migrationRecordEnvelope) error {
+// validatePromotionOutput refuses a started promotion of a property the record
+// does not carry, and an output file that is not a single entry inside a
+// directory. Promotion reads both to decide that a missing staged directory is
+// its own rename's doing and that the directory under the canonical name is
+// that rename's output, so neither may be taken on trust.
+func validatePromotionOutput(e migrationRecordEnvelope) error {
 	if e.Flip == nil {
 		return nil
 	}
-	for _, prop := range e.Flip.Promoting {
+	// Sorted, so a record with two bad entries names the same one every time.
+	for _, prop := range slices.Sorted(maps.Keys(e.Flip.PromotionOutput)) {
 		if !slices.Contains(e.Subject.Properties, prop) {
 			return fmt.Errorf("record %q records a promotion of property %q, which it does not name",
 				e.Subject.Key, prop)
+		}
+		for _, file := range e.Flip.PromotionOutput[prop] {
+			if !migrationHandleIsOneElement(file) {
+				return fmt.Errorf(
+					"record %q records promotion output %q for property %q, which is not a single file inside a directory",
+					e.Subject.Key, file, prop)
+			}
 		}
 	}
 	return nil
@@ -469,7 +489,7 @@ func decodeMigrationRecord(data []byte) (MigrationRecord, error) {
 			return nil, err
 		}
 		swapped := NewMigrationRecordSwapped(env.Subject, env.Flip.Flipped, env.Flip.DisplacedDirs)
-		swapped.promoting = env.Flip.Promoting
+		swapped.promotionOutput = env.Flip.PromotionOutput
 		return swapped, nil
 	case MigrationStatePromoted:
 		if err := env.requireBlocks(migrationBlocks{flip: true}); err != nil {

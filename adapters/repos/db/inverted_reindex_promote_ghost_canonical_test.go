@@ -25,7 +25,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/weaviate/weaviate/adapters/repos/db/helpers"
 	"github.com/weaviate/weaviate/entities/models"
 	"github.com/weaviate/weaviate/entities/storobj"
 	enthnsw "github.com/weaviate/weaviate/entities/vectorindex/hnsw"
@@ -42,7 +41,7 @@ const (
 	ghostStaged  = "property_title_searchable__rebuild_searchable_ingest_1"
 )
 
-func ghostCanonicalDir() string { return helpers.BucketSearchableFromPropNameLSM(ghostProp) }
+func ghostCanonicalDir() string { return canonicalSearchableDir(ghostProp) }
 
 // ghostObjects gives a bucket terms to lose, so an assertion can tell an
 // emptied bucket from a populated one, and one shard's data from another's.
@@ -109,32 +108,50 @@ func copyDirTree(t *testing.T, from, to string) {
 	}))
 }
 
-// reloadGhostShard is one process restart: reconciliation runs first, then the
-// bucket init that re-creates a canonical directory for every schema property.
-// Only a real load puts those two in that order.
-func reloadGhostShard(t *testing.T, ctx context.Context, idx *Index, shard *Shard,
+// reloadShardFromDisk is one process restart: reconciliation runs first, then
+// the bucket init that re-creates a canonical directory for every schema
+// property. Only a real load puts those two in that order.
+func reloadShardFromDisk(t *testing.T, ctx context.Context, idx *Index, shard *Shard,
 	class *models.Class,
 ) *Shard {
 	t.Helper()
 	name := shard.Name()
 	require.NoError(t, shard.Shutdown(ctx))
 	simulateProcessRestartBucketCleanup(t, shard.pathLSM())
-	next, err := idx.initShard(ctx, name, class, nil, true, true)
-	require.NoError(t, err)
-	idx.shards.Store(name, next)
-	return next.(*Shard)
+	return openShardFromDisk(t, ctx, idx, class, name)
 }
 
-// ghostRecordState reads the record off disk, which is what a later load, the
-// closure sweep, and an operator all read.
-func ghostRecordState(t *testing.T, lsmPath string) MigrationState {
+// openShardFromDisk loads a shut-down shard back off disk and registers it,
+// which is what runs reconciliation and then the bucket init after it.
+func openShardFromDisk(t *testing.T, ctx context.Context, idx *Index,
+	class *models.Class, name string,
+) *Shard {
+	t.Helper()
+	loaded, err := idx.initShard(ctx, name, class, nil, true, true)
+	require.NoError(t, err)
+	idx.shards.Store(name, loaded)
+	return loaded.(*Shard)
+}
+
+// migrationRecordStates reads the records off disk, which is what a later
+// load, the closure sweep, and an operator all read.
+func migrationRecordStates(t *testing.T, lsmPath string) []MigrationState {
 	t.Helper()
 	logger, _ := test.NewNullLogger()
 	store := NewMigrationRecordStore(lsmPath, logger)
 	require.NoError(t, store.Load())
-	records := store.Records()
-	require.Len(t, records, 1, "the fixture plants exactly one record")
-	return records[0].State()
+	states := make([]MigrationState, 0, len(store.Records()))
+	for _, rec := range store.Records() {
+		states = append(states, rec.State())
+	}
+	return states
+}
+
+func soleMigrationRecordState(t *testing.T, lsmPath string) MigrationState {
+	t.Helper()
+	states := migrationRecordStates(t, lsmPath)
+	require.Len(t, states, 1, "the fixture plants exactly one record")
+	return states[0]
 }
 
 // TestPromoteReadsTheRecordNotTheCanonicalDirectory drives real shard loads
@@ -213,16 +230,13 @@ func TestPromoteReadsTheRecordNotTheCanonicalDirectory(t *testing.T) {
 			// only a promotion may put it under the canonical name.
 			mkTrackerDir(t, lsmPath, ghostTracker)
 			mkFlippedMigrationRecord(t, lsmPath, ghostTracker, ghostProp, ghostStaged, canonical)
-			require.Equal(t, MigrationStateSwapped, ghostRecordState(t, lsmPath), "fixture")
+			require.Equal(t, MigrationStateSwapped, soleMigrationRecordState(t, lsmPath), "fixture")
 
 			tc.stage(t, lsmPath, filepath.Join(lsmPath, ghostStaged), filepath.Join(lsmPath, canonical))
 
-			loaded, err := idx.initShard(ctx, shard.Name(), class, nil, true, true)
-			require.NoError(t, err)
-			idx.shards.Store(shard.Name(), loaded)
-			current := loaded.(*Shard)
+			current := openShardFromDisk(t, ctx, idx, class, shard.Name())
 			for i := 1; i < tc.loads; i++ {
-				current = reloadGhostShard(t, ctx, idx, current, class)
+				current = reloadShardFromDisk(t, ctx, idx, current, class)
 			}
 			defer current.Shutdown(ctx)
 
@@ -234,7 +248,7 @@ func TestPromoteReadsTheRecordNotTheCanonicalDirectory(t *testing.T) {
 				assert.Equal(t, donorFP, got,
 					"the canonical bucket must hold the data the promotion renamed onto it")
 			}
-			assert.Equal(t, tc.wantState, ghostRecordState(t, lsmPath), tc.reason)
+			assert.Equal(t, tc.wantState, soleMigrationRecordState(t, lsmPath), tc.reason)
 		})
 	}
 }

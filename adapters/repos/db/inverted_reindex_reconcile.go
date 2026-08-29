@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 	"github.com/weaviate/weaviate/cluster/distributedtask"
@@ -379,16 +380,20 @@ func (r *migrationReconciler) promoteSealed(rec MigrationRecordSwapped,
 // load re-creates the canonical directory, empty, for every property in the
 // schema, and a strategy pre-creates it when arming, so its presence is no
 // evidence of anything — least of all that a rename put the migration's data
-// there. Contents say no more: an empty canonical bucket is a legitimate
-// state both before and after a promotion.
+// there.
 //
-// So the evidence is written rather than inferred. The rename records its
-// intent on the record first, and only a property that intent names may have
-// a missing staged directory read as its own rename's work. Everything else
-// with a missing staged directory lost it to something outside this
-// migration — an index DELETE takes both directories at once — and promoting
-// there would write Promoted over a bucket holding none of the data the
-// record says is under that name.
+// So the rename writes down what it is about to do before doing it: the
+// property, and the segment files it is moving. A missing staged directory
+// then reads as this migration's own rename only for a property the record
+// names, and only while the directory under the canonical name still holds
+// one of the files that rename moved.
+//
+// Both halves are load-bearing, and each covers what the other cannot. Without
+// the property, a staged directory an index DELETE removed would read as a
+// rename that never ran. Without the files, a canonical directory that same
+// DELETE removed and the next shard load re-created, empty, would read as that
+// rename's output — writing Promoted over a bucket holding none of the data
+// the record says is under that name.
 func (r *migrationReconciler) promoteProperty(rec MigrationRecordSwapped, prop string,
 	dirs promotionDirs,
 ) (MigrationRecordSwapped, bool, error) {
@@ -399,7 +404,8 @@ func (r *migrationReconciler) promoteProperty(rec MigrationRecordSwapped, prop s
 		return rec, false, err
 	}
 	if !stagedThere {
-		if !rec.PromotionStarted(prop) {
+		output, started := rec.PromotionOutput(prop)
+		if !started {
 			r.logger.WithField("record", subject.Key.String()).Errorf(
 				"property %q lost its staged directory %q to something that is not its promotion, which never started; "+
 					"preserving the record and promoting nothing", prop, staged)
@@ -410,6 +416,17 @@ func (r *migrationReconciler) promoteProperty(rec MigrationRecordSwapped, prop s
 			return rec, false, err
 		}
 		if canonicalThere {
+			itsOwn, err := r.holdsPromotionOutput(canonical, output)
+			if err != nil {
+				return rec, false, err
+			}
+			if !itsOwn {
+				r.logger.WithField("record", subject.Key.String()).Errorf(
+					"property %q started a promotion of %d segment file(s) onto %q, and the directory now under that name holds none of them; "+
+						"it replaced the one the rename produced, so preserving the record and promoting nothing",
+					prop, len(output), canonical)
+				return rec, false, nil
+			}
 			return rec, true, nil
 		}
 		// A record must not promote a subject that no longer exists. Restore
@@ -445,10 +462,15 @@ func (r *migrationReconciler) promoteProperty(rec MigrationRecordSwapped, prop s
 		}
 	}
 
-	// Nothing stands between this write and the rename it licenses, so an
-	// intent that outlives the pass is one whose rename is the reason the
-	// staged directory is gone.
-	started := rec.WithPromotionStarted(prop)
+	// Nothing stands between this write and the rename it licenses, so a
+	// started promotion that outlives the pass is one whose rename is the
+	// reason the staged directory is gone, and the files it names are the
+	// ones that rename put under the canonical name.
+	output, err := r.segmentFilesIn(staged)
+	if err != nil {
+		return rec, false, err
+	}
+	started := rec.WithPromotionStarted(prop, output)
 	if err := r.store.Put(started); err != nil {
 		return rec, false, fmt.Errorf(
 			"record the promotion of property %q before renaming %q onto %q: %w", prop, staged, canonical, err)
@@ -456,21 +478,85 @@ func (r *migrationReconciler) promoteProperty(rec MigrationRecordSwapped, prop s
 	rec = started
 
 	if err := r.rename(staged, canonical); err != nil {
-		return r.abandonPromotion(rec, prop), false, err
+		return r.abandonPromotion(rec, prop, staged), false, err
 	}
 	return rec, true, nil
 }
 
-// abandonPromotion takes back the intent of a rename that returned instead of
-// running. A write that fails here is logged and left: the record is then
-// merely less precise than it should be, which is not worth failing a shard
-// load over, and the next pass re-runs the rename anyway because the staged
-// directory is still there.
-func (r *migrationReconciler) abandonPromotion(rec MigrationRecordSwapped, prop string) MigrationRecordSwapped {
+// migrationSegmentFilePrefix starts the name of every segment an LSM bucket
+// holds, and of the files derived from one. Each name carries the nanosecond
+// its segment was written, so a bucket created after another was destroyed
+// never writes a file under one of the destroyed one's names.
+const migrationSegmentFilePrefix = "segment-"
+
+// segmentFilesIn lists the segment files a bucket directory holds: what a
+// promotion's rename moves onto the canonical name.
+func (r *migrationReconciler) segmentFilesIn(dir string) ([]string, error) {
+	entries, err := os.ReadDir(r.path(dir))
+	if err != nil {
+		return nil, fmt.Errorf("list the segment files of %q: %w", dir, err)
+	}
+	files := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), migrationSegmentFilePrefix) {
+			files = append(files, entry.Name())
+		}
+	}
+	slices.Sort(files)
+	return files, nil
+}
+
+// holdsPromotionOutput reports whether the directory at dir is still the one a
+// promotion's rename produced.
+//
+// One surviving name settles it: a segment file's name carries the nanosecond
+// it was written, so a bucket created after this one was destroyed never
+// writes a file under any of these names. One is also all that can be asked:
+// once the promoted bucket serves, compaction replaces its segments with
+// merged ones under new names, and a bucket compacted past every recorded
+// name reads here as replaced. That refuses — preserving the record, the
+// data, and a per-load error — which is the direction to be wrong in.
+//
+// A rename that moved no segment produces an empty bucket, so an empty bucket
+// is what has to be there — and a bucket that a shard load re-created is
+// exactly as empty, which costs nothing: the data that promotion put under the
+// canonical name was none.
+func (r *migrationReconciler) holdsPromotionOutput(dir string, output []string) (bool, error) {
+	present, err := r.segmentFilesIn(dir)
+	if err != nil {
+		return false, err
+	}
+	if len(output) == 0 {
+		return len(present) == 0, nil
+	}
+	for _, name := range output {
+		if slices.Contains(present, name) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// abandonPromotion takes back what a rename that returned instead of running
+// recorded — but only while the staged directory it was to move is still
+// there. [diskio.RenameAndSync] moves the directory first and syncs after, so
+// an error can come from the sync of a rename that already ran; taking the
+// record back there would leave every later pass with a canonical directory
+// it has no way to recognize as this promotion's output.
+//
+// A write that fails here is logged and left: the record is then merely less
+// precise than it should be, which is not worth failing a shard load over,
+// and the next pass re-runs the rename anyway because the staged directory is
+// still there.
+func (r *migrationReconciler) abandonPromotion(rec MigrationRecordSwapped, prop, staged string) MigrationRecordSwapped {
+	stagedThere, err := r.dirExists(staged)
+	if err != nil || !stagedThere {
+		return rec
+	}
 	abandoned := rec.WithPromotionAbandoned(prop)
 	if err := r.store.Put(abandoned); err != nil {
 		r.logger.WithField("record", rec.Subject().Key.String()).Errorf(
-			"take back the promotion intent of property %q after its rename failed: %v", prop, err)
+			"take back the started promotion of property %q after its rename failed: %v", prop, err)
 		return rec
 	}
 	return abandoned
@@ -538,10 +624,15 @@ func (r *migrationReconciler) reconcilePromotedSealed(rec MigrationRecordPromote
 	return r.store.Remove(subject.Key)
 }
 
-// repromoteWhatTheRecordOutran re-runs a promotion the record already
-// claims. If canonical exists, staged is a stale leftover for the sweep to
-// reclaim; if a surviving successor claims staged as displaced, the property
-// was superseded, not promoted, and staged is that successor's only copy.
+// repromoteWhatTheRecordOutran re-runs a promotion the record already claims.
+// If a surviving successor claims staged as displaced, the property was
+// superseded, not promoted, and staged is that successor's only copy.
+//
+// A property holding a directory under both names stops the sweep instead.
+// Which of the two holds the promoted data is not readable from here — a
+// shard load re-creates the canonical one, empty, for every property in the
+// schema — and the sweep this returns to reclaims staged directories, so
+// reading the canonical name as the answer would delete the only copy.
 func (r *migrationReconciler) repromoteWhatTheRecordOutran(all []MigrationRecord, subject MigrationSubject) error {
 	for _, prop := range subject.Properties {
 		staged, canonical := subject.StagedDirs[prop], subject.CanonicalDirs[prop]
@@ -563,7 +654,10 @@ func (r *migrationReconciler) repromoteWhatTheRecordOutran(all []MigrationRecord
 			return err
 		}
 		if canonicalThere {
-			continue
+			return fmt.Errorf(
+				"property %q is recorded as promoted but holds a directory at both its staged name %q and its canonical name %q; "+
+					"nothing here can tell which one the promotion produced, so the record and both directories are preserved",
+				prop, staged, canonical)
 		}
 
 		r.logger.WithField("record", subject.Key.String()).Errorf(

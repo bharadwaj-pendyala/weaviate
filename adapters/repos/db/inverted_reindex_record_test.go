@@ -91,7 +91,7 @@ func TestMigrationRecordRoundTrip(t *testing.T) {
 		{
 			name: "swapped carries the promotion it started, which is the only thing that makes a missing staged dir readable",
 			record: NewMigrationRecordSwapped(testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title"),
-				[]string{"title"}, displaced).WithPromotionStarted("title"),
+				[]string{"title"}, displaced).WithPromotionStarted("title", []string{"segment-1.db", "segment-2.db"}),
 			wantState: MigrationStateSwapped,
 		},
 		{
@@ -118,6 +118,81 @@ func TestMigrationRecordRoundTrip(t *testing.T) {
 			require.Equal(t, tt.record, decoded)
 		})
 	}
+}
+
+// TestMigrationRecordPromotionAcrossBuilds pins what a build does with the
+// other build's promotion shape. Records travel through json.Unmarshal, which
+// drops a key it does not know, so a shape a build does not write is one it
+// cannot act on. That has to leave both directions promoting nothing: an
+// earlier build's key names a property without saying what its rename moved,
+// which is the claim that must not be taken on trust.
+func TestMigrationRecordPromotionAcrossBuilds(t *testing.T) {
+	subject := testMigrationSubject(42, StrategyCodeEnableFilterable, "title")
+	displaced := map[string]string{"title": "property_title"}
+	swapped := NewMigrationRecordSwapped(subject, []string{"title"}, displaced)
+
+	flipBlockOf := func(t *testing.T, rec MigrationRecord) map[string]any {
+		t.Helper()
+		encoded, err := encodeMigrationRecord(rec)
+		require.NoError(t, err)
+		env := map[string]any{}
+		require.NoError(t, json.Unmarshal(encoded, &env))
+		return env["flip"].(map[string]any)
+	}
+
+	// readBack replaces the flip block with one the other build could have
+	// written, then reads the record the way a load does.
+	readBack := func(t *testing.T, key string, value any) MigrationRecordSwapped {
+		t.Helper()
+		encoded, err := encodeMigrationRecord(swapped)
+		require.NoError(t, err)
+		env := map[string]any{}
+		require.NoError(t, json.Unmarshal(encoded, &env))
+		flip := env["flip"].(map[string]any)
+		flip[key] = value
+		data, err := json.Marshal(env)
+		require.NoError(t, err)
+		decoded, err := decodeMigrationRecord(data)
+		require.NoError(t, err)
+		return decoded.(MigrationRecordSwapped)
+	}
+
+	tests := []struct {
+		name        string
+		key         string
+		value       any
+		wantStarted bool
+		wantOutput  []string
+	}{
+		{
+			name:        "a record an earlier build wrote, naming the property but not what its rename moved",
+			key:         "promoting",
+			value:       []string{"title"},
+			wantStarted: false,
+		},
+		{
+			name:        "a record this build wrote",
+			key:         "promotionOutput",
+			value:       map[string]any{"title": []string{"segment-1.db"}},
+			wantStarted: true,
+			wantOutput:  []string{"segment-1.db"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output, started := readBack(t, tt.key, tt.value).PromotionOutput("title")
+			require.Equal(t, tt.wantStarted, started)
+			require.Equal(t, tt.wantOutput, output)
+		})
+	}
+
+	t.Run("this build writes no key an earlier build would promote on", func(t *testing.T) {
+		flip := flipBlockOf(t, swapped.WithPromotionStarted("title", []string{"segment-1.db"}))
+		require.NotContains(t, flip, "promoting",
+			"an earlier build reads that key as licence to promote whatever directory it finds under the canonical name")
+		require.Contains(t, flip, "promotionOutput")
+	})
 }
 
 func TestMigrationRecordNotUnderstood(t *testing.T) {
@@ -260,19 +335,34 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 			wantErr: `names directory "m_42_title_sidecar" as both the sidecar directory of property "body" and the sidecar directory of property "title"`,
 		},
 		{
-			// The intent is what lets promotion read a missing staged
-			// directory as its own rename's doing, so one for a property the
-			// record does not carry is the claim that must not be trusted.
+			// A started promotion is what lets a missing staged directory read
+			// as this migration's own rename, so one recorded for a property
+			// the record does not carry is the claim that must not be trusted.
 			name: "a promotion recorded for a property the record does not name",
 			data: valid(func(env map[string]any) {
 				env["state"] = string(MigrationStateSwapped)
 				env["flip"] = map[string]any{
-					"flipped":       []string{"title"},
-					"displacedDirs": map[string]any{"title": "property_title"},
-					"promoting":     []string{"body"},
+					"flipped":         []string{"title"},
+					"displacedDirs":   map[string]any{"title": "property_title"},
+					"promotionOutput": map[string]any{"body": []string{"segment-1.db"}},
 				}
 			}),
 			wantErr: `records a promotion of property "body", which it does not name`,
+		},
+		{
+			// The output names are compared against what a directory holds, so
+			// one that is not a single file inside one describes a directory
+			// no promotion could have produced.
+			name: "promotion output that is not a single file inside a directory",
+			data: valid(func(env map[string]any) {
+				env["state"] = string(MigrationStateSwapped)
+				env["flip"] = map[string]any{
+					"flipped":         []string{"title"},
+					"displacedDirs":   map[string]any{"title": "property_title"},
+					"promotionOutput": map[string]any{"title": []string{"../property_body/segment-1.db"}},
+				}
+			}),
+			wantErr: `records promotion output "../property_body/segment-1.db" for property "title", which is not a single file inside a directory`,
 		},
 		// The same harm in every remaining pairing of the four roles a record
 		// hands out: one property's teardown closes or deletes the directory

@@ -187,7 +187,17 @@ func (f *reconcileFixture) mkdirs(names ...string) {
 	f.t.Helper()
 	for _, name := range names {
 		require.NoError(f.t, os.MkdirAll(filepath.Join(f.lsmPath, name), 0o777))
-		require.NoError(f.t, os.WriteFile(filepath.Join(f.lsmPath, name, "segment.db"), []byte(name), 0o600))
+		require.NoError(f.t, os.WriteFile(filepath.Join(f.lsmPath, name, "segment-1.db"), []byte(name), 0o600))
+	}
+}
+
+// mkEmptyDirs creates bucket directories holding no segment file, which is
+// both what a shard load creates for a schema property and what a promotion
+// of a property with no values leaves behind.
+func (f *reconcileFixture) mkEmptyDirs(names ...string) {
+	f.t.Helper()
+	for _, name := range names {
+		require.NoError(f.t, os.MkdirAll(filepath.Join(f.lsmPath, name), 0o777))
 	}
 }
 
@@ -199,7 +209,7 @@ func (f *reconcileFixture) exists(name string) bool {
 // contentOf reads the marker mkdirs planted, so a test can tell a directory
 // that was replaced from one that merely still exists.
 func (f *reconcileFixture) contentOf(name string) string {
-	data, err := os.ReadFile(filepath.Join(f.lsmPath, name, "segment.db"))
+	data, err := os.ReadFile(filepath.Join(f.lsmPath, name, "segment-1.db"))
 	require.NoError(f.t, err)
 	return string(data)
 }
@@ -432,17 +442,24 @@ func TestReconcileMergedDisposition(t *testing.T) {
 	}
 }
 
-// TestReconcileSwappedProbe pins the handle probe. Every arm is decided by
-// which of the two recorded directories is present, never by what is inside
-// one: three strategies pre-create an empty canonical bucket at arming time.
+// TestReconcileSwappedProbe pins the handle probe. With the staged directory
+// there the arm is decided by which recorded directory is present, never by
+// what is inside one: three strategies pre-create an empty canonical bucket at
+// arming time. With it gone, only the record says whether the rename ran, and
+// only the files it wrote down say whether the directory under the canonical
+// name is that rename's output.
 func TestReconcileSwappedProbe(t *testing.T) {
 	tests := []struct {
 		name    string
 		present []string
-		// promoting is what the record says about a rename of "title" having
-		// started. A canonical directory means one thing with it and nothing
-		// at all without it, since a shard load re-creates one either way.
-		promoting        []string
+		// promotionOutput is what the record says about a rename of "title"
+		// having started, and about the segment files it moved. A canonical
+		// directory means one thing with it and nothing at all without it,
+		// since a shard load re-creates one either way.
+		promotionOutput map[string][]string
+		// emptyDirs are planted holding no segment file, the way a shard load
+		// creates a canonical bucket for a property still in the schema.
+		emptyDirs        []string
 		wantState        MigrationState
 		wantCanonical    string
 		wantCanonicalDir bool
@@ -462,16 +479,46 @@ func TestReconcileSwappedProbe(t *testing.T) {
 			wantCanonicalDir: true,
 		},
 		{
-			name:             "canonical only, the rename that took the staged directory is recorded: finish the promotion",
-			present:          []string{"property_title"},
-			promoting:        []string{"title"},
+			name:            "canonical only, holding a file the recorded rename moved: finish the promotion",
+			present:         []string{"property_title"},
+			promotionOutput: map[string][]string{"title": {"segment-1.db"}},
+			// mkdirs writes segment-1.db, so the canonical directory holds one
+			// of the files the rename is recorded as having moved onto it.
 			wantState:        MigrationStatePromoted,
+			wantCanonical:    "property_title",
+			wantCanonicalDir: true,
+		},
+		{
+			name:            "canonical only, holding none of the files the recorded rename moved: it replaced the promotion's output, promote nothing",
+			present:         []string{"property_title"},
+			promotionOutput: map[string][]string{"title": {"segment-9000.db"}},
+			// What an index DELETE plus a shard load leave: the directory is
+			// there and the data the record says is under that name is not.
+			wantState:        MigrationStateSwapped,
 			wantCanonical:    "property_title",
 			wantCanonicalDir: true,
 		},
 		{
 			name:             "canonical only, no rename recorded: something else took the staged directory, promote nothing",
 			present:          []string{"property_title"},
+			wantState:        MigrationStateSwapped,
+			wantCanonical:    "property_title",
+			wantCanonicalDir: true,
+		},
+		{
+			// A promotion of a property with no values renames an empty bucket
+			// onto the canonical name, so an empty bucket is its output and
+			// nothing is lost by settling on one.
+			name:             "canonical only and empty, the recorded rename moved no segment: finish the promotion",
+			emptyDirs:        []string{"property_title"},
+			promotionOutput:  map[string][]string{"title": {}},
+			wantState:        MigrationStatePromoted,
+			wantCanonicalDir: true,
+		},
+		{
+			name:             "canonical only, holding a segment the recorded rename did not move: promote nothing",
+			present:          []string{"property_title"},
+			promotionOutput:  map[string][]string{"title": {}},
 			wantState:        MigrationStateSwapped,
 			wantCanonical:    "property_title",
 			wantCanonicalDir: true,
@@ -491,9 +538,10 @@ func TestReconcileSwappedProbe(t *testing.T) {
 
 			subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 			f.mkdirs(tt.present...)
+			f.mkEmptyDirs(tt.emptyDirs...)
 			rec := NewMigrationRecordSwapped(subject, []string{"title"}, map[string]string{"title": "property_title"})
-			for _, prop := range tt.promoting {
-				rec = rec.WithPromotionStarted(prop)
+			for prop, output := range tt.promotionOutput {
+				rec = rec.WithPromotionStarted(prop, output)
 			}
 			f.put(rec)
 
@@ -503,9 +551,63 @@ func TestReconcileSwappedProbe(t *testing.T) {
 			require.True(t, present, "a swapped record is never discarded")
 			require.Equal(t, tt.wantState, state)
 			require.Equal(t, tt.wantCanonicalDir, f.exists("property_title"))
-			if tt.wantCanonicalDir {
+			if tt.wantCanonical != "" {
 				require.Equal(t, tt.wantCanonical, f.contentOf("property_title"))
 			}
+		})
+	}
+}
+
+// TestAbandonPromotionKeepsARenameThatAlreadyMoved pins what a promotion may
+// take back after its rename returned an error. [diskio.RenameAndSync] moves
+// the directory first and syncs after, so an error can come from the sync of a
+// rename that already ran. Taking the record back there would leave every
+// later pass with a canonical directory it has no way to recognize as this
+// promotion's output, and a record wedged at Swapped for good.
+func TestAbandonPromotionKeepsARenameThatAlreadyMoved(t *testing.T) {
+	tests := []struct {
+		name        string
+		stagedThere bool
+		wantKept    bool
+		reason      string
+	}{
+		{
+			name:        "the staged directory is still there, so the rename did not move it",
+			stagedThere: true,
+			wantKept:    false,
+			reason:      "a rename that moved nothing leaves nothing to recognize later",
+		},
+		{
+			name:        "the staged directory is gone, so the rename moved it before failing",
+			stagedThere: false,
+			wantKept:    true,
+			reason:      "only the record says which directory under the canonical name this promotion produced",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newReconcileFixture(t)
+			subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
+			if tt.stagedThere {
+				f.mkdirs("m_42_title")
+			}
+			rec := NewMigrationRecordSwapped(subject, []string{"title"},
+				map[string]string{"title": "property_title"}).
+				WithPromotionStarted("title", []string{"segment-1.db"})
+			f.put(rec)
+
+			r := newMigrationReconciler(f.store, f.lsmPath, f.logger, f.deps())
+			_, kept := r.abandonPromotion(rec, "title", "m_42_title").PromotionOutput("title")
+			require.Equal(t, tt.wantKept, kept, tt.reason)
+
+			// What the next load reads, which is the only copy that decides
+			// anything.
+			require.NoError(t, f.store.Load())
+			onDisk, ok := f.store.Records()[0].(MigrationRecordSwapped)
+			require.True(t, ok)
+			_, keptOnDisk := onDisk.PromotionOutput("title")
+			require.Equal(t, tt.wantKept, keptOnDisk, tt.reason)
 		})
 	}
 }
@@ -838,12 +940,16 @@ func TestReconcilePromotedRepairsATornPromotion(t *testing.T) {
 			wantRecordGone: true,
 		},
 		{
-			name:           "both names present: the canonical one is the promoted data",
+			// A shard load re-creates the canonical directory, empty, for
+			// every property in the schema, so its presence does not say the
+			// promotion put anything there. Reclaiming the staged one on that
+			// reading would take the only copy.
+			name:           "both names present: nothing here can tell which one holds the promoted data",
 			stagedThere:    true,
 			canonicalThere: true,
 			wantContentAt:  "property_title",
-			wantStagedGone: true,
-			wantRecordGone: true,
+			wantStagedGone: false,
+			wantRecordGone: false,
 		},
 		{
 			name:           "the ordinary aftermath of a promotion that completed",
