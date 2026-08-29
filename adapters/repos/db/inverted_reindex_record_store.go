@@ -360,10 +360,12 @@ func (s *MigrationRecordStore) Unreadable() []MigrationRecordUnreadable {
 // Load sits inside the RAFT apply of a property DELETE, which holds the FSM
 // loop cluster-wide (see [maxRecoveryPayloadBytes]).
 //
-// [maxReindexPropertiesPerTask] properties is the ceiling to clear — each
-// stays well under 4 KiB of JSON, so 1024 of them stay under 4 MiB. The
-// bound is doubled since refusing a legitimate record freezes migrations,
-// while reading a large file does not.
+// What keeps a record under it: every field a record carries per property is a
+// handle naming a single directory entry, which the filesystem caps, and the
+// property count is capped by [maxReindexPropertiesPerTask]. A field that grew
+// with the shard's data instead would break the bound silently, so
+// TestTheLargestRecordTheWriterCanBuildFitsTheLoadersBound builds that largest
+// record and measures it rather than leaving the reasoning here to be trusted.
 const maxMigrationRecordBytes = 8 << 20
 
 func loadMigrationRecordFile(path string) (MigrationRecord, MigrationRecordLoadOutcome, error) {

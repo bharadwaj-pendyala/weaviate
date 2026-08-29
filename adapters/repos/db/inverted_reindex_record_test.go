@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1146,4 +1148,58 @@ func TestTheWriterRefusesWhatTheLoaderWouldReject(t *testing.T) {
 			require.Empty(t, store.Records(), "nothing a load would refuse reaches the map either")
 		})
 	}
+}
+
+// TestTheLargestRecordTheWriterCanBuildFitsTheLoadersBound makes the size
+// derivation executable. The writer has no size check — one would be
+// unreachable — so the bound holds only as long as every per-property field
+// stays bounded, and a field that grows with the data rather than with the
+// property count breaks it silently: the writer accepts the record, the next
+// load refuses it, and that key is then wedged with every destructive and
+// promoting action on the shard withheld.
+func TestTheLargestRecordTheWriterCanBuildFitsTheLoadersBound(t *testing.T) {
+	// maxDirEntryNameBytes is what a filesystem allows in one directory entry.
+	// Every handle a record carries names one, and a property name composes
+	// into one, so it caps them all.
+	const maxDirEntryNameBytes = 255
+
+	longest := func(role string, i int) string {
+		s := fmt.Sprintf("%s_%d_", role, i)
+		return s + strings.Repeat("x", maxDirEntryNameBytes-len(s))
+	}
+
+	subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize)
+	subject.TrackerDir = longest("tracker", 0)
+	subject.Properties = make([]string, maxReindexPropertiesPerTask)
+	subject.StagedDirs = map[string]string{}
+	subject.CanonicalDirs = map[string]string{}
+	subject.SidecarDirs = map[string]string{}
+	displaced := map[string]string{}
+	for i := range subject.Properties {
+		prop := longest("property", i)
+		subject.Properties[i] = prop
+		subject.StagedDirs[prop] = longest("staged", i)
+		subject.CanonicalDirs[prop] = longest("canonical", i)
+		subject.SidecarDirs[prop] = longest("sidecar", i)
+		displaced[prop] = longest("displaced", i)
+	}
+
+	rec := NewMigrationRecordSwapped(subject, slices.Clone(subject.Properties), displaced)
+	for _, prop := range subject.Properties {
+		rec = rec.WithPromotionAt(prop, migrationPromotionFinished)
+	}
+
+	data, err := encodeMigrationRecord(rec)
+	require.NoError(t, err)
+	require.Less(t, len(data), maxMigrationRecordBytes,
+		"the writer must not be able to build a record the loader refuses")
+
+	// And the loader really does take it, so the bound is the one being cleared
+	// rather than a number this test made up.
+	logger, _ := test.NewNullLogger()
+	store := NewMigrationRecordStore(t.TempDir(), logger)
+	require.NoError(t, store.Put(rec))
+	require.NoError(t, store.Load())
+	require.Len(t, store.Records(), 1)
+	require.Empty(t, store.Unreadable())
 }
