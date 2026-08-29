@@ -62,7 +62,7 @@ func TestSwapPhaseLoadsTheShardBeforeClaimingItsUnit(t *testing.T) {
 	mkMigrationRecordFor(t, tenantLSM, trackerDir, "T_swap", 1, unitID,
 		ReindexTypeChangeTokenization, MigrationStateSwapped, prop)
 
-	staged := "staged_" + prop + "_" + trackerDir
+	staged := "property_" + prop + "__" + trackerDir + "_ingest"
 	canonical := "property_" + prop + "_searchable"
 	require.NoError(t, os.MkdirAll(filepath.Join(tenantLSM, staged), 0o777))
 	require.NoError(t, os.WriteFile(filepath.Join(tenantLSM, staged, "promoted.marker"), []byte(staged), 0o600))

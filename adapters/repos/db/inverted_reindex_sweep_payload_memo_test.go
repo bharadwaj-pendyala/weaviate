@@ -353,7 +353,7 @@ func TestTheUnloadedGateCountsThePayloadsItReads(t *testing.T) {
 	// A completed migration of another property, with no record: its payload
 	// is what the shard-wide preserve read opens, and the "cat" sweep's own
 	// scope settles it by name without opening anything.
-	mkTrackerDir(t, lsm, "enable_filterable_dog_1", "tidied.mig")
+	mkCompletedTracker(t, lsm, "enable_filterable_dog_1", "tidied.mig")
 	mkRecoveryPayload(t, lsm, "enable_filterable_dog_1", "dog")
 
 	props := &taskPropsCache{}

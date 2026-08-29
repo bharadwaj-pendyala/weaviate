@@ -239,8 +239,8 @@ func TestReconcileConvergesEveryMigrationOnAShard(t *testing.T) {
 				},
 			},
 			wantCanonical: map[string]string{
-				"property_title":            "m_10_title",
-				"property_title_filterable": "m_11_title",
+				"property_title":            "property_title__g10_ingest",
+				"property_title_filterable": "property_title__g11_ingest",
 			},
 		},
 		{
@@ -251,9 +251,9 @@ func TestReconcileConvergesEveryMigrationOnAShard(t *testing.T) {
 				{taskVersion: 22, code: StrategyCodeFilterableToRangeable, prop: "gamma", state: MigrationStateMerged},
 			},
 			wantCanonical: map[string]string{
-				"property_alpha": "m_20_alpha",
-				"property_beta":  "m_21_beta",
-				"property_gamma": "m_22_gamma",
+				"property_alpha": "property_alpha__g20_ingest",
+				"property_beta":  "property_beta__g21_ingest",
+				"property_gamma": "property_gamma__g22_ingest",
 			},
 		},
 		{
@@ -266,10 +266,10 @@ func TestReconcileConvergesEveryMigrationOnAShard(t *testing.T) {
 				},
 			},
 			wantCanonical: map[string]string{
-				"property_title": "m_30_title",
+				"property_title": "property_title__g30_ingest",
 				"property_body":  "property_body",
 			},
-			wantStaged: []string{"m_31_body"},
+			wantStaged: []string{"property_body__g31_ingest"},
 		},
 		{
 			// weaviate/weaviate#10675 shape: a newer migration's data is
@@ -279,7 +279,7 @@ func TestReconcileConvergesEveryMigrationOnAShard(t *testing.T) {
 				{taskVersion: 40, code: StrategyCodeSearchableRetokenize, prop: "title", state: MigrationStateSwapped},
 				{taskVersion: 41, code: StrategyCodeSearchableRetokenize, prop: "title", state: MigrationStateMerged},
 			},
-			wantCanonical: map[string]string{"property_title": "m_41_title"},
+			wantCanonical: map[string]string{"property_title": "property_title__g41_ingest"},
 		},
 		{
 			name:          "a bucket no record names is left alone",

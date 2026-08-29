@@ -1363,9 +1363,15 @@ func TestEveryWriterEmittedSidecarNameIsAccepted(t *testing.T) {
 				// The composition the writer uses: no generation is appended
 				// here, since each strategy's suffix already carries its own.
 				main := strategy.SourceBucketName(prop)
-				for _, suffix := range []string{
-					strategy.ReindexSuffix(), strategy.IngestSuffix(), strategy.BackupSuffix(),
-				} {
+				suffixes := []string{strategy.ReindexSuffix(), strategy.IngestSuffix()}
+				// The displaced directory. No writer on this build emits one,
+				// but a record carried in from a build that did names it in a
+				// sidecar role, and refusing it refuses that record.
+				if legacy := migrationSuffixes(strategy.MigrationDirName()); legacy != nil &&
+					legacy.legacyBackupSuffix != "" {
+					suffixes = append(suffixes, legacy.legacyBackupSuffix+genSuffix(generation))
+				}
+				for _, suffix := range suffixes {
 					name := main + suffix
 					require.Truef(t, migrationHandleIsSidecarShaped(name),
 						"%T emits %q, and refusing it refuses the migration", strategy, name)
@@ -1374,5 +1380,6 @@ func TestEveryWriterEmittedSidecarNameIsAccepted(t *testing.T) {
 			}
 		}
 	}
-	require.Equal(t, 3*len(props)*len(strategiesFor("title", 1))*3, checked)
+	require.GreaterOrEqual(t, checked, 3*len(props)*len(strategiesFor("title", 1))*2,
+		"every strategy has to have contributed its reindex and ingest names")
 }
