@@ -13,6 +13,7 @@ package reindex_singlenode
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,10 @@ import (
 )
 
 const opaquePromotionObjectCount = 30
+
+// opaquePromotionGeneration is the generation the recorded migration ran at,
+// carried by every directory it names.
+const opaquePromotionGeneration = 1
 
 // testPromotionRunsOnRecordedHandles pins that no directory name is ever
 // inferred: a migration's live data sits at a randomly named directory only
@@ -64,12 +69,17 @@ func testPromotionRunsOnRecordedHandles(t *testing.T, compose *docker.DockerComp
 	container := compose.GetWeaviate().Container()
 	lsmPath := findShardPathInContainer(t, container, class) + "/lsm"
 
-	// A name with a random infix: no prefix table, property name or generation
-	// suffix in the codebase can produce it, so a reader that finds this
-	// directory found it through the record.
-	staged := "m_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	// A random infix, so no strategy's suffix table can produce this name and a
+	// reader that finds the directory found it through the record. The
+	// surrounding shape is the writer's, because a record naming a staged
+	// directory that is not shaped like a sidecar of a property bucket is
+	// refused before it reaches disk.
+	handles := reindexrecords.HandlesFor(t, db.StrategyCodeFilterableRoaringsetRefresh,
+		"score", opaquePromotionGeneration)
+	staged := fmt.Sprintf("%s__%s_ingest_%d", handles.Canonical,
+		strings.ReplaceAll(uuid.NewString(), "-", ""), opaquePromotionGeneration)
 	code, _, err := container.Exec(ctx, []string{
-		"mv", lsmPath + "/property_score", lsmPath + "/" + staged,
+		"mv", lsmPath + "/" + handles.Canonical, lsmPath + "/" + staged,
 	})
 	require.NoError(t, err)
 	require.Zero(t, code, "moving the live bucket aside must succeed")
@@ -94,9 +104,9 @@ func plantSwappedRecordAcrossRestart(t *testing.T, compose *docker.DockerCompose
 	t.Helper()
 	ctx := context.Background()
 
-	subject := opaqueMigrationSubject(staged)
+	subject := opaqueMigrationSubject(t, staged)
 	recordName, record := reindexrecords.Encode(t, db.NewMigrationRecordSwapped(
-		subject, []string{"score"}, map[string]string{"score": "property_score"}))
+		subject, []string{"score"}, subject.CanonicalDirs))
 
 	// Repoint on every exit path: the restart rebinds the host port, and a
 	// failure in between would otherwise strand the client on the old one.
@@ -122,7 +132,11 @@ func plantSwappedRecordAcrossRestart(t *testing.T, compose *docker.DockerCompose
 
 // opaqueMigrationSubject is the one-property repair-filterable the planter
 // records; staged is where its data currently sits.
-func opaqueMigrationSubject(staged string) db.MigrationSubject {
+func opaqueMigrationSubject(t *testing.T, staged string) db.MigrationSubject {
+	t.Helper()
+
+	handles := reindexrecords.HandlesFor(t, db.StrategyCodeFilterableRoaringsetRefresh,
+		"score", opaquePromotionGeneration)
 	return db.MigrationSubject{
 		Key: db.MigrationRecordKey{
 			TaskVersion:  4711,
@@ -135,6 +149,6 @@ func opaqueMigrationSubject(staged string) db.MigrationSubject {
 		IterationCutoff: time.Now().UTC(),
 		TrackerDir:      "opaque_promotion_tracker",
 		StagedDirs:      map[string]string{"score": staged},
-		CanonicalDirs:   map[string]string{"score": "property_score"},
+		CanonicalDirs:   map[string]string{"score": handles.Canonical},
 	}
 }

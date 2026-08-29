@@ -351,9 +351,12 @@ func testPostRestartOrphanAuditClearsTracker(t *testing.T, ctx context.Context, 
 		"baseline restart must not lose data")
 
 	lsmPath := fmt.Sprintf("/data/%s/%s/lsm", strings.ToLower(className), shardName)
-	orphanDir := "searchable_retokenize_body_999" // gen 999 is far outside any runtime-picked value
-	sidecarBucket := "property_body_searchable__retokenize_reindex_999"
-	stagedBucket := "property_body_searchable__retokenize_ingest_999"
+	// Generation 999 is far outside any runtime-picked value.
+	const orphanGeneration = 999
+	orphanDir := reindexrecords.TrackerDir(t, db.StrategyCodeSearchableRetokenize,
+		[]string{"body"}, orphanGeneration)
+	handles := reindexrecords.HandlesFor(t, db.StrategyCodeSearchableRetokenize,
+		"body", orphanGeneration)
 	// Iterating: nothing is staged completely, so no reader may treat the
 	// canonical bucket as replaceable, and the target tokenization the subject
 	// names is one the collection's schema does not show.
@@ -370,11 +373,11 @@ func testPostRestartOrphanAuditClearsTracker(t *testing.T, ctx context.Context, 
 		OriginalTokenization: "word",
 		IterationCutoff:      time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		TrackerDir:           orphanDir,
-		StagedDirs:           map[string]string{"body": stagedBucket},
-		CanonicalDirs:        map[string]string{"body": "property_body_searchable"},
-		SidecarDirs:          map[string]string{"body": sidecarBucket},
+		StagedDirs:           map[string]string{"body": handles.Staged},
+		CanonicalDirs:        map[string]string{"body": handles.Canonical},
+		SidecarDirs:          map[string]string{"body": handles.Sidecar},
 	}, db.MigrationCheckpoint{}))
-	injectOrphanTrackerOnDisk(t, ctx, container, lsmPath, orphanDir, sidecarBucket,
+	injectOrphanTrackerOnDisk(t, ctx, container, lsmPath, orphanDir, handles.Sidecar,
 		`{"taskID":"orphan-from-prefix-backup","taskVersion":1,"unitID":"u0","payload":{"collection":"`+className+`","migrationType":"change-tokenization","properties":["body"],"targetTokenization":"lowercase","bucketStrategy":"map_collection"}}`,
 		recordFile, recordJSON)
 
@@ -396,7 +399,7 @@ func testPostRestartOrphanAuditClearsTracker(t *testing.T, ctx context.Context, 
 	// The sidecar dir is removed just after the tracker, so poll instead of
 	// asserting once.
 	require.Eventually(t, func() bool {
-		code, _, _ := container.Exec(ctx, []string{"test", "-d", filepath.Join(lsmPath, sidecarBucket)})
+		code, _, _ := container.Exec(ctx, []string{"test", "-d", filepath.Join(lsmPath, handles.Sidecar)})
 		return code != 0
 	}, 60*time.Second, 50*time.Millisecond,
 		"orphan sidecar bucket dir was not cleaned up by the post-bootstrap audit")

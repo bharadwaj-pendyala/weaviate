@@ -83,6 +83,11 @@ func testTornResumeReindexedNotTidied(t *testing.T, compose *docker.DockerCompos
 // a slow CI runner.
 const tornResumeObjectCount = 30
 
+// tornResumeGeneration is the generation the crashed run was at. Every
+// directory the planted record names carries it, because a tracker and the
+// sidecars beside it always come from the same run.
+const tornResumeGeneration = 1
+
 func testTornResumeEnableRangeable(t *testing.T, compose *docker.DockerCompose) {
 	const class = "TornResumeRangeable"
 	trueVal, falseVal := true, false
@@ -105,11 +110,8 @@ func testTornResumeEnableRangeable(t *testing.T, compose *docker.DockerCompose) 
 		}))
 	}
 
-	// migrationDirName for enable-rangeable on a single property:
-	// MigrationDirPrefixFilterableToRangeable + "_" + propName.
-	migDir := "filterable_to_rangeable_score"
-	restURI := plantTornMigrationAcrossRestart(t, compose, class, migDir,
-		"filterable_to_rangeable", "enable-rangeable", []string{"score"})
+	restURI := plantTornMigrationAcrossRestart(t, compose, class,
+		db.StrategyCodeFilterableToRangeable, "enable-rangeable", []string{"score"})
 
 	taskID := reindexhelpers.SubmitIndexUpsert(t, restURI, class, "score", "rangeFilters",
 		`{}`)
@@ -161,11 +163,8 @@ func testTornResumeRepairFilterable(t *testing.T, compose *docker.DockerCompose)
 		}))
 	}
 
-	// migrationDirName for repair-filterable: the fixed
-	// MigrationDirFilterableRoaringsetRefresh constant.
-	migDir := "filterable_roaringset_refresh"
-	restURI := plantTornMigrationAcrossRestart(t, compose, class, migDir,
-		"filterable_roaringset_refresh", "repair-filterable", []string{"name"})
+	restURI := plantTornMigrationAcrossRestart(t, compose, class,
+		db.StrategyCodeFilterableRoaringsetRefresh, "repair-filterable", []string{"name"})
 
 	taskID := reindexhelpers.RebuildIndex(t, restURI, class, "name", "filterable")
 	t.Logf("torn-resume repair-filterable: submitted task %s with planted torn sentinels", taskID)
@@ -199,11 +198,8 @@ func testTornResumeEnableFilterable(t *testing.T, compose *docker.DockerCompose)
 		}))
 	}
 
-	// migrationDirName for enable-filterable: MigrationDirPrefixEnableFilterable
-	// + "_" + sorted propNames.
-	migDir := "enable_filterable_name"
-	restURI := plantTornMigrationAcrossRestart(t, compose, class, migDir,
-		"enable_filterable", "enable-filterable", []string{"name"})
+	restURI := plantTornMigrationAcrossRestart(t, compose, class,
+		db.StrategyCodeEnableFilterable, "enable-filterable", []string{"name"})
 
 	taskID := reindexhelpers.SubmitIndexUpsert(t, restURI, class, "name", "filterable",
 		`{}`)
@@ -226,8 +222,13 @@ func testTornResumeEnableFilterable(t *testing.T, compose *docker.DockerCompose)
 // plantTornMigrationAcrossRestart plants the on-disk state of a run that
 // crashed mid-rebuild, then restarts the container. Layout:
 //
-//	.migrations/<migDir>/payload.mig                        — the task payload
+//	.migrations/<tracker>/payload.mig                        — the task payload
 //	.migrations/records/<version>_<strategyCode>_<unit>.json — the state
+//
+// Every directory the record names comes from [reindexrecords], so the planted
+// state is one a crashed run on this build could actually have left: a record
+// naming a staged or sidecar directory the writer would not have written is
+// refused outright, and pinning behavior against a refused record pins nothing.
 //
 // The record is Iterating: the rebuild never reported complete, so nothing
 // staged is a candidate for becoming live and a submit that lands afterwards
@@ -240,11 +241,15 @@ func testTornResumeEnableFilterable(t *testing.T, compose *docker.DockerCompose)
 func plantTornMigrationAcrossRestart(
 	t *testing.T,
 	compose *docker.DockerCompose,
-	class, migDir, strategyCode, migrationType string,
+	class string,
+	strategyCode db.MigrationStrategyCode,
+	migrationType string,
 	props []string,
 ) string {
 	t.Helper()
 	ctx := context.Background()
+
+	migDir := reindexrecords.TrackerDir(t, strategyCode, props, tornResumeGeneration)
 
 	container := compose.GetWeaviate().Container()
 
@@ -266,7 +271,7 @@ func plantTornMigrationAcrossRestart(
 	subject := db.MigrationSubject{
 		Key: db.MigrationRecordKey{
 			TaskVersion:  1,
-			StrategyCode: db.MigrationStrategyCode(strategyCode),
+			StrategyCode: strategyCode,
 			UnitID:       "u0",
 		},
 		TaskID:          "torn-resume-crashed-run",
@@ -276,12 +281,15 @@ func plantTornMigrationAcrossRestart(
 		TrackerDir:      migDir,
 		StagedDirs:      make(map[string]string, len(props)),
 		CanonicalDirs:   make(map[string]string, len(props)),
+		SidecarDirs:     make(map[string]string, len(props)),
 	}
 	quoted := make([]string, len(props))
 	for i, prop := range props {
 		quoted[i] = strconv.Quote(prop)
-		subject.StagedDirs[prop] = migDir + "__ingest_1"
-		subject.CanonicalDirs[prop] = "property_" + prop
+		handles := reindexrecords.HandlesFor(t, strategyCode, prop, tornResumeGeneration)
+		subject.StagedDirs[prop] = handles.Staged
+		subject.CanonicalDirs[prop] = handles.Canonical
+		subject.SidecarDirs[prop] = handles.Sidecar
 	}
 	recordName, record := reindexrecords.Encode(t,
 		db.NewMigrationRecordIterating(subject, db.MigrationCheckpoint{}))
