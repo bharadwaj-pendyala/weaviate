@@ -182,7 +182,7 @@ func TestOversizedTrackerPayloadKeepsTheDeleteSweepSafe(t *testing.T) {
 				tenantScalePayload(t, multiPropTrackerProps, tc.tenants))
 			logger, _ := test.NewNullLogger()
 
-			cleanStaleMigrationDirsAt(t.Context(), lsm, tc.propName, "filterable", logger, &taskPropsCache{})
+			cleanStaleMigrationDirsAt(t.Context(), lsm, tc.propName, "filterable", logger, nil)
 
 			dir := filepath.Join(lsm, ".migrations", tc.dirName)
 			if tc.wantSurvives {

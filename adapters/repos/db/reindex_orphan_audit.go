@@ -780,13 +780,23 @@ func removeUnloadedSidecarsForOrphan(lsmPath string, o *orphanReindexTracker, lo
 // migrationCompletionMarker reports the completed-migration marker a tracker
 // directory carries, if any. [migrationLegacyMarkerTrackersAt] reads it to
 // tell a migration that completed from one abandoned mid-run.
-func migrationCompletionMarker(trackerPath string) (string, bool) {
-	for _, marker := range []string{"tidied.mig", "merged.mig"} {
-		if fileExistsInDir(trackerPath, marker) {
-			return marker, true
+//
+// unreadable is the third outcome, and it is not "no marker": a stat that
+// failed for any reason other than the file being absent (EACCES on a restored
+// tree, EIO, EMFILE on a many-tenant node) leaves the question unanswered.
+// Reading that as "no completion marker" drops the tracker out of the preserve
+// set, and its staged directory holds the property's only copy.
+func migrationCompletionMarker(trackerPath string) (marker string, found, unreadable bool) {
+	for _, name := range []string{"tidied.mig", "merged.mig"} {
+		info, err := os.Stat(filepath.Join(trackerPath, name))
+		switch {
+		case err == nil && !info.IsDir():
+			return name, true, false
+		case err != nil && !os.IsNotExist(err):
+			return "", false, true
 		}
 	}
-	return "", false
+	return "", false, false
 }
 
 // sidecarDirsForOrphan returns the lsm-relative sidecar bucket dir names the
@@ -797,17 +807,36 @@ func sidecarDirsForOrphan(o *orphanReindexTracker) []string {
 	return migrationSidecarDirsFor(o.dirName, o.prefix, o.generation, o.properties)
 }
 
-// migrationSidecarDirsFor names the sidecar bucket dirs one tracker owns:
-// <main><ingestSuffix>_<gen> and <main><reindexSuffix>_<gen>, composed through
-// [migrationSuffixes] keyed by the tracker's own dir name rather than matched
-// by string prefix. A new strategy is therefore picked up automatically.
+// migrationSidecarDirsFor names the sidecar bucket dirs the reclaiming audit
+// may remove for one tracker: <main><ingestSuffix>_<gen> and
+// <main><reindexSuffix>_<gen>, composed through [migrationSuffixes] keyed by
+// the tracker's own dir name rather than matched by string prefix. A new
+// strategy is therefore picked up automatically.
 //
-// The reclaiming audit and the preserve pass both derive from here, so a
-// directory one would remove and one must keep are never derived two ways.
 // The displaced <main><backupSuffix>_<gen> is deliberately not among them: it
 // holds the pre-swap main bucket, and no reader here can tell a migration that
 // still needs it from one that does not.
+//
+// Preservation asks [migrationPreservedSidecarDirsFor] instead. The two
+// polarities are not one list: a name this one leaves out is a directory the
+// audit declines to reclaim, and a name the preserve side leaves out is a
+// directory some other sweep deletes.
 func migrationSidecarDirsFor(dirName, prefix string, generation int, properties []string) []string {
+	return migrationSidecarDirsIn(dirName, prefix, generation, properties, false)
+}
+
+// migrationPreservedSidecarDirsFor names every sidecar bucket dir one tracker
+// owns, the displaced <main><backupSuffix>_<gen> included.
+//
+// A preserve pass has to answer wider than the reclaiming one. The backup dir
+// holds the pre-swap main bucket, and until the deferred finalize runs it is
+// the only copy of what the property held before the flip; a sweep that is not
+// told about it removes it while the mirror is still aimed there.
+func migrationPreservedSidecarDirsFor(dirName, prefix string, generation int, properties []string) []string {
+	return migrationSidecarDirsIn(dirName, prefix, generation, properties, true)
+}
+
+func migrationSidecarDirsIn(dirName, prefix string, generation int, properties []string, withBackup bool) []string {
 	if len(properties) == 0 {
 		return nil
 	}
@@ -817,10 +846,13 @@ func migrationSidecarDirsFor(dirName, prefix string, generation int, properties 
 	}
 	reindexSuffix := reindexSuffixFor(prefix)
 	genTail := genSuffix(generation)
-	out := make([]string, 0, 2*len(properties))
+	out := make([]string, 0, 3*len(properties))
 	for _, propName := range properties {
 		main := suffixes.sourceBucketName(propName)
 		out = append(out, main+suffixes.ingestSuffix+genTail)
+		if withBackup {
+			out = append(out, main+suffixes.backupSuffix+genTail)
+		}
 		if reindexSuffix != "" {
 			out = append(out, main+reindexSuffix+genTail)
 		}

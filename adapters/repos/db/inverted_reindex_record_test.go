@@ -25,6 +25,7 @@ import (
 
 	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/require"
+	"github.com/weaviate/weaviate/adapters/repos/db/helpers"
 	"github.com/weaviate/weaviate/entities/models"
 )
 
@@ -375,18 +376,36 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 			wantErr: `names directory "property_title" as both the canonical directory of property "body" and the canonical directory of property "title"`,
 		},
 		{
+			// The canonical directory here is a previous migration's staged
+			// name, which is the shape a property serves from between a flip
+			// and its promotion. The per-role shapes allow it, so this row
+			// reaches the one-owner rule rather than being refused earlier.
 			name: "a property staged into another property's canonical directory",
 			data: twoProperties(func(subject, _ map[string]any) {
-				subject["stagedDirs"].(map[string]any)["body"] = subject["canonicalDirs"].(map[string]any)["title"]
+				canonical := subject["canonicalDirs"].(map[string]any)
+				canonical["title"] = "property_title__retokenize_ingest_1"
+				subject["stagedDirs"].(map[string]any)["body"] = canonical["title"]
 			}),
-			wantErr: `names directory "property_title" as both the staged directory of property "body" and the canonical directory of property "title"`,
+			wantErr: `names directory "property_title__retokenize_ingest_1" as both the staged directory of property "body" and the canonical directory of property "title"`,
 		},
 		{
 			name: "a sidecar that is another property's canonical directory",
 			data: twoProperties(func(subject, _ map[string]any) {
-				subject["sidecarDirs"].(map[string]any)["body"] = subject["canonicalDirs"].(map[string]any)["title"]
+				canonical := subject["canonicalDirs"].(map[string]any)
+				canonical["title"] = "property_title__retokenize_ingest_1"
+				subject["sidecarDirs"].(map[string]any)["body"] = canonical["title"]
 			}),
-			wantErr: `names directory "property_title" as both the canonical directory of property "title" and the sidecar directory of property "body"`,
+			wantErr: `names directory "property_title__retokenize_ingest_1" as both the canonical directory of property "title" and the sidecar directory of property "body"`,
+		},
+		{
+			// And the shape rule that would otherwise have answered those two
+			// first, on the role the one-owner rule cannot see: a live bucket
+			// no record covers.
+			name: "a sidecar directory that is a live property bucket",
+			data: valid(func(env map[string]any) {
+				env["subject"].(map[string]any)["sidecarDirs"].(map[string]any)["title"] = "property_body_searchable"
+			}),
+			wantErr: `names sidecar directory "property_body_searchable", which is a property's own bucket rather than a sidecar of one`,
 		},
 		{
 			name: "a flip that displaced a sidecar directory",
@@ -428,7 +447,25 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 			data: valid(func(env map[string]any) {
 				env["subject"].(map[string]any)["stagedDirs"].(map[string]any)["title"] = migrationsDir
 			}),
-			wantErr: `names staged directory ".migrations", which is the shard's own migration tree`,
+			wantErr: `names staged directory ".migrations", which is a store the shard serves from`,
+		},
+		{
+			// The object store is the shard's whole object store, and a
+			// Cancelled verdict hands every staged directory to os.RemoveAll.
+			name: "a staged directory that is the object store",
+			data: valid(func(env map[string]any) {
+				env["subject"].(map[string]any)["stagedDirs"].(map[string]any)["title"] = "objects"
+			}),
+			wantErr: `names staged directory "objects", which is a store the shard serves from`,
+		},
+		{
+			// A live bucket no record covers passes every cross-record check,
+			// so only its shape distinguishes it from a migration's own copy.
+			name: "a staged directory that is a live property bucket",
+			data: valid(func(env map[string]any) {
+				env["subject"].(map[string]any)["stagedDirs"].(map[string]any)["title"] = "property_body_searchable"
+			}),
+			wantErr: `names staged directory "property_body_searchable", which is a property's own bucket rather than a sidecar of one`,
 		},
 		{
 			// removeTrackerDir joins this onto .migrations, so the tracker
@@ -437,7 +474,7 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 			data: valid(func(env map[string]any) {
 				env["subject"].(map[string]any)["trackerDir"] = migrationRecordsDirName
 			}),
-			wantErr: `names tracker directory "records", which is the shard's own migration tree`,
+			wantErr: `names tracker directory "records", which is a store the shard serves from`,
 		},
 		{
 			name: "a unit the record file name could not carry",
@@ -1085,7 +1122,23 @@ func TestTheWriterRefusesWhatTheLoaderWouldReject(t *testing.T) {
 			name:    "a sidecar directory that is the shard's migrations tree",
 			mangle:  func(s *MigrationSubject) { s.SidecarDirs = map[string]string{"title": migrationsDir} },
 			because: "a sidecar handle is reclaimed by os.RemoveAll like every other owned directory",
-			wantErr: `names sidecar directory ".migrations", which is the shard's own migration tree`,
+			wantErr: `names sidecar directory ".migrations", which is a store the shard serves from`,
+		},
+		{
+			name: "a staged directory that is a live bucket of another property",
+			mangle: func(s *MigrationSubject) {
+				s.StagedDirs = map[string]string{"title": "property_body_searchable"}
+			},
+			because: "a staged handle is reclaimed on every teardown path, so a live bucket named there is deleted",
+			wantErr: `names staged directory "property_body_searchable", which is a property's own bucket rather than a sidecar of one`,
+		},
+		{
+			name: "a staged directory that is the object store",
+			mangle: func(s *MigrationSubject) {
+				s.StagedDirs = map[string]string{"title": "objects"}
+			},
+			because: "the object store is the shard's whole object store",
+			wantErr: `names staged directory "objects", which is a store the shard serves from`,
 		},
 		{
 			name:    "a strategy code outside the known set",
@@ -1147,22 +1200,90 @@ func TestTheLargestRecordTheWriterCanBuildFitsTheLoadersBound(t *testing.T) {
 		displaced[prop] = longest("displaced", i)
 	}
 
-	rec := NewMigrationRecordSwapped(subject, slices.Clone(subject.Properties), displaced)
+	swapped := NewMigrationRecordSwapped(subject, slices.Clone(subject.Properties), displaced)
 	for _, prop := range subject.Properties {
-		rec = rec.WithPromotionAt(prop, migrationPromotionFinished)
+		swapped = swapped.WithPromotionAt(prop, migrationPromotionFinished)
 	}
 
-	data, err := encodeMigrationRecord(rec)
-	require.NoError(t, err)
-	require.Less(t, len(data), maxMigrationRecordBytes,
-		"the writer must not be able to build a record the loader refuses")
+	// A Swapped envelope carries no checkpoint block, so measuring only that
+	// variant leaves the one field that is not a directory handle unmeasured.
+	// The only indexKey this build produces is a UUID's 16 bytes.
+	iterating := NewMigrationRecordIterating(subject, MigrationCheckpoint{
+		LastProcessedKey: bytes.Repeat([]byte{0xff}, 16),
+	})
 
-	// And the loader really does take it, so the bound is the one being cleared
-	// rather than a number this test made up.
+	for _, rec := range []MigrationRecord{swapped, iterating} {
+		t.Run(string(rec.State()), func(t *testing.T) {
+			data, err := encodeMigrationRecord(rec)
+			require.NoError(t, err)
+			require.Less(t, len(data), maxMigrationRecordBytes,
+				"the writer must not be able to build a record the loader refuses")
+
+			// And the loader really does take it, so the bound is the one being
+			// cleared rather than a number this test made up.
+			logger, _ := test.NewNullLogger()
+			store := NewMigrationRecordStore(t.TempDir(), logger)
+			require.NoError(t, store.Put(rec))
+			require.NoError(t, store.Load())
+			require.Len(t, store.Records(), 1)
+			require.Empty(t, store.Unreadable())
+		})
+	}
+}
+
+// TestAnOversizedRecordIsRefusedByTheWriterToo pins the other half of the same
+// symmetry: a record the loader would refuse must not reach disk, because the
+// key it lands on can afterwards be neither read, written, nor removed.
+func TestAnOversizedRecordIsRefusedByTheWriterToo(t *testing.T) {
+	subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
+	for i := 0; i < 40_000; i++ {
+		pad := fmt.Sprintf("m_42_pad_%06d%s", i, strings.Repeat("x", 200))
+		subject.SidecarDirs[fmt.Sprintf("pad_%06d", i)] = pad
+	}
+	oversized := NewMigrationRecordMerged(subject)
+
+	raw, err := json.MarshalIndent(oversized.toEnvelope(), "", "  ")
+	require.NoError(t, err)
+	require.Greater(t, len(raw), maxMigrationRecordBytes,
+		"the fixture has to exceed the bound, or there is nothing to refuse")
+
+	_, err = encodeMigrationRecord(oversized)
+	require.ErrorContains(t, err, "bound is")
+
 	logger, _ := test.NewNullLogger()
 	store := NewMigrationRecordStore(t.TempDir(), logger)
-	require.NoError(t, store.Put(rec))
+	require.Error(t, store.Put(oversized))
+
+	// The key is still usable, which is the whole point: an accepted oversized
+	// write freezes it forever. Asserting the file is absent would not show
+	// that — this reads the record back.
+	inBound := NewMigrationRecordMerged(testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title"))
+	require.NoError(t, store.Put(inBound))
 	require.NoError(t, store.Load())
 	require.Len(t, store.Records(), 1)
+	require.Equal(t, MigrationStateMerged, store.Records()[0].State())
 	require.Empty(t, store.Unreadable())
+}
+
+// TestEveryPropertyBucketCarriesTheMigrationPrefix keeps
+// migrationPropertyBucketPrefix honest: the shape rule that keeps a live
+// bucket out of a staged handle recognizes a bucket by this prefix, so a
+// helper that stopped emitting it would make the rule inert without failing
+// anything else.
+func TestEveryPropertyBucketCarriesTheMigrationPrefix(t *testing.T) {
+	for _, bucket := range []string{
+		helpers.BucketFromPropNameLSM("title"),
+		helpers.BucketSearchableFromPropNameLSM("title"),
+		helpers.BucketRangeableFromPropNameLSM("title"),
+	} {
+		require.True(t, strings.HasPrefix(bucket, migrationPropertyBucketPrefix), bucket)
+		require.True(t, migrationHandleIsLiveBucket(bucket),
+			"a property's own bucket must never pass as a migration's staged copy")
+	}
+	// And a sidecar of one must still pass, or the rule refuses what the
+	// writer emits.
+	require.False(t, migrationHandleIsLiveBucket("property_title_searchable__retokenize_ingest_1"))
+	require.False(t, migrationHandleIsLiveBucket("property_title_searchable__blockmax_map_2"))
+	require.False(t, migrationHandleIsLiveBucket("m_42_title"),
+		"a handle that is no property bucket names nothing the shard serves from")
 }

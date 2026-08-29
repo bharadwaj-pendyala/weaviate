@@ -171,6 +171,43 @@ func migrationDirPrefixesForIndexType(indexType string) []string {
 	return nil
 }
 
+// migrationPerPropertyDirPrefixes are the strategy prefixes whose tracker dir
+// carries its own property list in its name. Class-level prefixes are absent
+// for the same reason [migrationDirPrefixesForIndexType] omits them: their
+// directory names name no property, so only their payload can say what they
+// own.
+func migrationPerPropertyDirPrefixes() []string {
+	return []string{
+		MigrationDirPrefixEnableFilterable,
+		MigrationDirPrefixEnableSearchable,
+		MigrationDirPrefixFilterableRetokenize,
+		MigrationDirPrefixFilterableToRangeable,
+		MigrationDirPrefixRebuildSearchable,
+		MigrationDirPrefixSearchableRetokenize,
+	}
+}
+
+// migrationTrackerMayOwnProperty reports whether a tracker directory could own
+// a bucket of propName, deciding from the directory name alone.
+//
+// [migrationDirWithProps] builds a per-property tracker's name from its sorted
+// property list, so a name that does not carry propName proves the tracker
+// stages nothing for it and its payload need never be parsed. A class-level
+// tracker names no property at all, so the answer for one is always yes and the
+// payload decides — which is what keeps a completed class-level migration's
+// sidecars in the preserve set.
+func migrationTrackerMayOwnProperty(name, propName string) bool {
+	base := migrationDirBase(name)
+	for _, prefix := range migrationPerPropertyDirPrefixes() {
+		if tail, ok := strings.CutPrefix(base, prefix+"_"); !ok || tail == "" {
+			continue
+		}
+		return base == migrationDirWithProps(prefix, []string{propName}) ||
+			namesPropertyToken(base, prefix, propName)
+	}
+	return true
+}
+
 // migrationDirScope names the migration tracker dirs one (property, index
 // type) cleanup owns on one shard, and decides whether a dir on disk is one
 // of them.
@@ -449,15 +486,7 @@ func (s migrationDirScope) taskProperties(name string) (props []string, ok, unre
 	if rec, found := migrationRecordForTracker(s.records, name); found {
 		return rec.Subject().Properties, len(rec.Subject().Properties) > 0, false
 	}
-	// properties.mig is the small file every writer lays down beside the
-	// payload, and this caller wants nothing but the list. It is taken here
-	// rather than inside [readTaskProps] so payload.mig stays the only source
-	// of the migration's identity, which the orphan audit reads off the same
-	// answer and a sidecar cannot supply.
 	migDir := filepath.Join(s.lsmPath, ".migrations", name)
-	if props, ok := propsFromSidecar(migDir, s.prefixes); ok {
-		return props, true, false
-	}
 	answer := s.props.lookup(migDir)
 	return answer.props, answer.ok, answer.unreadable
 }
@@ -490,20 +519,22 @@ type taskProps struct {
 	unitID      string
 }
 
-// lookup answers for one tracker dir. The memo is keyed by dir alone —
-// safe because [migrationDirScope.inScopeFailingOpen] only reaches here after
-// [migrationDirScope.hasStrategyPrefix] accepts the name, and no strategy
-// prefix is a prefix of another, so at most one prefix can ever satisfy a
-// given dir.
+// lookup answers for one tracker dir. The memo is keyed by dir alone — safe
+// because the answer is a pure function of the directory: no strategy prefix
+// is a prefix of another, so at most one can ever satisfy a given dir name.
+//
+// properties.mig is consulted here rather than by the caller so a memo hit
+// skips it too: on a shard with many completed trackers the stat-and-read it
+// costs is paid once per index type of the same sweep otherwise.
 func (c *taskPropsCache) lookup(migDir string) taskProps {
 	if c == nil {
-		answer, _ := readTaskProps(migDir)
+		answer, _ := readTrackerProps(migDir)
 		return answer
 	}
 	if answer, hit := c.byDir[migDir]; hit {
 		return answer
 	}
-	answer, readPayload := readTaskProps(migDir)
+	answer, readPayload := readTrackerProps(migDir)
 	if c.byDir == nil {
 		c.byDir = map[string]taskProps{}
 	}
@@ -512,6 +543,17 @@ func (c *taskPropsCache) lookup(migDir string) taskProps {
 		c.reads++
 	}
 	return answer
+}
+
+// readTrackerProps is one tracker directory's property list, taken from
+// properties.mig where that small sidecar reconstructs the directory's own
+// name and from payload.mig otherwise. readPayload reports whether the
+// megabyte-scale payload had to be opened, which is the cost the caller counts.
+func readTrackerProps(migDir string) (answer taskProps, readPayload bool) {
+	if props, ok := propsFromSidecar(migDir, migrationPerPropertyDirPrefixes()); ok {
+		return taskProps{props: props, ok: true}, false
+	}
+	return readTaskProps(migDir)
 }
 
 // count is how many payloads this cache had to read; a refusal opens none.

@@ -335,8 +335,9 @@ func hasStalePartialReindexState(
 			return true, false
 		}
 		// This one backs a completed migration, so nothing but a load
-		// reclaims it.
-		finalizable = true
+		// reclaims it — unless the record owning it can no longer reach a
+		// state a load would act on, in which case the load reclaims nothing.
+		finalizable = finalizable || committed.bucketNeedsLoad(name)
 	}
 
 	// Migration tracker dirs, minus the deferred-finalize generations.

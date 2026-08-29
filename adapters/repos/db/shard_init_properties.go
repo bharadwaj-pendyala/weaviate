@@ -167,11 +167,12 @@ func (s *Shard) updatePropertyBuckets(ctx context.Context,
 	payloadReads *atomic.Int64,
 ) {
 	eg.Go(func() error {
-		// One memo for the whole loop: a filterable_to_rangeable tracker is in
-		// scope for two of the disabled index types, and parsing its payload
-		// twice costs megabytes inside the RAFT apply.
-		props := &taskPropsCache{}
-		defer func() { payloadReads.Add(int64(props.count())) }()
+		// One preserve set and one payload memo for the whole loop: the shard's
+		// records and completed trackers do not change under a sweep, and
+		// rebuilding them per index type re-parses every payload — megabytes
+		// each — inside the RAFT apply this runs in.
+		sweep := migrationSweepStateFor(s.pathLSM(), prop.Name, s.index.logger)
+		defer func() { payloadReads.Add(int64(sweep.reads())) }()
 		for _, indexType := range disabledIndexTypes(prop) {
 			// The whole loop runs inside the RAFT apply, once per shard. Every
 			// shard still queued for it drops out here rather than walking its
@@ -186,7 +187,7 @@ func (s *Shard) updatePropertyBuckets(ctx context.Context,
 			if err := s.removeBucket(ctx, mainBucket); err != nil {
 				return fmt.Errorf("cannot remove %s index for %s property: %w", indexType, prop.Name, err)
 			}
-			s.cleanStaleMigrationDirs(ctx, prop.Name, indexType, props)
+			s.cleanStaleMigrationDirs(ctx, prop.Name, indexType, sweep)
 			s.cleanStaleSidecarDirs(mainBucket)
 		}
 		return nil
@@ -209,6 +210,39 @@ func disabledIndexTypes(prop *models.Property) []string {
 	return types
 }
 
+// migrationSweepState is what every index type of one property's sweep shares:
+// the shard's preserve set, and the tracker-payload memo it was read through.
+//
+// One property's DELETE sweeps up to three index types, and the shard's records
+// and completed trackers cannot change while it runs — the shard is either cold
+// or holds the apply. Building the state per index type therefore re-parses the
+// same payloads, at megabytes each, inside the RAFT apply.
+type migrationSweepState struct {
+	committed migrationPreservedState
+	props     *taskPropsCache
+}
+
+// migrationSweepStateFor reads one shard's preserve set for propName, through
+// a memo the caller's index types go on to share.
+func migrationSweepStateFor(lsmPath, propName string, logger logrus.FieldLogger) *migrationSweepState {
+	props := &taskPropsCache{}
+	return &migrationSweepState{
+		committed: migrationPreservedStateFor(lsmPath, propName, props, logger),
+		props:     props,
+	}
+}
+
+// reads is how many tracker payloads this sweep had to parse, for the caller's
+// summary line. It counts the preserve pass too, which is where a sweep that
+// touches no tracker of its own can still parse every completed tracker on the
+// shard.
+func (s *migrationSweepState) reads() int {
+	if s == nil {
+		return 0
+	}
+	return s.props.count()
+}
+
 // cleanStaleMigrationDirs removes per-property runtime-reindex migration
 // directories whose completion claim still names the removed (propName,
 // indexType) bucket as live. Without this, a re-enable short-circuits on that
@@ -222,8 +256,8 @@ func disabledIndexTypes(prop *models.Property) []string {
 // The read count accrues into the caller's memo instead of being logged per
 // call, since a 10k-tenant class would otherwise emit 30k lines inside one RAFT
 // FSM apply.
-func (s *Shard) cleanStaleMigrationDirs(ctx context.Context, propName, indexType string, props *taskPropsCache) {
-	cleanStaleMigrationDirsAt(ctx, s.pathLSM(), propName, indexType, s.index.logger, props)
+func (s *Shard) cleanStaleMigrationDirs(ctx context.Context, propName, indexType string, sweep *migrationSweepState) {
+	cleanStaleMigrationDirsAt(ctx, s.pathLSM(), propName, indexType, s.index.logger, sweep)
 }
 
 // cleanStaleMigrationDirsAt is the pure-function form of
@@ -246,15 +280,17 @@ func (s *Shard) cleanStaleMigrationDirs(ctx context.Context, propName, indexType
 // node).
 //
 // The preserve pass and the deletion loop ask about the same tracker dirs, so
-// they share the caller's payload memo, and so does every index type of the
-// same DELETE. props holds how many payloads that came to, for the caller's log
-// line; a nil memo reads every payload again and counts nothing.
+// they share the caller's sweep state, and so does every index type of the same
+// DELETE. A nil sweep builds one for this call alone.
 func cleanStaleMigrationDirsAt(ctx context.Context, lsmPath, propName, indexType string,
-	logger logrus.FieldLogger, props *taskPropsCache,
+	logger logrus.FieldLogger, sweep *migrationSweepState,
 ) {
-	committed := migrationPreservedStateAt(lsmPath, logger)
-	scope := migrationDirsOf(lsmPath, nil, propName, indexType).cachingProps(props).knownFrom(committed)
-	if err := cleanStaleMigrationDirsIn(ctx, scope, committed, logger); err != nil && ctx.Err() == nil {
+	if sweep == nil {
+		sweep = migrationSweepStateFor(lsmPath, propName, logger)
+	}
+	scope := migrationDirsOf(lsmPath, nil, propName, indexType).
+		cachingProps(sweep.props).knownFrom(sweep.committed)
+	if err := cleanStaleMigrationDirsIn(ctx, scope, sweep.committed, logger); err != nil && ctx.Err() == nil {
 		// Logged and dropped here only: the DELETE this serves has already
 		// removed the bucket, and the next re-enable fails loudly on the
 		// stale completion claim. The sweep path propagates it instead.
@@ -383,11 +419,12 @@ func (s *Shard) CleanStalePartialReindexState(ctx context.Context, propName, ind
 		"operation":   "CleanStalePartialReindexState",
 	})
 
-	props := &taskPropsCache{}
 	// Preserve the directories of completed-but-deferred migrations: they back
 	// the live in-memory bucket pointer; wiping them is #10675-shape data loss.
-	committed := migrationPreservedStateAt(s.pathLSM(), s.index.logger)
-	scope := migrationDirsOf(s.pathLSM(), nil, propName, indexType).cachingProps(props).knownFrom(committed)
+	sweep := migrationSweepStateFor(s.pathLSM(), propName, s.index.logger)
+	committed := sweep.committed
+	scope := migrationDirsOf(s.pathLSM(), nil, propName, indexType).
+		cachingProps(sweep.props).knownFrom(committed)
 
 	loaded := s.store.GetBucketsByName()
 	var shutDown []string
@@ -414,7 +451,7 @@ func (s *Shard) CleanStalePartialReindexState(ctx context.Context, propName, ind
 				// — bucket gone — is satisfied; keep going.
 				continue
 			}
-			return props.count(), fmt.Errorf(
+			return sweep.reads(), fmt.Errorf(
 				"shutting down stale sidecar bucket %q before partial-reindex cleanup: %w",
 				bucketName, err)
 		}
@@ -429,12 +466,12 @@ func (s *Shard) CleanStalePartialReindexState(ctx context.Context, propName, ind
 	// survive.
 	s.cleanStaleSidecarDirsWithPreserved(mainBucketName, committed)
 	if err := cleanStaleMigrationDirsIn(ctx, scope, committed, s.index.logger); err != nil {
-		return props.count(), err
+		return sweep.reads(), err
 	}
-	logger.WithField("payload_reads", props.count()).
+	logger.WithField("payload_reads", sweep.reads()).
 		Info("partial-reindex cleanup: sidecar dirs + migration dir cleaned")
 
-	return props.count(), nil
+	return sweep.reads(), nil
 }
 
 // mainBucketForPropertyIndex returns the canonical main bucket name on

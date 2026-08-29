@@ -281,9 +281,9 @@ func TestPersistRecoveryRecordWritesThePropsSidecar(t *testing.T) {
 			// A real memo, never nil: the read count accrues into it, and a nil
 			// one reads every payload again while counting nothing, which would
 			// make the assertion below hold no matter what the sweep read.
-			props := &taskPropsCache{}
-			cleanStaleMigrationDirsAt(t.Context(), lsm, tc.sweptProp, tc.sweptIndexType, logger, props)
-			require.Zero(t, props.count(),
+			swept := migrationSweepStateFor(lsm, tc.sweptProp, logger)
+			cleanStaleMigrationDirsAt(t.Context(), lsm, tc.sweptProp, tc.sweptIndexType, logger, swept)
+			require.Zero(t, swept.reads(),
 				"every swept tracker was answerable from its sidecar")
 			// Without this the zero above would also hold for a sweep that
 			// matched nothing at all.
@@ -487,7 +487,7 @@ func TestASidecarMayNotStandInForAnAbsentPayload(t *testing.T) {
 					filepath.Join(migDir, reindexRecoveryPayloadFile), tc.payload, 0o644))
 			}
 
-			cleanStaleMigrationDirsAt(t.Context(), lsm, "a_b", "filterable", logger, &taskPropsCache{})
+			cleanStaleMigrationDirsAt(t.Context(), lsm, "a_b", "filterable", logger, nil)
 
 			_, err := os.Stat(migDir)
 			if tc.swept {
@@ -544,16 +544,16 @@ func TestAmbiguousSweepReadsNoPayloadWhenTheSidecarsAreThere(t *testing.T) {
 	logger, _ := test.NewNullLogger()
 
 	lsm := writeAmbiguousSweepTree(t, true)
-	withSidecars := &taskPropsCache{}
+	withSidecars := migrationSweepStateFor(lsm, "a_b", logger)
 	cleanStaleMigrationDirsAt(t.Context(), lsm, "a_b", "filterable", logger, withSidecars)
-	require.Zero(t, withSidecars.count(), "every tracker was answerable from its sidecar")
+	require.Zero(t, withSidecars.reads(), "every tracker was answerable from its sidecar")
 
 	// Without sidecars the same sweep has to open every payload, which is what
 	// pins the count above as a property of the sidecars and not of the names.
 	bare := writeAmbiguousSweepTree(t, false)
-	noSidecars := &taskPropsCache{}
+	noSidecars := migrationSweepStateFor(bare, "a_b", logger)
 	cleanStaleMigrationDirsAt(t.Context(), bare, "a_b", "filterable", logger, noSidecars)
-	require.Equal(t, ambiguousSweepDirs, noSidecars.count(),
+	require.Equal(t, ambiguousSweepDirs, noSidecars.reads(),
 		"without a sidecar there is nothing to answer from")
 
 	const maxBytesPerSweep = 2 << 20

@@ -43,10 +43,16 @@ type migrationPreservedState struct {
 	// records is the whole understood set, not just the preserved part:
 	// sweeps also ask an extant record which properties it belongs to.
 	records []MigrationRecord
-	buckets map[string]struct{}
+	// buckets maps each preserved bucket directory to whether a load would
+	// still do disk work for it, the same question trackers answers.
+	buckets map[string]bool
 	// trackers maps each preserved migration directory to whether a load
 	// would still do disk work for it.
 	trackers map[string]bool
+	// settled is what the last reconciliation pass on this shard left exactly
+	// as it found it. See [migrationSettledNoteFile]: a load would reconcile
+	// these to the same answer, so it would reclaim nothing on their account.
+	settled map[string]bool
 
 	// withholdEverything preserves the whole shard: a record this build
 	// cannot read, or a tracker no record names whose payload could not be
@@ -62,13 +68,33 @@ type migrationPreservedState struct {
 	migrationsDirUnlistable bool
 }
 
-// migrationPreservedStateAt is the only way to build a populated
+// migrationPreservedStateAt is the shard-wide preserve state: every tracker on
+// the shard answers, whatever property a caller goes on to ask about. Callers
+// sweeping one property want [migrationPreservedStateFor], which costs less.
+func migrationPreservedStateAt(lsmPath string, logger logrus.FieldLogger) migrationPreservedState {
+	return migrationPreservedStateFor(lsmPath, "", nil, logger)
+}
+
+// migrationPreservedStateFor is the only way to build a populated
 // migrationPreservedState, so no sweep can learn about records but not about
 // the trackers no record names. The zero value preserves nothing.
-func migrationPreservedStateAt(lsmPath string, logger logrus.FieldLogger) migrationPreservedState {
+//
+// An empty propName reads every tracker's payload. A propName narrows the
+// parse — never the listing — to the trackers that could hold something of
+// that property's ([migrationTrackerMayOwnProperty]): the rest are settled by
+// their own directory name, and parsing them costs megabytes each inside the
+// RAFT apply that a property DELETE holds cluster-wide. The shard-wide flags
+// and the record set are unaffected, since both come from the listing.
+//
+// props memoizes the payloads across the index types of one property's sweep;
+// a nil memo reads every payload again and counts nothing.
+func migrationPreservedStateFor(lsmPath, propName string, props *taskPropsCache,
+	logger logrus.FieldLogger,
+) migrationPreservedState {
 	records, someRecordsUnreadable, recordSetUnreadable := migrationRecordsAt(lsmPath, logger)
 	state := migrationPreservedStateFromRecords(records, someRecordsUnreadable, recordSetUnreadable)
-	legacyTrackers, listed := migrationLegacyMarkerTrackersAt(lsmPath, records)
+	state.settled = migrationReadSettledNote(lsmPath)
+	legacyTrackers, listed := migrationLegacyMarkerTrackersAt(lsmPath, records, propName, props)
 	if someRecordsUnreadable && listed {
 		// Already preserving the whole shard, so reading trackers would only
 		// cost syscalls; listing still had to happen to catch an unlistable
@@ -80,7 +106,7 @@ func migrationPreservedStateAt(lsmPath string, logger logrus.FieldLogger) migrat
 		// names sweeps could read as permission to delete. Debug here since a
 		// DELETE asks this per (property, index type) per shard inside the
 		// RAFT apply; the shard load warns once.
-		logger.WithField("path", filepath.Join(lsmPath, ".migrations")).
+		logger.WithField("path", filepath.Join(lsmPath, migrationsDir)).
 			Debug("the migration directory could not be listed; withholding every removal on this shard")
 		state.withholdEverything = true
 		state.migrationsDirUnlistable = true
@@ -98,7 +124,9 @@ func migrationPreservedStateAt(lsmPath string, logger logrus.FieldLogger) migrat
 		// more is gained by asking for the load on the tracker's account.
 		state.trackers[legacy.dirName] = false
 		for _, dir := range legacy.sidecars {
-			state.buckets[dir] = struct{}{}
+			// A marker-era tracker has no record to have written a promotion
+			// off, so the load's finalize really does act on these.
+			state.buckets[dir] = true
 		}
 	}
 	return state
@@ -107,7 +135,7 @@ func migrationPreservedStateAt(lsmPath string, logger logrus.FieldLogger) migrat
 func migrationPreservedStateFromRecords(records []MigrationRecord, someRecordsUnreadable, recordSetUnreadable bool) migrationPreservedState {
 	state := migrationPreservedState{
 		records:             records,
-		buckets:             map[string]struct{}{},
+		buckets:             map[string]bool{},
 		trackers:            map[string]bool{},
 		withholdEverything:  someRecordsUnreadable,
 		recordSetUnreadable: recordSetUnreadable,
@@ -117,14 +145,15 @@ func migrationPreservedStateFromRecords(records []MigrationRecord, someRecordsUn
 			continue
 		}
 		subject := rec.Subject()
+		canAct := migrationLoadCanStillAct(rec)
 		for _, dir := range migrationOwnedDirs(subject) {
-			state.buckets[dir] = struct{}{}
+			state.buckets[dir] = canAct
 		}
 		if subject.TrackerDir != "" {
 			// A promoted record's own directory waits on the schema effect, which
 			// no load can force, so it never justifies hydration alone; its owned
 			// directories still do, counted from buckets above.
-			state.trackers[subject.TrackerDir] = rec.State() != MigrationStatePromoted
+			state.trackers[subject.TrackerDir] = rec.State() != MigrationStatePromoted && canAct
 		}
 	}
 	return state
@@ -162,7 +191,39 @@ func (s migrationPreservedState) preservesTracker(dir string) bool {
 
 // trackerNeedsLoad reports whether hydrating this shard would reclaim dir.
 func (s migrationPreservedState) trackerNeedsLoad(dir string) bool {
-	return s.trackers[dir]
+	return s.trackers[dir] && !s.settled[dir]
+}
+
+// bucketNeedsLoad is [migrationPreservedState.trackerNeedsLoad] for a bucket
+// directory: preserved, and a load would still act on it.
+func (s migrationPreservedState) bucketNeedsLoad(dir string) bool {
+	return s.buckets[dir] && !s.settled[dir]
+}
+
+// migrationLoadCanStillAct reports whether a shard load could change this
+// record. A lost promotion has no exit anywhere in the system: the mark is
+// written when a promoted directory is found gone and nothing clears it, so a
+// record carrying one can never reach Promoted and a load reclaims nothing on
+// its account.
+//
+// Preservation is unaffected — the record and its directories are kept either
+// way. Only the claim that hydrating the shard would reclaim them changes, and
+// that claim is what drags a cold tenant into a load on every schema operation
+// against its collection, forever.
+//
+// The record is still the exit's own witness: a resubmit supersedes it, and
+// retirement removes it from the record set entirely before this is asked.
+func migrationLoadCanStillAct(rec MigrationRecord) bool {
+	sw, ok := rec.(MigrationRecordSwapped)
+	if !ok {
+		return true
+	}
+	for _, prop := range sw.Subject().Properties {
+		if sw.PromotionOf(prop) == migrationPromotionLost {
+			return false
+		}
+	}
+	return true
 }
 
 // bucketsOf names the preserved sidecars of one main bucket, sorted, for a
@@ -198,8 +259,9 @@ type migrationLegacyMarkerTracker struct {
 	marker  string
 	prefix  string
 	gen     int
-	// unreadable means the payload could not be read, so props and sidecars
-	// are empty because nothing could be learned, not because there is none.
+	// unreadable means the property list could not be learned — the payload
+	// was unreadable, absent, or named nothing — so props and sidecars are
+	// empty because nothing could be learned, not because there is none.
 	unreadable bool
 	props      []string
 	sidecars   []string
@@ -209,8 +271,10 @@ type migrationLegacyMarkerTracker struct {
 // names on one shard. listed=false is distinct from finding none: a fault
 // hiding every one of them (fd exhaustion on a many-tenant node) would
 // otherwise free a property's only copy.
-func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord) (trackers []migrationLegacyMarkerTracker, listed bool) {
-	migsDir := filepath.Join(lsmPath, ".migrations")
+func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord,
+	propName string, props *taskPropsCache,
+) (trackers []migrationLegacyMarkerTracker, listed bool) {
+	migsDir := filepath.Join(lsmPath, migrationsDir)
 	entries, err := os.ReadDir(migsDir)
 	if err != nil {
 		// Absent is the ordinary case — most shards never ran a migration —
@@ -230,25 +294,42 @@ func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord) 
 		if _, named := migrationRecordForTracker(records, dirName); named {
 			continue
 		}
-		marker, found := migrationCompletionMarker(filepath.Join(migsDir, dirName))
+		if propName != "" && !migrationTrackerMayOwnProperty(dirName, propName) {
+			// Its own name proves it stages nothing of this property's, so no
+			// sweep of this property removes anything it owns and its payload
+			// need not be parsed.
+			continue
+		}
+		marker, found, unreadable := migrationCompletionMarker(filepath.Join(migsDir, dirName))
+		if unreadable {
+			// Whether this tracker completed could not be read, and a completed
+			// one holds the property's only copy. Carry it as a tracker nothing
+			// could be learned about, which is what withholds the shard.
+			out = append(out, migrationLegacyMarkerTracker{
+				dirName: dirName, prefix: prefix, gen: gen, unreadable: true,
+			})
+			continue
+		}
 		if !found {
 			continue
 		}
 		migDir := filepath.Join(migsDir, dirName)
-		var props taskProps
-		if fromSidecar, ok := propsFromSidecar(migDir, []string{prefix}); ok {
-			props = taskProps{props: fromSidecar, ok: true}
-		} else {
-			props, _ = readTaskProps(migDir)
-		}
+		answer := props.lookup(migDir)
 		out = append(out, migrationLegacyMarkerTracker{
-			dirName:    dirName,
-			marker:     marker,
-			prefix:     prefix,
-			gen:        gen,
-			unreadable: props.unreadable,
-			props:      append([]string(nil), props.props...),
-			sidecars:   migrationSidecarDirsFor(dirName, prefix, gen, props.props),
+			dirName: dirName,
+			marker:  marker,
+			prefix:  prefix,
+			gen:     gen,
+			// The marker says this tracker's staged data became the property's
+			// data, and the directories holding it are composed from the
+			// property list. A list that could not be learned is therefore the
+			// same fault as one that could not be read, and a tracker written
+			// before payload.mig shipped (v1.37.x wrote tidied.mig without one)
+			// reaches here with nothing to compose from. Withhold rather than
+			// preserve nothing.
+			unreadable: answer.unreadable || len(answer.props) == 0,
+			props:      append([]string(nil), answer.props...),
+			sidecars:   migrationPreservedSidecarDirsFor(dirName, prefix, gen, answer.props),
 		})
 	}
 	return out, true

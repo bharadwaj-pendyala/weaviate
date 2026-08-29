@@ -12,6 +12,7 @@
 package db
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -91,7 +92,10 @@ func plantRecordOfSize(t *testing.T, store *MigrationRecordStore, size int64) Mi
 		subject.SidecarDirs[fmt.Sprintf("pad_%06d", i)] = pad
 	}
 
-	data, err := encodeMigrationRecord(NewMigrationRecordMerged(subject))
+	// Encoded straight from the envelope, not through encodeMigrationRecord:
+	// this fixture stands in for a file some other build wrote, and this
+	// build's writer refuses one over the bound.
+	data, err := json.MarshalIndent(NewMigrationRecordMerged(subject).toEnvelope(), "", "  ")
 	require.NoError(t, err)
 	require.NoError(t, os.MkdirAll(store.Dir(), 0o755))
 	require.NoError(t, os.WriteFile(

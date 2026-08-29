@@ -19,6 +19,7 @@ import (
 	"github.com/weaviate/weaviate/cluster/distributedtask"
 	enterrors "github.com/weaviate/weaviate/entities/errors"
 	"github.com/weaviate/weaviate/entities/models"
+	"github.com/weaviate/weaviate/usecases/monitoring"
 )
 
 // MigrationLocalTaskSource reads this node's own applied view of the reindex
@@ -229,11 +230,17 @@ func (s *Shard) reconcileMigrationRecords(ctx context.Context, class *models.Cla
 	// read by throwaway stores while this shard writes to it.
 	s.migrationRecords.SweepTempFiles()
 
-	if err := s.migrationReconciler(func() *models.Class { return class }).Reconcile(ctx); err != nil {
+	reconciler := s.migrationReconciler(func() *models.Class { return class })
+	if err := reconciler.Reconcile(ctx); err != nil {
 		// A shard whose records cannot be read still has to load; every
 		// individual disposition already fails toward doing nothing.
 		s.index.logger.WithField("shard", s.ID()).Errorf("reconcile migration records: %v", err)
 	}
+	// Written on every load, zero included: a shard that healed would
+	// otherwise report its last non-zero value for the life of the process.
+	monitoring.GetMetrics().SetMigrationRecordsWedged(
+		s.index.Config.ClassName.String(), s.Name(),
+		reconciler.WedgedCount(), len(s.migrationRecords.Unreadable()))
 	s.warnAboutLegacyMarkerMigrations()
 }
 
@@ -247,7 +254,7 @@ func (s *Shard) warnAboutLegacyMarkerMigrations() {
 		// which would make the marker a leftover rather than the live claim.
 		return
 	}
-	trackers, listed := migrationLegacyMarkerTrackersAt(s.pathLSM(), s.migrationRecords.Records())
+	trackers, listed := migrationLegacyMarkerTrackersAt(s.pathLSM(), s.migrationRecords.Records(), "", nil)
 	if !listed {
 		// This is the one line an operator sees at load; every removal on this
 		// shard stays withheld until the directory can be listed.

@@ -90,9 +90,9 @@ func TestSweepReadsEachTrackerPayloadAtMostOnce(t *testing.T) {
 	logger, _ := test.NewNullLogger()
 
 	lsm := writeSweepMemoFixtures(t)
-	sweep := &taskPropsCache{}
+	sweep := migrationSweepStateFor(lsm, "cat", logger)
 	cleanStaleMigrationDirsAt(t.Context(), lsm, "cat", "filterable", logger, sweep)
-	require.Equal(t, payloadReadingFixtures, sweep.count(),
+	require.Equal(t, payloadReadingFixtures, sweep.reads(),
 		"one sweep opens each ambiguous tracker's payload once")
 
 	recorded := writeSweepMemoFixtures(t)
@@ -100,9 +100,9 @@ func TestSweepReadsEachTrackerPayloadAtMostOnce(t *testing.T) {
 	mkMigrationRecord(t, recorded, answeredByRecord, MigrationStateIterating,
 		map[string]string{"cat": "staged_cat", "dog": "staged_dog"})
 
-	withRecord := &taskPropsCache{}
+	withRecord := migrationSweepStateFor(recorded, "cat", logger)
 	cleanStaleMigrationDirsAt(t.Context(), recorded, "cat", "filterable", logger, withRecord)
-	require.Equal(t, payloadReadingFixtures-1, withRecord.count(),
+	require.Equal(t, payloadReadingFixtures-1, withRecord.reads(),
 		"a tracker a record names is answered from the record, not from its payload")
 	require.Equal(t, survivingTrackerDirs(t, lsm), survivingTrackerDirs(t, recorded),
 		"and the record answers it the same way the payload did")
@@ -160,19 +160,19 @@ func TestDeleteSweepSharesOnePayloadMemoAndReportsItsReads(t *testing.T) {
 	unsharedLSM := writeSweepMemoFixtures(t)
 	unshared := 0
 	for _, indexType := range indexTypes {
-		perIndexType := &taskPropsCache{}
+		perIndexType := migrationSweepStateFor(unsharedLSM, prop.Name, logger)
 		cleanStaleMigrationDirsAt(t.Context(), unsharedLSM, prop.Name, indexType, logger, perIndexType)
-		unshared += perIndexType.count()
+		unshared += perIndexType.reads()
 	}
 
 	sharedLSM := writeSweepMemoFixtures(t)
-	shared := &taskPropsCache{}
+	shared := migrationSweepStateFor(sharedLSM, prop.Name, logger)
 	for _, indexType := range indexTypes {
 		cleanStaleMigrationDirsAt(t.Context(), sharedLSM, prop.Name, indexType, logger, shared)
 	}
-	require.Equal(t, payloadReadingFixtures, shared.count(),
+	require.Equal(t, payloadReadingFixtures, shared.reads(),
 		"the rangeable pass owns no tracker the filterable pass has not already read")
-	require.Less(t, shared.count(), unshared,
+	require.Less(t, shared.reads(), unshared,
 		"the fixtures must hold a tracker both index types own, or there is nothing to share")
 
 	hook.Reset()
@@ -180,7 +180,7 @@ func TestDeleteSweepSharesOnePayloadMemoAndReportsItsReads(t *testing.T) {
 
 	lines := sweepCompletionLines(hook)
 	require.Len(t, lines, 1, "one completion line per sweep, whatever the shard count")
-	require.Equal(t, shards*int64(shared.count()), lines[0].Data["payload_reads"],
+	require.Equal(t, shards*int64(shared.reads()), lines[0].Data["payload_reads"],
 		"the reported count sums every shard, and each shard reads a tracker payload "+
 			"once whatever index types the DELETE disables")
 	require.Equal(t, "cat", lines[0].Data["property"])

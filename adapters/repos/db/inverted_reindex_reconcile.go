@@ -68,8 +68,11 @@ type migrationReconcileDeps struct {
 type migrationReconciler struct {
 	store   *MigrationRecordStore
 	lsmPath string
-	logger  logrus.FieldLogger
-	deps    migrationReconcileDeps
+	// wedgedKeys are the records this pass left standing for a reason no later
+	// load changes, for the shard's wedge gauge. Reset at the start of a pass.
+	wedgedKeys map[MigrationRecordKey]bool
+	logger     logrus.FieldLogger
+	deps       migrationReconcileDeps
 }
 
 func newMigrationReconciler(store *MigrationRecordStore, lsmPath string,
@@ -100,6 +103,46 @@ type migrationPassRecords struct {
 	someUnreadable bool
 }
 
+// migrationWedgeRemedy is the one thing an operator can do about a record no
+// further shard load can advance, and it is measured rather than guessed:
+// submitting a new migration for the property makes the new record supersede
+// this one, and the next load retires this record and reclaims its
+// directories. The same predicate that gates the index change creating the
+// wedge gates the resubmit, so there is no state in which the wedge exists and
+// the resubmit is refused.
+//
+// It is per property, not per record: retirement removes a record only once
+// every one of its properties is superseded, so a wedge over two properties
+// takes one resubmit each, in sequence.
+const migrationWedgeRemedy = "Submit a new migration for this property; " +
+	"once its flip is durable it supersedes this record, and the next shard load " +
+	"reclaims the record and its directories."
+
+// wedged reports a record this pass left standing for a reason no later load
+// changes, names the remediation, and counts it for the shard's wedge gauge.
+func (r *migrationReconciler) wedged(subject MigrationSubject, format string, args ...any) {
+	if r.wedgedKeys == nil {
+		r.wedgedKeys = map[MigrationRecordKey]bool{}
+	}
+	r.wedgedKeys[subject.Key] = true
+	r.logger.WithField("record", subject.Key.String()).
+		Error(fmt.Sprintf(format, args...) + " " + migrationWedgeRemedy)
+}
+
+// migrationUnreadableFileNames names the files an operator would have to look
+// at. Every "not understood" line said how many there were and never which.
+func migrationUnreadableFileNames(unreadable []MigrationRecordUnreadable) []string {
+	out := make([]string, 0, len(unreadable))
+	for _, u := range unreadable {
+		out = append(out, u.FileName)
+	}
+	return out
+}
+
+// WedgedCount is how many records the last pass left standing for a reason no
+// later load changes. Read after Reconcile, for the shard's gauge.
+func (r *migrationReconciler) WedgedCount() int { return len(r.wedgedKeys) }
+
 // Reconcile runs one pass over this shard's records.
 func (r *migrationReconciler) Reconcile(ctx context.Context) error {
 	if err := r.store.Load(); err != nil {
@@ -110,11 +153,14 @@ func (r *migrationReconciler) Reconcile(ctx context.Context) error {
 	// the withholding cannot be scoped to them; it must cover the whole shard.
 	someRecordsUnreadable := len(r.store.Unreadable()) > 0
 	if someRecordsUnreadable {
-		r.logger.WithField("path", r.store.Dir()).Warnf(
-			"%d migration record(s) not understood: withholding every destructive and promoting action on this shard",
+		r.logger.WithField("path", r.store.Dir()).WithField("files", migrationUnreadableFileNames(r.store.Unreadable())).Warnf(
+			"%d migration record(s) not understood: withholding every destructive and promoting action on this shard. "+
+				"This is normally a downgrade: run the build that wrote them, or remove the named files by hand "+
+				"once you have confirmed what they claim",
 			len(r.store.Unreadable()))
 	}
 
+	r.wedgedKeys = nil
 	records := r.store.Records()
 	if !someRecordsUnreadable {
 		r.retireSuperseded(ctx, records)
@@ -122,13 +168,49 @@ func (r *migrationReconciler) Reconcile(ctx context.Context) error {
 	}
 	pass := migrationPassRecords{all: records, someUnreadable: someRecordsUnreadable}
 
+	before := make(map[MigrationRecordKey]string, len(records))
+	for _, rec := range records {
+		before[rec.Subject().Key] = migrationRecordFingerprint(rec)
+	}
+
 	for _, rec := range records {
 		if err := r.reconcileOne(ctx, rec, pass); err != nil {
 			// One migration must not be able to keep a shard from loading.
 			r.logger.WithField("record", rec.Subject().Key.String()).Errorf("reconcile migration record: %v", err)
 		}
 	}
+	r.noteWhatThisPassSettled(before, someRecordsUnreadable)
 	return nil
+}
+
+// noteWhatThisPassSettled writes down the directories this pass reconciled and
+// left exactly as it found them, so a sweep over the cold shard can answer
+// "would hydrating reclaim anything here" without hydrating to find out.
+//
+// A shard that could not read every record settles nothing: it withheld, and
+// the next load may read what this one could not.
+func (r *migrationReconciler) noteWhatThisPassSettled(before map[MigrationRecordKey]string, someUnreadable bool) {
+	if someUnreadable {
+		migrationDiscardSettledNote(r.lsmPath)
+		return
+	}
+	var settled []string
+	for _, rec := range r.store.Records() {
+		subject := rec.Subject()
+		was, seen := before[subject.Key]
+		if !seen || was == "" || was != migrationRecordFingerprint(rec) {
+			continue
+		}
+		if subject.TrackerDir != "" {
+			settled = append(settled, subject.TrackerDir)
+		}
+		settled = append(settled, migrationOwnedDirs(subject)...)
+	}
+	if err := migrationWriteSettledNote(r.lsmPath, settled); err != nil {
+		// Costs the hydration it would have saved, and nothing else.
+		r.logger.WithField("path", migrationSettledNotePath(r.lsmPath)).
+			Debugf("could not write the settled-migrations note: %v", err)
+	}
 }
 
 func (r *migrationReconciler) reconcileOne(ctx context.Context, rec MigrationRecord,
@@ -178,8 +260,9 @@ func (r *migrationReconciler) reconcileUncommitted(ctx context.Context, rec Migr
 	case migrationVerdictCommit:
 		// The cluster reports the task done, but this shard never finished its
 		// rebuild; nothing here may complete it or delete on a guess.
-		r.logger.WithField("record", subject.Key.String()).Warnf(
-			"migration is %s locally but the cluster reports it committed (%s)", rec.State(), why)
+		r.wedged(subject,
+			"migration is %s locally but the cluster reports it committed (%s), so no load here can finish it.",
+			rec.State(), why)
 		return nil
 	case migrationVerdictLeave:
 		return nil
@@ -251,11 +334,26 @@ func (r *migrationReconciler) reconcileMerged(ctx context.Context, rec Migration
 // so a crash between the two resumes from Swapped and re-runs idempotent
 // directory work instead of re-deciding on inputs that may have changed.
 func (r *migrationReconciler) commitMerged(subject MigrationSubject, why string) (MigrationRecordSwapped, error) {
+	// A Swapped record's own precondition is that every property names both a
+	// staged and a canonical directory: promotion renames the one onto the
+	// other. Checking it here, in the sealed section that writes the record, is
+	// what stops this writer from producing a record wedged the instant it
+	// lands — unpromotable on every pass, forever.
+	//
+	// The canonical directory's presence on disk is deliberately not required.
+	// Reconciliation runs before any bucket on the shard opens, so an absent
+	// canonical directory is the ordinary shape, not a fault.
+	//
 	// No flip has happened yet, so every staged directory this promotes must
 	// still exist, or promotion would mistake an absent one for an
 	// already-run rename.
 	for _, prop := range subject.Properties {
-		staged := subject.StagedDirs[prop]
+		staged, canonical := subject.StagedDirs[prop], subject.CanonicalDirs[prop]
+		if staged == "" || canonical == "" {
+			return MigrationRecordSwapped{}, fmt.Errorf(
+				"refusing to commit the flip: property %q names no staged or canonical directory, "+
+					"so the flip it would record could never be promoted", prop)
+		}
 		there, err := r.dirExists(staged)
 		if err != nil {
 			return MigrationRecordSwapped{}, err
@@ -346,13 +444,13 @@ func (r *migrationReconciler) promoteSealed(rec MigrationRecordSwapped,
 		staged, canonical := subject.StagedDirs[prop], subject.CanonicalDirs[prop]
 		if staged == "" || canonical == "" {
 			settled = false
-			r.logger.WithField("record", subject.Key.String()).Errorf(
-				"cannot promote property %q: the record names no staged or canonical directory for it", prop)
+			r.wedged(subject,
+				"cannot promote property %q: the record names no staged or canonical directory for it.", prop)
 			continue
 		}
 
 		displaced, _ := rec.DisplacedDir(prop)
-		updated, promoted, err := r.promoteProperty(rec, prop,
+		updated, promoted, err := r.promoteProperty(rec, all, prop,
 			promotionDirs{staged: staged, canonical: canonical, displaced: displaced})
 		// The record carries every promotion intent written so far, so the
 		// next property acts on the same one this property just widened.
@@ -391,8 +489,8 @@ func (r *migrationReconciler) promoteSealed(rec MigrationRecordSwapped,
 // [migrationReconciler.settleInterruptedPromotion] resolves that in the very
 // next pass — before any bucket on the shard opens — so it is never carried
 // forward.
-func (r *migrationReconciler) promoteProperty(rec MigrationRecordSwapped, prop string,
-	dirs promotionDirs,
+func (r *migrationReconciler) promoteProperty(rec MigrationRecordSwapped, all []MigrationRecord,
+	prop string, dirs promotionDirs,
 ) (MigrationRecordSwapped, bool, error) {
 	subject := rec.Subject()
 	staged, canonical, displaced := dirs.staged, dirs.canonical, dirs.displaced
@@ -400,8 +498,8 @@ func (r *migrationReconciler) promoteProperty(rec MigrationRecordSwapped, prop s
 	case migrationPromotionFinished:
 		return r.confirmPromotionSurvives(rec, prop, canonical)
 	case migrationPromotionLost:
-		r.logger.WithField("record", subject.Key.String()).Errorf(
-			"property %q was promoted onto %q and that directory is gone; preserving the record and promoting nothing",
+		r.wedged(subject,
+			"property %q was promoted onto %q and that directory is gone; preserving the record and promoting nothing.",
 			prop, canonical)
 		return rec, false, nil
 	default:
@@ -425,6 +523,12 @@ func (r *migrationReconciler) promoteProperty(rec MigrationRecordSwapped, prop s
 			return rec, false, err
 		}
 		if displacedThere {
+			// A promotion that cannot clear its own target must not promote:
+			// leaving the record Swapped is the shape every other unpromotable
+			// property already gets, and the next load re-asks.
+			if !r.mayReplace(all, subject, displaced, "the displaced directory") {
+				return rec, false, nil
+			}
 			if err := os.RemoveAll(r.path(displaced)); err != nil {
 				return rec, false, fmt.Errorf("remove displaced directory %q: %w", displaced, err)
 			}
@@ -435,6 +539,9 @@ func (r *migrationReconciler) promoteProperty(rec MigrationRecordSwapped, prop s
 		return rec, false, err
 	}
 	if canonicalThere {
+		if !r.mayReplace(all, subject, canonical, "the canonical directory") {
+			return rec, false, nil
+		}
 		if err := os.RemoveAll(r.path(canonical)); err != nil {
 			return rec, false, fmt.Errorf("remove canonical directory %q the promotion replaces: %w", canonical, err)
 		}
@@ -477,9 +584,9 @@ func (r *migrationReconciler) confirmPromotionSurvives(rec MigrationRecordSwappe
 	if there {
 		return rec, true, nil
 	}
-	r.logger.WithField("record", rec.Subject().Key.String()).Errorf(
+	r.wedged(rec.Subject(),
 		"property %q was promoted onto %q and that directory is gone, so the data this migration renamed onto it is gone; "+
-			"preserving the record and promoting nothing", prop, canonical)
+			"preserving the record and promoting nothing.", prop, canonical)
 	lost := rec.WithPromotionAt(prop, migrationPromotionLost)
 	if err := r.store.Put(lost); err != nil {
 		r.logger.WithField("record", rec.Subject().Key.String()).Errorf(
@@ -504,9 +611,9 @@ func (r *migrationReconciler) settleInterruptedPromotion(rec MigrationRecordSwap
 ) (MigrationRecordSwapped, bool, error) {
 	subject := rec.Subject()
 	if rec.PromotionOf(prop) != migrationPromotionStarted {
-		r.logger.WithField("record", subject.Key.String()).Errorf(
+		r.wedged(subject,
 			"property %q lost its staged directory %q to something that is not its promotion, which never started; "+
-				"preserving the record and promoting nothing", prop, staged)
+				"preserving the record and promoting nothing.", prop, staged)
 		return rec, false, nil
 	}
 	canonicalThere, err := r.dirExists(canonical)
@@ -514,9 +621,9 @@ func (r *migrationReconciler) settleInterruptedPromotion(rec MigrationRecordSwap
 		return rec, false, err
 	}
 	if !canonicalThere {
-		r.logger.WithField("record", subject.Key.String()).Errorf(
+		r.wedged(subject,
 			"property %q has neither its staged directory %q nor its canonical directory %q, so its rename never ran; "+
-				"preserving the record and promoting nothing", prop, staged, canonical)
+				"preserving the record and promoting nothing.", prop, staged, canonical)
 		abandoned := rec.WithPromotionAbandoned(prop)
 		if err := r.store.Put(abandoned); err != nil {
 			r.logger.WithField("record", subject.Key.String()).Errorf(
@@ -615,7 +722,7 @@ func (r *migrationReconciler) reconcilePromotedSealed(rec MigrationRecordPromote
 				"which is what answers for the property until the effect lands")
 		return nil
 	}
-	r.removeTrackerDir(subject)
+	r.removeTrackerDir(all, subject)
 	return r.store.Remove(subject.Key)
 }
 
@@ -655,9 +762,9 @@ func (r *migrationReconciler) repromoteWhatTheRecordOutran(all []MigrationRecord
 			return err
 		}
 		if canonicalThere {
-			r.logger.WithField("record", subject.Key.String()).Errorf(
+			r.wedged(subject,
 				"property %q is recorded as promoted but holds a directory at both its staged name %q and its canonical name %q; "+
-					"nothing here can tell which one the promotion produced, so the record and both directories are preserved",
+					"nothing here can tell which one the promotion produced, so the record and both directories are preserved.",
 				prop, staged, canonical)
 			ambiguous = append(ambiguous, prop)
 			continue
@@ -837,7 +944,7 @@ func (r *migrationReconciler) discardSealed(ctx context.Context, all []Migration
 	if remaining := r.reclaimOwnedDirs(all, subject); len(remaining) > 0 {
 		return fmt.Errorf("%d owned directory/directories survived the discard", len(remaining))
 	}
-	r.removeTrackerDir(subject)
+	r.removeTrackerDir(all, subject)
 	return r.store.Remove(subject.Key)
 }
 
@@ -861,8 +968,14 @@ func (r *migrationReconciler) disarmAndClose(ctx context.Context, key MigrationR
 // holding the recovery payload. Deliberately not an owned dir: those are
 // bucket directories the Iterated probe reads as proof the rebuild reached
 // disk.
-func (r *migrationReconciler) removeTrackerDir(subject MigrationSubject) {
+func (r *migrationReconciler) removeTrackerDir(all []MigrationRecord, subject MigrationSubject) {
 	if subject.TrackerDir == "" {
+		return
+	}
+	if holder, taken := migrationTrackerHeldByAnotherRecord(all, subject); taken {
+		r.logger.WithField("record", subject.Key.String()).WithField("dir", subject.TrackerDir).Errorf(
+			"refusing to remove tracker directory %q: record %s names it too, and its payload is in there; "+
+				"leaving it for that record to answer for", subject.TrackerDir, holder)
 		return
 	}
 	path := filepath.Join(r.lsmPath, migrationsDir, subject.TrackerDir)
@@ -900,19 +1013,36 @@ func (r *migrationReconciler) reclaimOwnedDirs(all []MigrationRecord, subject Mi
 	return remaining
 }
 
-// mayReclaim refuses to hand another record's canonical directory to
+// mayReclaim refuses to hand a directory another record still names to
 // os.RemoveAll. Skip and log rather than refuse the load: refusing freezes
 // every migration on the shard, while skipping leaks one directory and keeps
 // the data, which is the same trade [migrationDirClaimedAsDisplaced] already
-// makes.
+// makes. The record that still names it reclaims it in its own teardown, so
+// nothing strands.
 func (r *migrationReconciler) mayReclaim(all []MigrationRecord, subject MigrationSubject, dir string) bool {
-	holder, taken := migrationDirIsAnotherRecordsCanonical(all, subject, dir)
+	holder, role, taken := migrationDirHeldByAnotherRecord(all, subject, dir, migrationOwnedRoles)
 	if !taken {
 		return true
 	}
 	r.logger.WithField("record", subject.Key.String()).WithField("dir", dir).Errorf(
-		"refusing to reclaim %q: record %s serves a property from it; leaving it for that record to answer for",
-		dir, holder)
+		"refusing to reclaim %q: record %s names it as its %s; leaving it for that record to answer for",
+		dir, holder, role)
+	return false
+}
+
+// mayReplace refuses to remove or rename over a directory holding another
+// record's own copy of a property's index. Unlike [mayReclaim] it allows
+// another record's canonical directory: promotion removes the canonical name
+// and renames onto it, and a predecessor of the same property names the very
+// same canonical directory.
+func (r *migrationReconciler) mayReplace(all []MigrationRecord, subject MigrationSubject, dir, what string) bool {
+	holder, role, taken := migrationDirHeldByAnotherRecord(all, subject, dir, migrationLiveDataRoles)
+	if !taken {
+		return true
+	}
+	r.logger.WithField("record", subject.Key.String()).WithField("dir", dir).Errorf(
+		"cannot promote: %s %q is record %s's %s, and replacing it would take that record's only copy",
+		what, dir, holder, role)
 	return false
 }
 

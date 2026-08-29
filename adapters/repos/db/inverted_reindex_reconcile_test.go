@@ -606,7 +606,7 @@ func TestAbandonPromotionKeepsARenameThatAlreadyMoved(t *testing.T) {
 				require.NoError(t, os.WriteFile(
 					filepath.Join(f.lsmPath, "property_title"), []byte("not a directory"), 0o600))
 				r := newMigrationReconciler(f.store, f.lsmPath, f.logger, f.deps())
-				updated, promoted, err := r.promoteProperty(rec, "title",
+				updated, promoted, err := r.promoteProperty(rec, f.store.Records(), "title",
 					promotionDirs{staged: "m_42_title", canonical: "property_title"})
 				require.Error(t, err, "fixture: the rename has to fail for there to be anything to take back")
 				require.False(t, promoted)
@@ -1655,6 +1655,10 @@ func TestAPoisonedRecordCannotSweepTheMigrationTree(t *testing.T) {
 	tests := []struct {
 		name   string
 		poison func(*MigrationSubject)
+		// serving is a store the shard reads from that this record points a
+		// teardown at. Empty rows point at the migration tree, which every row
+		// asserts about anyway.
+		serving string
 	}{
 		{
 			name: "a staged directory naming the migrations tree",
@@ -1672,6 +1676,20 @@ func TestAPoisonedRecordCannotSweepTheMigrationTree(t *testing.T) {
 			name:   "a tracker directory naming the record store",
 			poison: func(s *MigrationSubject) { s.TrackerDir = migrationRecordsDirName },
 		},
+		{
+			name: "a staged directory naming the object store",
+			poison: func(s *MigrationSubject) {
+				s.StagedDirs = map[string]string{"title": "objects"}
+			},
+			serving: "objects",
+		},
+		{
+			name: "a staged directory naming a live bucket of another property",
+			poison: func(s *MigrationSubject) {
+				s.StagedDirs = map[string]string{"title": "property_body_searchable"}
+			},
+			serving: "property_body_searchable",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1687,6 +1705,9 @@ func TestAPoisonedRecordCannotSweepTheMigrationTree(t *testing.T) {
 
 			poisoned := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 			tt.poison(&poisoned)
+			if tt.serving != "" {
+				mkSidecarWithData(t, f.lsmPath, tt.serving)
+			}
 			writeRawMigrationRecord(t, f.store, migrationRecordEnvelope{
 				FormatVersion: migrationRecordFormatVersion,
 				State:         MigrationStatePromoted,
@@ -1703,6 +1724,10 @@ func TestAPoisonedRecordCannotSweepTheMigrationTree(t *testing.T) {
 			_, present := f.state(bystander.Key)
 			require.True(t, present, "and so must every other record on the shard")
 			require.True(t, f.migrationDirExists(bystander))
+			if tt.serving != "" {
+				require.Equal(t, sidecarDataFor(tt.serving), readSidecarData(t, f.lsmPath, tt.serving),
+					"the store this record named must still hold its data")
+			}
 		})
 	}
 }
@@ -1879,4 +1904,22 @@ func plantSupersededPair(f *reconcileFixture, subject MigrationSubject) {
 	f.mkdirs("m_99_title")
 	f.put(NewMigrationRecordSwapped(successor, []string{"title"},
 		map[string]string{"title": "property_title"}))
+}
+
+// trackerPayloadOf reads what put wrote inside the migration directory, so an
+// assertion can tell a directory that survived from one removed and recreated.
+func (f *reconcileFixture) trackerPayloadOf(subject MigrationSubject) string {
+	f.t.Helper()
+	data, err := os.ReadFile(filepath.Join(f.lsmPath, migrationsDir, subject.TrackerDir, "payload.mig"))
+	require.NoError(f.t, err)
+	return string(data)
+}
+
+// wedgeCount runs one more pass and reports what it left standing for a reason
+// no later load changes, which is what the shard's gauge reports.
+func (f *reconcileFixture) wedgeCount() int {
+	f.t.Helper()
+	r := newMigrationReconciler(f.store, f.lsmPath, f.logger, f.deps())
+	require.NoError(f.t, r.Reconcile(f.t.Context()))
+	return r.WedgedCount()
 }

@@ -68,8 +68,11 @@ type MigrationRecordUnreadable struct {
 // MigrationRecordStore owns one shard's migration records. Disk is durability
 // only: readers on the apply path are served from the map.
 type MigrationRecordStore struct {
-	dir    string
-	logger logrus.FieldLogger
+	dir string
+	// lsmPath is kept so a write can drop the shard's settled note, which is
+	// only true until the next record write.
+	lsmPath string
+	logger  logrus.FieldLogger
 
 	// writeMu orders disk work. It is separate from mu because mu must never
 	// be held across an fsync — every apply-path reader would queue behind the
@@ -84,6 +87,7 @@ type MigrationRecordStore struct {
 func NewMigrationRecordStore(lsmPath string, logger logrus.FieldLogger) *MigrationRecordStore {
 	return &MigrationRecordStore{
 		dir:     filepath.Join(lsmPath, migrationsDir, migrationRecordsDirName),
+		lsmPath: lsmPath,
 		logger:  logger,
 		records: map[MigrationRecordKey]MigrationRecord{},
 	}
@@ -259,6 +263,7 @@ func (s *MigrationRecordStore) Put(rec MigrationRecord) error {
 	if err := writeFileAtomic(s.dir, rec.Subject().Key.fileName(), data); err != nil {
 		return fmt.Errorf("write migration record %q: %w", rec.Subject().Key, err)
 	}
+	migrationDiscardSettledNote(s.lsmPath)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -278,6 +283,7 @@ func (s *MigrationRecordStore) Remove(key MigrationRecordKey) error {
 	if err := os.Remove(s.path(key)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove migration record %q: %w", key, err)
 	}
+	migrationDiscardSettledNote(s.lsmPath)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -20,6 +20,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/weaviate/weaviate/adapters/repos/db/helpers"
 )
 
 // MigrationState is the durable state of one shard-local reindex migration.
@@ -372,7 +374,19 @@ func encodeMigrationRecord(rec MigrationRecord) ([]byte, error) {
 	if err := validateMigrationEnvelope(env); err != nil {
 		return nil, err
 	}
-	return json.MarshalIndent(env, "", "  ")
+	data, err := json.MarshalIndent(env, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	// The loader refuses at this same bound, and a record only the writer
+	// accepts is the worst outcome of the two: it lands under a name the next
+	// load will neither read, write over, nor remove. Refusing the encode turns
+	// a permanently wedged key into a transition the caller can report.
+	if len(data) > maxMigrationRecordBytes {
+		return nil, fmt.Errorf("record %q holds %d bytes, bound is %d",
+			env.Subject.Key, len(data), maxMigrationRecordBytes)
+	}
+	return data, nil
 }
 
 // validateMigrationEnvelope holds every state-independent reason a record is
@@ -567,13 +581,17 @@ func validateMigrationHandles(e migrationRecordEnvelope) error {
 		// user-chosen, and a collection may legitimately have one called
 		// "records".
 		namesDirectory bool
-		handles        []string
+		// stagesData marks the roles that hold a migration's own copy of a
+		// property's index. Those are reclaimed on every teardown path, so
+		// they may not name a bucket the shard serves from.
+		stagesData bool
+		handles    []string
 	}{
 		{field: "tracker directory", namesDirectory: true, handles: []string{e.Subject.TrackerDir}},
-		{field: "sidecar directory", namesDirectory: true, handles: sidecars},
+		{field: "sidecar directory", namesDirectory: true, stagesData: true, handles: sidecars},
 		{field: "property", handles: slices.Concat(
 			e.Subject.Properties, stagedProps, canonicalProps, sidecarProps, displacedProps, flipped)},
-		{field: "staged directory", namesDirectory: true, handles: staged},
+		{field: "staged directory", namesDirectory: true, stagesData: true, handles: staged},
 		{field: "canonical directory", namesDirectory: true, handles: canonical},
 		{field: "displaced directory", namesDirectory: true, handles: displaced},
 	} {
@@ -590,7 +608,11 @@ func validateMigrationHandles(e migrationRecordEnvelope) error {
 					e.Subject.Key, group.field, handle)
 			}
 			if group.namesDirectory && migrationReservedDirName(handle) {
-				return fmt.Errorf("record %q names %s %q, which is the shard's own migration tree",
+				return fmt.Errorf("record %q names %s %q, which is a store the shard serves from",
+					e.Subject.Key, group.field, handle)
+			}
+			if group.stagesData && migrationHandleIsLiveBucket(handle) {
+				return fmt.Errorf("record %q names %s %q, which is a property's own bucket rather than a sidecar of one",
 					e.Subject.Key, group.field, handle)
 			}
 		}
@@ -598,16 +620,43 @@ func validateMigrationHandles(e migrationRecordEnvelope) error {
 	return nil
 }
 
-// migrationReservedDirName reports whether h is one of the two names the
-// shard's migration tree already holds. A record naming either as a directory
-// it owns points a sweep at that tree: reclaiming a ".migrations" handle
-// removes every tracker and the record store with it, and a tracker directory
-// of "records" removes the store on its own. No legitimate handle can be
-// either — bucket directories are "property_*", staged directories carry a
-// strategy and generation suffix, and tracker directories carry a generation.
+// migrationReservedDirName reports whether h names a store the shard reads
+// from rather than a directory a migration may own. A record naming one as a
+// directory it owns points every teardown path at it: reclaiming a
+// ".migrations" handle removes every tracker and the record store with it, a
+// tracker directory of "records" removes the store on its own, and "objects"
+// is the shard's whole object store.
 func migrationReservedDirName(h string) bool {
-	return h == migrationsDir || h == migrationRecordsDirName
+	return h == migrationsDir || h == migrationRecordsDirName || h == helpers.ObjectsBucketLSM
 }
+
+// migrationHandleIsLiveBucket reports whether h names a property's own bucket
+// rather than a sidecar of one.
+//
+// Staged and sidecar directories hold a migration's private copy and are
+// reclaimed on every teardown path, so a record naming a live bucket in either
+// role hands that bucket to os.RemoveAll. Every such directory a writer emits
+// is <property bucket> + "__" + a strategy tail ending in one of
+// [sidecarRoleWords]; a bare property bucket has no such tail.
+//
+// A handle that is no property bucket at all is not this check's business: it
+// names nothing the shard serves from.
+func migrationHandleIsLiveBucket(h string) bool {
+	tail, ok := strings.CutPrefix(h, migrationPropertyBucketPrefix)
+	if !ok {
+		return false
+	}
+	i := strings.Index(tail, "__")
+	if i < 0 {
+		return true
+	}
+	return !slices.Contains(sidecarRoleWords, sidecarRoleWord(tail[i+2:]))
+}
+
+// migrationPropertyBucketPrefix is what every property bucket directory name
+// starts with. TestEveryPropertyBucketCarriesTheMigrationPrefix pins it
+// against the helpers that build those names.
+const migrationPropertyBucketPrefix = "property_"
 
 // migrationBlocks names which optional blocks a state carries, so the call
 // sites read as the states they decode rather than as two bare booleans.
