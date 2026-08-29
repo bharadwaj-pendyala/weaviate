@@ -132,77 +132,30 @@ func TestMigrationRecordRoundTrip(t *testing.T) {
 	}
 }
 
-// TestMigrationRecordPromotionAcrossBuilds pins what a build does with the
-// other build's promotion shape. Records travel through json.Unmarshal, which
-// drops a key it does not know, so a shape a build does not write is one it
-// cannot act on. That has to leave both directions promoting nothing: an
-// earlier build's key names a property without saying what its rename moved,
-// which is the claim that must not be taken on trust.
-func TestMigrationRecordPromotionAcrossBuilds(t *testing.T) {
+// TestAFlipKeyThisBuildDoesNotKnowStillDecodes is the other half of the
+// promotion contract. A mark this build cannot read is refused, because acting
+// on it would mean promoting on a claim it cannot check. A whole key it does
+// not know is not: json.Unmarshal drops it, the record decodes with no
+// promotion recorded, and the shard promotes nothing rather than freezing every
+// removal on it.
+func TestAFlipKeyThisBuildDoesNotKnowStillDecodes(t *testing.T) {
 	subject := testMigrationSubject(42, StrategyCodeEnableFilterable, "title")
-	displaced := map[string]string{"title": "property_title"}
-	swapped := NewMigrationRecordSwapped(subject, []string{"title"}, displaced)
+	swapped := NewMigrationRecordSwapped(subject, []string{"title"},
+		map[string]string{"title": "property_title"})
 
-	flipBlockOf := func(t *testing.T, rec MigrationRecord) map[string]any {
-		t.Helper()
-		encoded, err := encodeMigrationRecord(rec)
-		require.NoError(t, err)
-		env := map[string]any{}
-		require.NoError(t, json.Unmarshal(encoded, &env))
-		return env["flip"].(map[string]any)
-	}
+	encoded, err := encodeMigrationRecord(swapped)
+	require.NoError(t, err)
+	env := map[string]any{}
+	require.NoError(t, json.Unmarshal(encoded, &env))
+	env["flip"].(map[string]any)["someLaterBuildsBlock"] = map[string]any{"title": "whatever"}
+	data, err := json.Marshal(env)
+	require.NoError(t, err)
 
-	// readBack replaces the flip block with one the other build could have
-	// written, then reads the record the way a load does.
-	readBack := func(t *testing.T, key string, value any) MigrationRecordSwapped {
-		t.Helper()
-		encoded, err := encodeMigrationRecord(swapped)
-		require.NoError(t, err)
-		env := map[string]any{}
-		require.NoError(t, json.Unmarshal(encoded, &env))
-		flip := env["flip"].(map[string]any)
-		flip[key] = value
-		data, err := json.Marshal(env)
-		require.NoError(t, err)
-		decoded, err := decodeMigrationRecord(data)
-		require.NoError(t, err)
-		return decoded.(MigrationRecordSwapped)
-	}
-
-	tests := []struct {
-		name        string
-		key         string
-		value       any
-		wantStarted bool
-		wantOutput  []string
-	}{
-		{
-			name:        "a record an earlier build wrote, naming the property but not what its rename moved",
-			key:         "promoting",
-			value:       []string{"title"},
-			wantStarted: false,
-		},
-		{
-			name:        "a record this build wrote",
-			key:         "promotion",
-			value:       map[string]any{"title": "started"},
-			wantStarted: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			mark := readBack(t, tt.key, tt.value).PromotionOf("title")
-			require.Equal(t, tt.wantStarted, mark != "")
-		})
-	}
-
-	t.Run("this build writes no key an earlier build would promote on", func(t *testing.T) {
-		flip := flipBlockOf(t, swapped.WithPromotionAt("title", migrationPromotionStarted))
-		require.NotContains(t, flip, "promoting",
-			"an earlier build reads that key as licence to promote whatever directory it finds under the canonical name")
-		require.Contains(t, flip, "promotion")
-	})
+	decoded, err := decodeMigrationRecord(data)
+	require.NoError(t, err)
+	require.Equal(t, swapped, decoded)
+	require.Empty(t, decoded.(MigrationRecordSwapped).PromotionOf("title"),
+		"a key this build cannot read licenses no promotion")
 }
 
 func TestMigrationRecordNotUnderstood(t *testing.T) {

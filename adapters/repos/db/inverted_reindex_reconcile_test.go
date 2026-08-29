@@ -581,27 +581,49 @@ func TestReconcileSwappedProbe(t *testing.T) {
 // TestAbandonPromotionKeepsARenameThatAlreadyMoved pins what a promotion may
 // take back after its rename returned an error. [diskio.RenameAndSync] moves
 // the directory first and syncs after, so an error can come from the sync of a
-// rename that already ran. Taking the record back there would leave every
-// later pass with a canonical directory it has no way to recognize as this
+// rename that already ran. Taking the record back there would leave every later
+// pass with a canonical directory it has no way to recognize as this
 // promotion's output, and a record wedged at Swapped for good.
 func TestAbandonPromotionKeepsARenameThatAlreadyMoved(t *testing.T) {
 	tests := []struct {
-		name        string
+		name string
+		// drive runs the promotion. The first row goes through the real entry
+		// point, which is what pins that the call site hands the helper the
+		// staged directory and not some other one; the second cannot, because
+		// only a sync failing after a rename that already moved the directory
+		// produces its state and no test can make the sync fail.
+		drive       func(t *testing.T, f *reconcileFixture, rec MigrationRecordSwapped) MigrationRecordSwapped
 		stagedThere bool
 		wantKept    bool
 		reason      string
 	}{
 		{
-			name:        "the staged directory is still there, so the rename did not move it",
+			name: "the staged directory is still there, so the rename did not move it",
+			drive: func(t *testing.T, f *reconcileFixture, rec MigrationRecordSwapped) MigrationRecordSwapped {
+				// A plain file under the canonical name: the promotion's own
+				// removal skips it (it is no directory) and the rename onto it
+				// cannot succeed.
+				require.NoError(t, os.WriteFile(
+					filepath.Join(f.lsmPath, "property_title"), []byte("not a directory"), 0o600))
+				r := newMigrationReconciler(f.store, f.lsmPath, f.logger, f.deps())
+				updated, promoted, err := r.promoteProperty(rec, "title",
+					promotionDirs{staged: "m_42_title", canonical: "property_title"})
+				require.Error(t, err, "fixture: the rename has to fail for there to be anything to take back")
+				require.False(t, promoted)
+				return updated
+			},
 			stagedThere: true,
 			wantKept:    false,
 			reason:      "a rename that moved nothing leaves nothing to recognize later",
 		},
 		{
-			name:        "the staged directory is gone, so the rename moved it before failing",
-			stagedThere: false,
-			wantKept:    true,
-			reason:      "only the record says which directory under the canonical name this promotion produced",
+			name: "the staged directory is gone, so the rename moved it before failing",
+			drive: func(t *testing.T, f *reconcileFixture, rec MigrationRecordSwapped) MigrationRecordSwapped {
+				r := newMigrationReconciler(f.store, f.lsmPath, f.logger, f.deps())
+				return r.abandonPromotion(rec, "title", "m_42_title")
+			},
+			wantKept: true,
+			reason:   "only the record says which directory under the canonical name this promotion produced",
 		},
 	}
 
@@ -617,8 +639,7 @@ func TestAbandonPromotionKeepsARenameThatAlreadyMoved(t *testing.T) {
 				WithPromotionAt("title", migrationPromotionStarted)
 			f.put(rec)
 
-			r := newMigrationReconciler(f.store, f.lsmPath, f.logger, f.deps())
-			kept := r.abandonPromotion(rec, "title", "m_42_title").PromotionOf("title") != ""
+			kept := tt.drive(t, f, rec).PromotionOf("title") != ""
 			require.Equal(t, tt.wantKept, kept, tt.reason)
 
 			// What the next load reads, which is the only copy that decides

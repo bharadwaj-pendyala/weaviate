@@ -404,6 +404,9 @@ func (r *migrationReconciler) promoteProperty(rec MigrationRecordSwapped, prop s
 			"property %q was promoted onto %q and that directory is gone; preserving the record and promoting nothing",
 			prop, canonical)
 		return rec, false, nil
+	default:
+		// No mark at all, or a start whose finish never landed. Only the
+		// staged directory decides either, and it is read below.
 	}
 	stagedThere, err := r.dirExists(staged)
 	if err != nil {
