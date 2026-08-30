@@ -218,9 +218,9 @@ type MigrationRecordSwapped struct {
 }
 
 // migrationPromotionMark is how far one property's promotion got. Started is
-// written immediately before the rename and finished immediately after, with
-// nothing in between, so only a process that stopped between those two
-// statements leaves a start standing.
+// written immediately before the rename and finished immediately after, so a
+// start still standing means the rename may or may not have run: a crash
+// between the two writes, or a finish write that failed.
 type migrationPromotionMark string
 
 const (
@@ -306,9 +306,10 @@ func (r MigrationRecordPromoted) State() MigrationState  { return MigrationState
 
 // migrationRecordFormatVersion is bumped only for changes a previous release
 // can't read. The gate is exact equality both ways, so a bump makes every
-// record from either version read as NotUnderstood on the other — freezing
-// all writes and removals on that shard, not just the record. Adding a
-// second version is a rolling-upgrade decision, not an additive one.
+// record already on the shard read as NotUnderstood on the other build, each
+// frozen under its own file name, and withholds every promotion and removal
+// on that shard. Adding a second version is a rolling-upgrade decision, not
+// an additive one.
 const migrationRecordFormatVersion = 1
 
 type migrationFlipEnvelope struct {

@@ -196,16 +196,6 @@ func (f *reconcileFixture) mkdirs(names ...string) {
 	}
 }
 
-// mkEmptyDirs creates bucket directories holding no segment file, which is
-// both what a shard load creates for a schema property and what a promotion
-// of a property with no values leaves behind.
-func (f *reconcileFixture) mkEmptyDirs(names ...string) {
-	f.t.Helper()
-	for _, name := range names {
-		require.NoError(f.t, os.MkdirAll(filepath.Join(f.lsmPath, name), 0o777))
-	}
-}
-
 func (f *reconcileFixture) exists(name string) bool {
 	info, err := os.Stat(filepath.Join(f.lsmPath, name))
 	return err == nil && info.IsDir()
@@ -232,7 +222,7 @@ func (f *reconcileFixture) put(rec MigrationRecord) {
 	require.NoError(f.t, os.WriteFile(filepath.Join(path, "payload.mig"), []byte(subject.TaskID), 0o600))
 }
 
-func (f *reconcileFixture) migrationDirExists(subject MigrationSubject) bool {
+func (f *reconcileFixture) trackerDirExists(subject MigrationSubject) bool {
 	info, err := os.Stat(filepath.Join(f.lsmPath, migrationsDir, subject.TrackerDir))
 	return err == nil && info.IsDir()
 }
@@ -246,7 +236,7 @@ func (f *reconcileFixture) requireMigrationDirsTrackRecords() {
 	surviving := f.store.Records()
 	for _, subject := range f.planted {
 		_, hasRecord := f.store.Get(subject.Key)
-		require.Equal(f.t, hasRecord, f.migrationDirExists(subject),
+		require.Equal(f.t, hasRecord, f.trackerDirExists(subject),
 			"migration directory of %s", subject.Key)
 
 		for _, dir := range migrationOwnedDirs(subject) {
@@ -469,10 +459,7 @@ func TestReconcileSwappedProbe(t *testing.T) {
 		present []string
 		// promotion is how far the record says each property's own promotion
 		// got before this pass.
-		promotion map[string]migrationPromotionMark
-		// emptyDirs are planted holding no segment file, the way a shard load
-		// creates a canonical bucket for a property still in the schema.
-		emptyDirs        []string
+		promotion        map[string]migrationPromotionMark
 		wantState        MigrationState
 		wantCanonical    string
 		wantCanonicalDir bool
@@ -559,7 +546,6 @@ func TestReconcileSwappedProbe(t *testing.T) {
 
 			subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
 			f.mkdirs(tt.present...)
-			f.mkEmptyDirs(tt.emptyDirs...)
 			rec := NewMigrationRecordSwapped(subject, []string{"title"}, map[string]string{"title": "property_title"})
 			for prop, mark := range tt.promotion {
 				rec = rec.WithPromotionAt(prop, mark)
@@ -1355,7 +1341,7 @@ func TestReconcileWithClusterTasksLeavesADecidedFlipAlone(t *testing.T) {
 			require.Equal(t, tt.wantState, state)
 			require.Equal(t, tt.liveAt, f.contentOf(tt.liveAt),
 				"the flip's data must still be where the record says it is")
-			require.True(t, f.migrationDirExists(subject),
+			require.True(t, f.trackerDirExists(subject),
 				"the recovery payload outlives a pass that decided nothing")
 			require.Empty(t, f.mirror.disarmed, "nothing was torn down, so no mirror was disarmed")
 			f.requireMigrationDirsTrackRecords()
@@ -1725,7 +1711,7 @@ func TestAPoisonedRecordCannotSweepTheMigrationTree(t *testing.T) {
 				"the shard's migration tree must survive the record that named it")
 			_, present := f.state(bystander.Key)
 			require.True(t, present, "and so must every other record on the shard")
-			require.True(t, f.migrationDirExists(bystander))
+			require.True(t, f.trackerDirExists(bystander))
 			if tt.serving != "" {
 				require.Equal(t, sidecarDataFor(tt.serving), readSidecarData(t, f.lsmPath, tt.serving),
 					"the store this record named must still hold its data")

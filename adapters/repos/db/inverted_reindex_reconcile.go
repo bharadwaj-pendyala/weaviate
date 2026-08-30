@@ -590,8 +590,8 @@ func (r *migrationReconciler) confirmPromotionSurvives(rec MigrationRecordSwappe
 }
 
 // settleInterruptedPromotion decides a promotion that recorded its start but
-// never its finish — the one state no completed shard load can produce, since
-// the two writes bracket the rename with nothing between them.
+// never its finish: a crash between the two writes, a finish write that
+// failed, or a rename that moved and then failed to sync.
 //
 // Reconciliation runs before any bucket opens, so the canonical directory
 // still reflects exactly what the rename did or didn't do. Both answers are
@@ -816,8 +816,7 @@ func (r *migrationReconciler) sealUnit(subject MigrationSubject) (func(), bool) 
 
 // withSealedUnit runs a teardown under the unit's seal, declining (and
 // retrying next pass) if a worker is live — every arm here writes through
-// pointers taken before the worker's phase began. The per-unit orphan audit
-// takes the same seal separately.
+// pointers taken before the worker's phase began.
 func (r *migrationReconciler) withSealedUnit(subject MigrationSubject, what string, run func() error) error {
 	release, sealed := r.sealUnit(subject)
 	if !sealed {

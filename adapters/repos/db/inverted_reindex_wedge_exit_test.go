@@ -143,7 +143,7 @@ func TestASupersededUnflippedRecordRetires(t *testing.T) {
 				"a record every property of which a newer migration took over has nothing left to answer for")
 			require.False(t, f.exists(predecessor.StagedDirs["title"]),
 				"and its staged copy, which nothing reads from pre-flip, is reclaimed with it")
-			require.False(t, f.migrationDirExists(predecessor))
+			require.False(t, f.trackerDirExists(predecessor))
 			require.True(t, f.logged("took over every property of this one"),
 				"the operator who resubmitted has to be able to see what stopped the errors")
 

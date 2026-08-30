@@ -272,9 +272,8 @@ func (i *Index) cleanStalePartialReindexState(
 // one does, [migrationDirScope.taskProperties] answers from it, and a tracker
 // naming other properties leaves this reporting clean and skipping the shard.
 //
-// Failing open costs only a hydration, except on an unlistable .migrations:
-// that hydration then finds no completed migration to preserve and removes
-// sidecars a deferred finalize still needs.
+// Failing open costs only a hydration: an unlistable .migrations withholds
+// every removal on the shard, so the hydrated sweep removes nothing.
 //
 // A FROZEN (offload) transition removes the shard from the map before it
 // removes files, so a mid-transition read either finds an emptying

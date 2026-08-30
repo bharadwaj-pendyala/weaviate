@@ -253,13 +253,15 @@ func (s *Shard) warnAboutLegacyMarkerMigrations() {
 		// which would make the marker a leftover rather than the live claim.
 		return
 	}
-	trackers, listed := migrationLegacyMarkerTrackersAt(s.pathLSM(), s.migrationRecords.Records(), "", nil)
+	trackers, listed, listErr := migrationLegacyMarkerTrackersAt(s.pathLSM(), s.migrationRecords.Records(), "", nil)
 	if !listed {
 		// This is the one line an operator sees at load; every removal on this
-		// shard stays withheld until the directory can be listed.
+		// shard stays withheld until the directory can be listed, so it has to
+		// say what failed.
 		s.index.logger.WithField("shard", s.ID()).
-			Warn("the migration directory could not be listed, so a completed migration holding a property's " +
-				"only copy cannot be ruled out; every removal on this shard is withheld until it can be read")
+			Warnf("the migration directory could not be listed, so a completed migration holding a property's "+
+				"only copy cannot be ruled out; every removal on this shard is withheld until it can be read: %v",
+				listErr)
 		return
 	}
 	for _, legacy := range trackers {

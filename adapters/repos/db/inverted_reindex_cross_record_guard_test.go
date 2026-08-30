@@ -99,7 +99,7 @@ func TestATeardownKeepsASurvivorsTrackerDirectory(t *testing.T) {
 
 	_, stillThere := f.state(live.Key)
 	require.True(t, stillThere, "the live record is not this teardown's business")
-	require.True(t, f.migrationDirExists(live),
+	require.True(t, f.trackerDirExists(live),
 		"the survivor's tracker directory holds its payload; removing it strands the record naming it")
 	require.Equal(t, live.TaskID, f.trackerPayloadOf(live),
 		"and the payload inside it is still the survivor's")

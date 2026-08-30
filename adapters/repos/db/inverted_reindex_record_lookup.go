@@ -98,7 +98,7 @@ func migrationPreservedStateFor(lsmPath, propName string, props *taskPropsCache,
 	records, someRecordsUnreadable, recordSetUnreadable := migrationRecordsAt(lsmPath, logger)
 	state := migrationPreservedStateFromRecords(records, someRecordsUnreadable, recordSetUnreadable)
 	state.settled = migrationReadSettledNote(lsmPath)
-	legacyTrackers, listed := migrationLegacyMarkerTrackersAt(lsmPath, records, propName, props)
+	legacyTrackers, listed, listErr := migrationLegacyMarkerTrackersAt(lsmPath, records, propName, props)
 	if someRecordsUnreadable && listed {
 		// Already preserving the whole shard, so reading trackers would only
 		// cost syscalls; listing still had to happen to catch an unlistable
@@ -111,7 +111,7 @@ func migrationPreservedStateFor(lsmPath, propName string, props *taskPropsCache,
 		// DELETE asks this per (property, index type) per shard inside the
 		// RAFT apply; the shard load warns once.
 		logger.WithField("path", filepath.Join(lsmPath, migrationsDir)).
-			Debug("the migration directory could not be listed; withholding every removal on this shard")
+			Debugf("the migration directory could not be listed; withholding every removal on this shard: %v", listErr)
 		state.withholdEverything = true
 		state.migrationsDirUnlistable = true
 		return state
@@ -285,13 +285,17 @@ type migrationLegacyMarkerTracker struct {
 // otherwise free a property's only copy.
 func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord,
 	propName string, props *taskPropsCache,
-) (trackers []migrationLegacyMarkerTracker, listed bool) {
+) (trackers []migrationLegacyMarkerTracker, listed bool, listErr error) {
 	migsDir := filepath.Join(lsmPath, migrationsDir)
 	entries, err := os.ReadDir(migsDir)
 	if err != nil {
 		// Absent is the ordinary case — most shards never ran a migration —
-		// and it really does mean there is nothing marker-era here.
-		return nil, os.IsNotExist(err)
+		// and it really does mean there is nothing marker-era here. Anything
+		// else is carried out so the one operator-facing line can name it.
+		if os.IsNotExist(err) {
+			return nil, true, nil
+		}
+		return nil, false, err
 	}
 	var out []migrationLegacyMarkerTracker
 	for _, entry := range entries {
@@ -344,7 +348,7 @@ func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord,
 			sidecars:   migrationPreservedSidecarDirsFor(dirName, prefix, gen, answer.props),
 		})
 	}
-	return out, true
+	return out, true, nil
 }
 
 // servesEmpty reports properties whose data is still under this tracker's

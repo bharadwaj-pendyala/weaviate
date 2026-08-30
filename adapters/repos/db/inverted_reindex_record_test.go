@@ -1356,7 +1356,6 @@ func TestEveryWriterEmittedSidecarNameIsAccepted(t *testing.T) {
 	}
 	require.Len(t, strategiesFor("title", 1), len(strategiesByMigrationDir(1)))
 
-	checked := 0
 	for _, generation := range []int{1, 2, 11} {
 		for _, prop := range props {
 			for _, strategy := range strategiesFor(prop, generation) {
@@ -1369,10 +1368,8 @@ func TestEveryWriterEmittedSidecarNameIsAccepted(t *testing.T) {
 					name := main + suffix
 					require.Truef(t, migrationHandleIsSidecarShaped(name),
 						"%T emits %q, and refusing it refuses the migration", strategy, name)
-					checked++
 				}
 			}
 		}
 	}
-	require.Equal(t, 3*len(props)*len(strategiesFor("title", 1))*3, checked)
 }

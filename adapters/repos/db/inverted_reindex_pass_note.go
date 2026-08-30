@@ -76,8 +76,7 @@ func migrationWriteSettledNote(lsmPath string, dirs []string) error {
 }
 
 // migrationDiscardSettledNote drops the note. Every record write and removal
-// calls this: those are the only events that change what a load would do, so
-// dropping it there is what keeps the note from outliving its evidence.
+// calls this, so a note never outlives the record set it was computed from.
 func migrationDiscardSettledNote(lsmPath string) {
 	os.Remove(migrationSettledNotePath(lsmPath))
 }

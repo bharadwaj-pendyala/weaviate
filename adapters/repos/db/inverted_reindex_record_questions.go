@@ -33,8 +33,9 @@ type migrationRecordQuestions interface {
 	// would re-run iteration over data already written.
 	IterationComplete() bool
 
-	// OwnsBucket reports whether dir is one this migration created; a
-	// directory no record attributes is never reclaimed.
+	// OwnsBucket reports whether dir is one this migration created. No
+	// record-driven reclaimer removes a directory no record attributes; the
+	// marker-era sweeps reclaim by tracker name and consult no record.
 	OwnsBucket(dir string) bool
 }
 
