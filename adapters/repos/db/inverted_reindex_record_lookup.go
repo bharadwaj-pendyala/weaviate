@@ -85,15 +85,16 @@ type migrationWithholdReasons struct {
 	// all — an unstattable completion marker, or a .migrations that could not
 	// be listed. A caller that would report the shard clean guesses instead.
 	undecided bool
-	// completedActionable: a completed per-property tracker a load's finalize
-	// promotes — properties.mig names the tracker dir's own name and
-	// swapped.mig sits beside the completion marker.
+	// completedActionable: a completed tracker a load's finalize promotes —
+	// swapped.mig beside tidied.mig (or merged.mig alone, whose missing
+	// sentinels finalize's recovery path writes itself), plus a non-empty
+	// properties.mig to promote from.
 	completedActionable bool
 	// completedStuck: a completed tracker finalize cannot promote — no
-	// properties.mig it accepts, no swapped.mig beside the marker, or
-	// class-level, whose name no property list reconstructs. Finalize removes
-	// the tracker all the same, and the sweep that follows then finds nothing
-	// preserving the staged directory and frees the property's only copy.
+	// properties.mig, tidied.mig without the swapped.mig that precedes it, or
+	// a dir name no strategy claims. Finalize removes the tracker all the
+	// same, and the sweep that follows then finds nothing preserving the
+	// staged directory and frees the property's only copy.
 	completedStuck bool
 	// unreadableRecord: a migration record this build cannot read. It may name
 	// any directory here, so nothing is removable until it can be read, and a
@@ -304,14 +305,14 @@ type migrationLegacyMarkerTracker struct {
 	props      []string
 	sidecars   []string
 	// finalizable is whether a shard load would promote this tracker's staged
-	// data rather than remove the tracker having promoted nothing.
-	// [finalizeMigrationDir] acts only on swapped.mig plus tidied.mig and
-	// takes its property list from properties.mig; missing any of those it
-	// returns, and its caller removes the tracker anyway — after which nothing
-	// on disk records that the staged directory holds the property's only copy.
-	//
-	// Asked only of a tracker nothing could be learned about (unreadable), the
-	// one population whose property list comes from properties.mig alone.
+	// data rather than remove the tracker having promoted nothing. It restates
+	// [finalizeMigrationDir]'s own precondition: swapped.mig beside tidied.mig
+	// — or merged.mig alone, whose missing sentinels finalize's recovery path
+	// writes itself — plus a non-empty properties.mig to promote from and a
+	// dir name [migrationSuffixes] claims. Missing any of those, finalize
+	// returns, its caller removes the tracker anyway, and nothing on disk then
+	// records that the staged directory holds the property's only copy. Asked
+	// only of a tracker nothing could be learned about (unreadable).
 	finalizable bool
 }
 
@@ -367,6 +368,9 @@ func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord,
 		}
 		migDir := filepath.Join(migsDir, dirName)
 		answer := props.lookup(migDir)
+		// The list finalize itself promotes from; unverified, and an
+		// unreadable one reads as empty, exactly as finalize treats it.
+		finalizeProps, _ := readMigrationProps(migDir)
 		out = append(out, migrationLegacyMarkerTracker{
 			dirName: dirName,
 			marker:  marker,
@@ -382,12 +386,14 @@ func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord,
 			unreadable: answer.unreadable || len(answer.props) == 0,
 			props:      append([]string(nil), answer.props...),
 			sidecars:   migrationPreservedSidecarDirsFor(dirName, prefix, gen, answer.props),
-			// The same three files [finalizeMigrationDir] tests, asked here so
-			// a caller can tell a load that would promote this tracker's data
-			// from one that would remove the tracker and strand it.
-			finalizable: marker == "tidied.mig" &&
-				fileExists(filepath.Join(migDir, "swapped.mig")) &&
-				answer.sidecarNamesDir,
+			// [finalizeMigrationDir]'s own precondition, asked here so a
+			// caller can tell a load that would promote this tracker's data
+			// from one that would remove the tracker and strand it. The
+			// marker is merged.mig only while tidied.mig is absent — the
+			// population finalize's recovery path completes and promotes.
+			finalizable: (marker == "merged.mig" ||
+				(marker == "tidied.mig" && fileExists(filepath.Join(migDir, "swapped.mig")))) &&
+				len(finalizeProps) > 0 && migrationSuffixes(dirName) != nil,
 		})
 	}
 	return out, true, nil

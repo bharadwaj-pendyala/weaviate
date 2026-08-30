@@ -511,12 +511,6 @@ type taskProps struct {
 	migrationType ReindexMigrationType
 	ok            bool
 	unreadable    bool
-	// sidecarNamesDir says properties.mig on its own rebuilds this tracker
-	// dir's own name — the answer [propsFromSidecar] refuses to give while no
-	// payload.mig stands beside it. It is not a property list and no removal
-	// may widen on it; it says only that [finalizeMigrationDir] has a list to
-	// promote from, which is what the completed-migration gate asks.
-	sidecarNamesDir bool
 	// taskID, taskVersion and unitID are the migration's identity, which the
 	// orphan audit needs to ask whether the task owning a record-less tracker
 	// is still live before it reclaims one.
@@ -534,13 +528,13 @@ type taskProps struct {
 // costs is paid once per index type of the same sweep otherwise.
 func (c *taskPropsCache) lookup(migDir string) taskProps {
 	if c == nil {
-		answer, _ := readTrackerProps(migDir)
+		answer, _ := readTaskProps(migDir)
 		return answer
 	}
 	if answer, hit := c.byDir[migDir]; hit {
 		return answer
 	}
-	answer, readPayload := readTrackerProps(migDir)
+	answer, readPayload := readTaskProps(migDir)
 	if c.byDir == nil {
 		c.byDir = map[string]taskProps{}
 	}
@@ -551,25 +545,6 @@ func (c *taskPropsCache) lookup(migDir string) taskProps {
 	return answer
 }
 
-// readTrackerProps is one tracker directory's property list, taken from
-// properties.mig where that small sidecar reconstructs the directory's own
-// name and from payload.mig otherwise. readPayload reports whether the
-// megabyte-scale payload had to be opened, which is the cost the caller counts.
-func readTrackerProps(migDir string) (answer taskProps, readPayload bool) {
-	if props, ok := propsFromSidecar(migDir, migrationPerPropertyDirPrefixes()); ok {
-		return taskProps{props: props, ok: true}, false
-	}
-	answer, readPayload = readTaskProps(migDir)
-	if !answer.ok {
-		// One of propsFromSidecar's refusals is a per-property sidecar with no
-		// readable payload beside it, and that is exactly the population a
-		// deferred finalize can still promote: it reads properties.mig and
-		// nothing else. Recorded apart from props so no sweep widens on it.
-		_, answer.sidecarNamesDir = sidecarPropsNamingDir(migDir, migrationPerPropertyDirPrefixes())
-	}
-	return answer, readPayload
-}
-
 // count is how many payloads this cache had to read; a refusal opens none.
 func (c *taskPropsCache) count() int {
 	if c == nil {
@@ -578,8 +553,10 @@ func (c *taskPropsCache) count() int {
 	return c.reads
 }
 
-// readTaskProps answers from payload.mig, which costs megabytes per tracker
-// on a large migration inside a RAFT apply holding the FSM loop cluster-wide.
+// readTaskProps answers from properties.mig where that small sidecar
+// reconstructs the directory's own name, and from payload.mig otherwise —
+// which costs megabytes per tracker on a large migration inside a RAFT apply
+// holding the FSM loop cluster-wide.
 // A payload over [maxRecoveryPayloadBytes] is refused rather than parsed, and
 // reads the same as an unparseable one — fail-open, never fail-wrong:
 // deletion falls back to the dir's own name, preservation and the
@@ -593,6 +570,9 @@ func (c *taskPropsCache) count() int {
 // readPayload reports whether payload.mig was opened, so the caller's read
 // counter keeps meaning what it says. A refusal opens nothing.
 func readTaskProps(migDir string) (answer taskProps, readPayload bool) {
+	if props, ok := propsFromSidecar(migDir, migrationPerPropertyDirPrefixes()); ok {
+		return taskProps{props: props, ok: true}, false
+	}
 	facts, err := readRecoveryPayloadFacts(migDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -631,14 +611,6 @@ func propsFromSidecar(migDir string, prefixes []string) ([]string, bool) {
 	if _, err := os.Stat(filepath.Join(migDir, reindexRecoveryPayloadFile)); err != nil {
 		return nil, false
 	}
-	return sidecarPropsNamingDir(migDir, prefixes)
-}
-
-// sidecarPropsNamingDir is that reconstruction on its own, without
-// [propsFromSidecar]'s payload.mig precondition. Only a reader that removes
-// nothing may ask it: the precondition is what stops a sidecar standing in for
-// an absent payload where a deletion's scope turns on the answer.
-func sidecarPropsNamingDir(migDir string, prefixes []string) ([]string, bool) {
 	props, err := readMigrationProps(migDir)
 	if err != nil || len(props) == 0 {
 		return nil, false

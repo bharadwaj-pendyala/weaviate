@@ -759,8 +759,8 @@ func TestHasStalePartialReindexStateNotStaleMeansTheSweepFindsNothing(t *testing
 		// A load runs finalize on the way in, and finalize removes a
 		// completed tracker whether or not it promoted the data behind it. So
 		// the gate asks for a load on a completed tracker no record names only
-		// where finalize would promote it: swapped.mig beside the marker, and
-		// a properties.mig that rebuilds the tracker dir's own name.
+		// where finalize would promote it: swapped.mig beside the marker (or
+		// merged.mig alone), and a non-empty properties.mig.
 		{
 			name:      "a completed tracker whose only property list is its sidecar",
 			indexType: "filterable",
@@ -806,9 +806,34 @@ func TestHasStalePartialReindexStateNotStaleMeansTheSweepFindsNothing(t *testing
 			}},
 			sidecars: []string{"property_category__enable_filterable_ingest_1"},
 		},
-		// A class-level tracker's name carries no property list, so nothing
-		// here can check properties.mig against it. Finalize would still act
-		// on the list; the gate declines to be the one that asks it to.
+		// merged.mig without tidied.mig means the runtime swap died after
+		// the prepend: finalize writes the missing sentinels and promotes.
+		{
+			name:      "a completed tracker marked merged whose swap never ran",
+			indexType: "filterable",
+			markerTrackers: []markerTracker{{
+				dir:       "enable_filterable_category_1",
+				sentinels: []string{"merged.mig"},
+				props:     []string{"category"},
+			}},
+			sidecars:        []string{"property_category__enable_filterable_ingest_1"},
+			wantFinalizable: true,
+		},
+		// With tidied.mig present the recovery path stands down, so this is
+		// the tidied-without-swap bail again; merged.mig changes nothing.
+		{
+			name:      "a tracker marked merged and tidied without the swap between them",
+			indexType: "filterable",
+			markerTrackers: []markerTracker{{
+				dir:       "enable_filterable_category_1",
+				sentinels: []string{"merged.mig", "tidied.mig"},
+				props:     []string{"category"},
+			}},
+			sidecars: []string{"property_category__enable_filterable_ingest_1"},
+		},
+		// A class-level tracker's name carries no property list, but finalize
+		// asks nothing of the name: it promotes from properties.mig alone, so
+		// the load is asked for just as it is on a per-property tracker.
 		{
 			name:      "a completed class-level tracker",
 			indexType: "filterable",
@@ -817,7 +842,8 @@ func TestHasStalePartialReindexStateNotStaleMeansTheSweepFindsNothing(t *testing
 				sentinels: []string{"swapped.mig", "tidied.mig"},
 				props:     []string{"category"},
 			}},
-			sidecars: []string{"property_category__roaringset_ingest_1"},
+			sidecars:        []string{"property_category__roaringset_ingest_1"},
+			wantFinalizable: true,
 		},
 		// Finalize reads properties.mig and never the payload, so a payload
 		// too damaged to parse changes nothing about what a load would do.
@@ -1006,50 +1032,65 @@ func TestHasStalePartialReindexStateNotStaleMeansTheSweepFindsNothing(t *testing
 	}
 }
 
-// A gate that asks for a hydration has to be asking for something the load
-// actually does, or every future sweep asks for the same one. The load's
-// finalize is what settles it: it promotes the staged data onto the canonical
-// name and removes the tracker, after which the gate has nothing left to ask
-// about.
+// Both directions of the gate's second answer, run against the real load over
+// every population its finalize promotes: a load that does something must be
+// asked for (or the property serves empty on a cold tenant forever), and once
+// the finalize has promoted the staged data and removed the tracker, the gate
+// has nothing left to ask about.
 func TestHasStalePartialReindexStateStopsAskingOnceTheLoadHasFinalized(t *testing.T) {
 	const (
 		propName  = "category"
 		indexType = "filterable"
-		tracker   = "enable_filterable_category_1"
-		ingest    = "property_category__enable_filterable_ingest_1"
-		backup    = "property_category__enable_filterable_backup_1"
 		canonical = "property_category"
 		// staged rides along inside the ingest dir so the canonical dir it
 		// becomes can be told from one a rename never reached.
 		staged = "staged.marker"
 	)
-	// No shard: [FinalizeCompletedMigrations] runs before buckets open, and
-	// renaming onto the canonical name of a loaded one is what its godoc
-	// forbids.
-	lsm := t.TempDir()
-	mkTrackerDir(t, lsm, tracker, "swapped.mig", "tidied.mig")
-	mkPropsSidecar(t, lsm, tracker, propName)
-	mkSidecarDir(t, lsm, ingest)
-	mkSidecarDir(t, lsm, backup)
-	require.NoError(t, os.WriteFile(filepath.Join(lsm, ingest, staged), []byte("x"), 0o644))
+	tests := []struct {
+		name       string
+		sentinels  []string
+		classLevel bool
+	}{
+		{name: "a per-property migration marked tidied", sentinels: []string{"swapped.mig", "tidied.mig"}},
+		{name: "a per-property migration marked merged, its swap never run", sentinels: []string{"merged.mig"}},
+		{name: "a class-level roaringset refresh marked tidied", sentinels: []string{"swapped.mig", "tidied.mig"}, classLevel: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tracker, base := "enable_filterable_category_1", "property_category__enable_filterable"
+			if tc.classLevel {
+				tracker, base = "filterable_roaringset_refresh_1", "property_category__roaringset"
+			}
+			ingest, backup := base+"_ingest_1", base+"_backup_1"
+			// No shard: [FinalizeCompletedMigrations] runs before buckets
+			// open, and renaming onto the canonical name of a loaded one is
+			// what its godoc forbids.
+			lsm := t.TempDir()
+			mkTrackerDir(t, lsm, tracker, tc.sentinels...)
+			mkPropsSidecar(t, lsm, tracker, propName)
+			mkSidecarDir(t, lsm, ingest)
+			mkSidecarDir(t, lsm, backup)
+			require.NoError(t, os.WriteFile(filepath.Join(lsm, ingest, staged), []byte("x"), 0o644))
 
-	logger, _ := test.NewNullLogger()
-	stale, finalizable := hasStalePartialReindexState(lsm, propName, indexType, nil, nil, logger)
-	require.False(t, stale, "the sweep removes nothing here")
-	require.True(t, finalizable, "so the only reason to load the shard is the finalize")
+			logger, _ := test.NewNullLogger()
+			stale, finalizable := hasStalePartialReindexState(lsm, propName, indexType, nil, nil, logger)
+			require.False(t, stale, "the sweep removes nothing here")
+			require.True(t, finalizable, "so the only reason to load the shard is the finalize")
 
-	FinalizeCompletedMigrations(lsm, logger)
+			FinalizeCompletedMigrations(lsm, logger)
 
-	require.FileExists(t, filepath.Join(lsm, canonical, staged),
-		"the staged dir holds the property's only copy, so finalizing it means "+
-			"promoting it to the canonical name, never removing it")
-	require.False(t, dirExistsAt(t, lsm, ".migrations/"+tracker))
-	require.False(t, dirExistsAt(t, lsm, backup))
+			require.FileExists(t, filepath.Join(lsm, canonical, staged),
+				"the staged dir holds the property's only copy, so finalizing it means "+
+					"promoting it to the canonical name, never removing it")
+			require.False(t, dirExistsAt(t, lsm, ".migrations/"+tracker))
+			require.False(t, dirExistsAt(t, lsm, backup))
 
-	stale, finalizable = hasStalePartialReindexState(lsm, propName, indexType, nil, nil, logger)
-	require.False(t, stale)
-	require.False(t, finalizable,
-		"asking for the same load again after it has run is asking forever")
+			stale, finalizable = hasStalePartialReindexState(lsm, propName, indexType, nil, nil, logger)
+			require.False(t, stale)
+			require.False(t, finalizable,
+				"asking for the same load again after it has run is asking forever")
+		})
+	}
 }
 
 // Pins that a sweep of "category" leaves "category_x"'s completed migration
