@@ -501,24 +501,15 @@ type taskPropsCache struct {
 	reads int
 }
 
-// taskProps is one [migrationDirScope.taskProperties] answer. migrationType
-// travels with the property list because the orphan audit needs both to name
-// the sidecar buckets a tracker owns, and both come from the same read.
+// taskProps is one [migrationDirScope.taskProperties] answer.
 type taskProps struct {
-	props         []string
-	migrationType ReindexMigrationType
-	ok            bool
-	unreadable    bool
+	props      []string
+	ok         bool
+	unreadable bool
 	// viaSidecar means props came from properties.mig itself (non-empty and
 	// reconstructing the dir name), so finalize's own promotion source is
 	// known good without a second read.
 	viaSidecar bool
-	// taskID, taskVersion and unitID are the migration's identity, which the
-	// orphan audit needs to ask whether the task owning a record-less tracker
-	// is still live before it reclaims one.
-	taskID      string
-	taskVersion uint64
-	unitID      string
 }
 
 // lookup answers for one tracker dir. The memo is keyed by dir alone — safe
@@ -577,28 +568,22 @@ func readTaskProps(migDir string) (answer taskProps, readPayload bool) {
 	if props, ok := propsFromSidecar(migDir, migrationPerPropertyDirPrefixes()); ok {
 		return taskProps{props: props, ok: true, viaSidecar: true}, false
 	}
-	facts, err := readRecoveryPayloadFacts(migDir)
+	props, err := readRecoveryPropertyNames(migDir, maxRecoveryPayloadBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return taskProps{}, false
 		}
 		return taskProps{unreadable: true}, !errors.Is(err, errRecoveryPayloadTooLarge)
 	}
-	answer = taskProps{
-		migrationType: facts.migrationType,
-		taskID:        facts.taskID,
-		taskVersion:   facts.taskVersion,
-		unitID:        facts.unitID,
-	}
-	for _, prop := range facts.properties {
+	for _, prop := range props {
 		if !migrationHandleIsOneElement(prop) {
 			return taskProps{unreadable: true}, true
 		}
 	}
-	if len(facts.properties) == 0 {
+	if len(props) == 0 {
 		return answer, true
 	}
-	answer.props = facts.properties
+	answer.props = props
 	answer.ok = true
 	return answer, true
 }

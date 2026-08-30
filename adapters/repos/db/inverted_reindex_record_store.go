@@ -395,7 +395,9 @@ func loadMigrationRecordFile(path string) (MigrationRecord, MigrationRecordLoadO
 
 // writeFileAtomic publishes content under name by renaming a fully written
 // temp file over it, so a crash can only leave the previous file or none,
-// never a truncated one.
+// never a truncated one. Nothing sweeps a temp file a crash leaves behind,
+// so it stays out of backups by its .tmp extension alone — every walk that
+// reaches these directories has to skip that extension.
 func writeFileAtomic(dir, name string, content []byte) (err error) {
 	// Same directory as the target, or the rename would cross filesystems.
 	tmp, err := os.CreateTemp(dir, name+".*"+tmpExt)

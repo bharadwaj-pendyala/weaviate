@@ -462,33 +462,12 @@ func (r *migrationReconciler) promoteProperty(rec MigrationRecordSwapped, all []
 	// them. Usually the canonical path, but a predecessor that flipped and
 	// never promoted still holds live data at a staged name instead.
 	if displaced != "" && displaced != canonical {
-		displacedThere, err := r.dirExists(displaced)
-		if err != nil {
+		if cleared, err := r.clearForPromotion(all, subject, displaced, "the displaced directory"); err != nil || !cleared {
 			return rec, false, err
 		}
-		if displacedThere {
-			// A promotion that cannot clear its own target must not promote:
-			// leaving the record Swapped is the shape every other unpromotable
-			// property already gets, and the next load re-asks.
-			if !r.mayReplace(all, subject, displaced, "the displaced directory") {
-				return rec, false, nil
-			}
-			if err := os.RemoveAll(r.path(displaced)); err != nil {
-				return rec, false, fmt.Errorf("remove displaced directory %q: %w", displaced, err)
-			}
-		}
 	}
-	canonicalThere, err := r.dirExists(canonical)
-	if err != nil {
+	if cleared, err := r.clearForPromotion(all, subject, canonical, "the canonical directory"); err != nil || !cleared {
 		return rec, false, err
-	}
-	if canonicalThere {
-		if !r.mayReplace(all, subject, canonical, "the canonical directory") {
-			return rec, false, nil
-		}
-		if err := os.RemoveAll(r.path(canonical)); err != nil {
-			return rec, false, fmt.Errorf("remove canonical directory %q the promotion replaces: %w", canonical, err)
-		}
 	}
 
 	started := rec.WithPromotionAt(prop, migrationPromotionStarted)
@@ -511,6 +490,30 @@ func (r *migrationReconciler) promoteProperty(rec MigrationRecordSwapped, all []
 		return rec, true, nil
 	}
 	return finished, true, nil
+}
+
+// clearForPromotion removes dir so the promotion can rename onto its target,
+// refusing where another record holds it as live data. A false return with a
+// nil error means the promotion must not run this pass: leaving the record
+// Swapped is the shape every other unpromotable property already gets, and
+// the next load re-asks.
+func (r *migrationReconciler) clearForPromotion(all []MigrationRecord,
+	subject MigrationSubject, dir, what string,
+) (cleared bool, err error) {
+	there, err := r.dirExists(dir)
+	if err != nil {
+		return false, err
+	}
+	if !there {
+		return true, nil
+	}
+	if !r.mayReplace(all, subject, dir, what) {
+		return false, nil
+	}
+	if err := os.RemoveAll(r.path(dir)); err != nil {
+		return false, fmt.Errorf("remove %s %q the promotion replaces: %w", what, dir, err)
+	}
+	return true, nil
 }
 
 // confirmPromotionSurvives re-reads the one thing a record cannot carry: that
@@ -730,7 +733,7 @@ func (r *migrationReconciler) localVerdict(subject MigrationSubject) (migrationV
 	if !readable {
 		return migrationVerdictLeave, "this node's task map cannot be read yet"
 	}
-	return r.verdictFrom(subject, tasks, taskListMayLag)
+	return r.verdictFrom(subject, tasks)
 }
 
 // sealUnit holds this migration's unit for the length of a teardown, or
@@ -761,17 +764,10 @@ func (r *migrationReconciler) withSealedUnit(subject MigrationSubject, what stri
 	return run()
 }
 
-// taskListCompleteness says what a task's absence from a list means: with a
-// list this node built alone it can only mean "not seen yet", while the
-// leader's list is the cluster's, so absence there means gone.
-type taskListCompleteness bool
-
-const taskListMayLag taskListCompleteness = false
-
 // verdictFrom consults the two external facts, in an order that skips the
-// second whenever the first is conclusive.
+// second whenever the first is conclusive. tasks is this node's own applied
+// list, so a task absent from it may merely not have been seen yet.
 func (r *migrationReconciler) verdictFrom(subject MigrationSubject, tasks []*distributedtask.Task,
-	completeness taskListCompleteness,
 ) (migrationVerdict, string) {
 	if task := findMigrationTask(subject, tasks); task != nil {
 		return migrationVerdictForTask(task)
@@ -795,10 +791,7 @@ func (r *migrationReconciler) verdictFrom(subject MigrationSubject, tasks []*dis
 		// replicas that saw the same cancel differently.
 		return migrationVerdictCommit, "owning task is gone and the schema shows its effect"
 	}
-	if completeness == taskListMayLag {
-		return migrationVerdictLeave, "this node can see neither the owning task nor its effect, which a node still applying its log cannot tell from a task that is gone"
-	}
-	return migrationVerdictDiscard, "owning task is gone and the schema does not show its effect"
+	return migrationVerdictLeave, "this node can see neither the owning task nor its effect, which a node still applying its log cannot tell from a task that is gone"
 }
 
 // migrationVerdictForTask reads a task's status as positive evidence wherever
