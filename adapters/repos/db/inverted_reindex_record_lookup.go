@@ -205,7 +205,26 @@ func migrationPreservedStateFromRecords(records []MigrationRecord, someRecordsUn
 			canAct := migrationPropertyLoadCanStillAct(rec, prop)
 			anyCanAct = anyCanAct || canAct
 			for _, dir := range migrationOwnCopyDirs(subject, prop) {
-				state.buckets[dir] = canAct
+				// Union, never overwrite: where two records name one
+				// directory, a later "no load claim" must not erase an
+				// earlier record's claim.
+				state.buckets[dir] = state.buckets[dir] || canAct
+			}
+		}
+		// The directory this record's flip displaced is preserved on the
+		// displacer's account: until the claim lapses it can be the
+		// property's only copy, and the preserve side answers wider than any
+		// reclaimer — [migrationOwnCopyDirs] stays reclaim-only. It never
+		// justifies a load by itself.
+		if displacer, ok := rec.(migrationDisplacer); ok {
+			for _, prop := range subject.Properties {
+				dir, claimed := displacer.DisplacedDir(prop)
+				if !claimed || dir == "" {
+					continue
+				}
+				if _, seen := state.buckets[dir]; !seen {
+					state.buckets[dir] = false
+				}
 			}
 		}
 		if subject.TrackerDir != "" {

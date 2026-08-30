@@ -14,6 +14,7 @@ package db
 import (
 	"context"
 
+	"github.com/weaviate/weaviate/cluster/distributedtask"
 	"github.com/weaviate/weaviate/entities/models"
 	"github.com/weaviate/weaviate/usecases/monitoring"
 )
@@ -95,6 +96,16 @@ func (s *Shard) migrationReconciler(class func() *models.Class) *migrationReconc
 		migrationReconcileDeps{
 			Class:   class,
 			Buckets: s,
+			// Granted explicitly: no task writes a record on this build, so
+			// no worker can hold a unit a record-driven teardown touches.
+			// The nil default refuses, which keeps every other construction
+			// (tests included) fail-safe; this one production construction
+			// opts in, and the cutover PR must replace this grant with the
+			// real worker registry — nothing stalls if it forgets, so the
+			// replacement is a review obligation, not an enforced one.
+			SealUnit: func(distributedtask.TaskDescriptor, string) (func(), bool) {
+				return func() {}, true
+			},
 		})
 }
 

@@ -476,3 +476,52 @@ func TestCleanStalePartialReindexState_ShutdownSkipsOtherPropertiesBuckets(t *te
 		})
 	}
 }
+
+// The preserve set has to answer wider than any reclaimer: the directory a
+// record's flip displaced can be the property's only copy while the record
+// cannot promote, and the sweep must not free it just because no record holds
+// it in a live-data role.
+func TestSweepPreservesTheDirectoryARecordClaimsAsDisplaced(t *testing.T) {
+	ctx := testCtx()
+	className := "DisplacedPreserve_" + uuid.NewString()[:8]
+	class := newTestClassWithProps(className, []string{"title"})
+	shd, _ := testShardWithSettings(t, ctx, class, enthnsw.UserConfig{Skip: true},
+		false, false, false)
+	shard := shd.(*Shard)
+	defer shard.Shutdown(ctx)
+	lsm := shard.pathLSM()
+
+	// The flip displaced the predecessor's staged directory, which the
+	// record itself calls the last copy while its own promotion cannot run.
+	displaced := "property_title__enable_filterable_ingest_10"
+	subject := testMigrationSubject(20, StrategyCodeSearchableRetokenize, "title")
+	rec := NewMigrationRecordSwapped(subject, []string{"title"},
+		map[string]string{"title": displaced})
+	logger, _ := test.NewNullLogger()
+	require.NoError(t, NewMigrationRecordStore(lsm, logger).Put(rec))
+	mkSidecarDir(t, lsm, displaced)
+
+	cleanSweep(t, ctx, shard, "title", "filterable")
+
+	require.True(t, dirExistsAt(t, lsm, displaced),
+		"the sweep freed the displaced directory its own record calls the last copy")
+}
+
+// Where two records name one directory, the load claim is a union: a later
+// record whose promotion is lost must not erase an earlier record's claim, or
+// the gate stops asking for the load that would reclaim the directory.
+func TestPreservedStateUnionsTheLoadClaimAcrossRecords(t *testing.T) {
+	shared := "property_title__g10_ingest"
+	healthy := NewMigrationRecordSwapped(
+		testMigrationSubject(10, StrategyCodeSearchableRetokenize, "title"), []string{"title"}, nil)
+
+	lostSubject := testMigrationSubject(20, StrategyCodeSearchableRetokenize, "title")
+	lostSubject.StagedDirs["title"] = shared
+	lost := NewMigrationRecordSwapped(lostSubject, []string{"title"}, nil).
+		WithPromotionAt("title", migrationPromotionLost)
+
+	state := migrationPreservedStateFromRecords(
+		[]MigrationRecord{healthy, lost}, false, false)
+	require.True(t, state.buckets[shared],
+		"the later record's lost promotion erased the earlier record's load claim")
+}

@@ -24,6 +24,9 @@ type migrationDisplacer interface {
 	// displacedFor names the property whose flip pushed dir aside — the
 	// property, not just the fact, since a claim lapses per property.
 	displacedFor(dir string) (string, bool)
+	// DisplacedDir is displacedFor's other direction: the directory prop's
+	// flip pushed aside, for the preserve pass that walks properties.
+	DisplacedDir(prop string) (string, bool)
 }
 
 func (f migrationFlipBlock) displacedFor(dir string) (string, bool) {

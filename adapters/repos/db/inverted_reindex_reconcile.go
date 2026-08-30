@@ -735,10 +735,12 @@ func (r *migrationReconciler) localVerdict(subject MigrationSubject) (migrationV
 
 // sealUnit holds this migration's unit for the length of a teardown, or
 // refuses because a worker is still running here. No registry installed
-// always succeeds.
+// always refuses: an unwired sealer has to fail toward leaving data alone,
+// the same direction an unwired LocalTasks already fails, so wiring the
+// registry is what arms the destructive arms rather than what disarms them.
 func (r *migrationReconciler) sealUnit(subject MigrationSubject) (func(), bool) {
 	if r.deps.SealUnit == nil {
-		return func() {}, true
+		return func() {}, false
 	}
 	return r.deps.SealUnit(
 		distributedtask.TaskDescriptor{ID: subject.TaskID, Version: subject.Key.TaskVersion},

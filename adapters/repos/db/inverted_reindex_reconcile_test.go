@@ -1598,3 +1598,21 @@ func (f *reconcileFixture) trackerPayloadOf(subject MigrationSubject) string {
 	require.NoError(f.t, err)
 	return string(data)
 }
+
+// An unwired sealer must refuse: granting would run every destructive arm
+// behind withSealedUnit on the first build that writes a record, with nothing
+// checking whether a worker is live. Refusal and an unwired LocalTasks fail
+// in the same direction — toward leaving data alone.
+func TestUnwiredSealerRefusesTheTeardown(t *testing.T) {
+	f := newReconcileFixture(t)
+	deps := f.deps()
+	deps.SealUnit = nil
+	r := newMigrationReconciler(f.store, f.lsmPath, f.logger, deps)
+
+	err := r.withSealedUnit(testMigrationSubject(10, StrategyCodeSearchableRetokenize, "title"),
+		"a teardown", func() error {
+			t.Fatal("an unwired sealer ran the teardown it cannot know is safe")
+			return nil
+		})
+	require.NoError(t, err, "refusing is a deferral, not an error")
+}
