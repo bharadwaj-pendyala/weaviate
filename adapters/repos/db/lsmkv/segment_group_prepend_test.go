@@ -13,7 +13,6 @@ package lsmkv
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,7 +27,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/weaviate/weaviate/adapters/repos/db/roaringset"
 	"github.com/weaviate/weaviate/entities/cyclemanager"
-	"github.com/weaviate/weaviate/entities/diskio"
 )
 
 // createTestBucketWithOptionsAndLogger creates a bucket with the given
@@ -871,7 +869,7 @@ func TestCopySegmentFiles_ConsistentRename(t *testing.T) {
 	dbFiles := []string{"segment-2000000000000000000.db"}
 	shift := int64(-1000000000000000000) // shift by -1e18
 
-	copiedDB, err := copySegmentFiles(srcDir, dstDir, dbFiles, shift, diskio.Fsync)
+	copiedDB, err := copySegmentFiles(srcDir, dstDir, dbFiles, shift)
 	require.NoError(t, err)
 	require.Len(t, copiedDB, 1)
 
@@ -914,7 +912,7 @@ func TestCopySegmentFiles_NewFormatWithLevelAndStrategy(t *testing.T) {
 	dbFiles := []string{"segment-2000000000000000000.l0.s5.db"}
 	shift := int64(-500000000000000000)
 
-	copiedDB, err := copySegmentFiles(srcDir, dstDir, dbFiles, shift, diskio.Fsync)
+	copiedDB, err := copySegmentFiles(srcDir, dstDir, dbFiles, shift)
 	require.NoError(t, err)
 	require.Len(t, copiedDB, 1)
 	assert.Equal(t, "segment-1500000000000000000.l0.s5.db", copiedDB[0])
@@ -1060,79 +1058,4 @@ func TestSegmentGroup_PrependSegments_InvertedCompactionDoesNotUnderflow(t *test
 	avg, count := tgt.disk.GetAveragePropertyLength()
 	require.Equal(t, uint64(3), count, "denominator must be the 3 survivors, not an underflowed uint64")
 	require.InDelta(t, 20.0, avg, 1e-9)
-}
-
-// TestCopySegmentFilesSyncsTheDirectoryItPublishedInto pins the durability the
-// copy rests on. A rename survives a crash only once the directory holding the
-// new entry is synced, and the caller durably records the staged data as
-// complete, so an unsynced publish can leave that record pointing at segments
-// that are no longer there.
-func TestCopySegmentFilesSyncsTheDirectoryItPublishedInto(t *testing.T) {
-	const segment = "segment-2000000000000000000"
-
-	tests := []struct {
-		name    string
-		syncErr error
-		// blockCopy plants a directory where the first .tmp file has to land,
-		// so the copy fails before anything is renamed into place.
-		blockCopy bool
-		wantErr   bool
-		wantSync  bool
-	}{
-		{name: "the publish is synced", wantSync: true},
-		{name: "a sync that fails fails the copy", syncErr: errors.New("no space"), wantErr: true, wantSync: true},
-		// Nothing was published, so there is nothing to make durable — the
-		// column is only a column if some row does not sync.
-		{name: "a copy that fails publishes nothing", blockCopy: true, wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dir := t.TempDir()
-			srcDir := filepath.Join(dir, "src")
-			dstDir := filepath.Join(dir, "dst")
-			require.NoError(t, os.MkdirAll(srcDir, 0o755))
-			require.NoError(t, os.MkdirAll(dstDir, 0o755))
-			for _, suffix := range []string{".db", ".bloom"} {
-				require.NoError(t, os.WriteFile(
-					filepath.Join(srcDir, segment+suffix), []byte("data"), 0o644))
-			}
-
-			if tt.blockCopy {
-				require.NoError(t, os.MkdirAll(
-					filepath.Join(dstDir, "segment-1000000000000000000.db.tmp"), 0o755))
-			}
-
-			var synced []string
-			var atSync []string
-			_, err := copySegmentFiles(srcDir, dstDir, []string{segment + ".db"},
-				-1000000000000000000, func(path string) error {
-					synced = append(synced, path)
-					entries, readErr := os.ReadDir(dstDir)
-					require.NoError(t, readErr)
-					for _, e := range entries {
-						atSync = append(atSync, e.Name())
-					}
-					return tt.syncErr
-				})
-
-			if tt.wantErr {
-				require.Error(t, err)
-			} else {
-				require.NoError(t, err)
-			}
-
-			if !tt.wantSync {
-				require.Empty(t, synced, "a copy that published nothing has nothing to make durable")
-				return
-			}
-			require.Equal(t, []string{dstDir}, synced,
-				"the directory the renames publish into is the one that has to be synced")
-			slices.Sort(atSync)
-			require.Equal(t, []string{
-				"segment-1000000000000000000.bloom",
-				"segment-1000000000000000000.db",
-			}, atSync, "every rename has to be done before the sync that covers it")
-		})
-	}
 }

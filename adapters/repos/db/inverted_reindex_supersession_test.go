@@ -269,39 +269,11 @@ func TestReconcileSupersession(t *testing.T) {
 	}
 }
 
-// TestReconcileRetirementDisarmsBeforeRemoving pins the ordering the mirror
-// contract rests on. Without it the directory being removed is exactly where
-// the superseded record's still-armed mirror sends its next copy, and a failed
-// mirror copy fails the user's write with it.
-func TestReconcileRetirementDisarmsBeforeRemoving(t *testing.T) {
-	f := newReconcileFixture(t)
-	f.class = testClassWithTokenization(models.PropertyTokenizationWord, "title")
-	f.mkdirs("property_title__g10_ingest", "property_title__s10_reindex", "property_title__g20_ingest", "property_title")
-
-	predecessor := testMigrationSubject(10, StrategyCodeSearchableRetokenize, "title")
-	f.put(NewMigrationRecordMerged(predecessor))
-	f.put(swappedOn(20, "title"))
-	f.tasks = []*distributedtask.Task{testTask(predecessor.TaskID, 10, distributedtask.TaskStatusStarted)}
-
-	var stagedDirAtDisarm bool
-	f.mirror.onDisarm = func(_ MigrationRecordKey, _ string) {
-		stagedDirAtDisarm = f.exists("property_title__g10_ingest")
-	}
-
-	f.reconcile()
-
-	require.Equal(t, []string{"10/searchable_retokenize/shard-1__node-0/title"}, f.mirror.disarmed)
-	require.True(t, stagedDirAtDisarm, "the mirror must be disarmed while its target still exists")
-	require.Equal(t, []string{"10/searchable_retokenize/shard-1__node-0/title"}, f.buckets.closed)
-	require.False(t, f.exists("property_title__g10_ingest"))
-}
-
 // TestShutdownFailureHoldsBackRemoval pins what both removal edges share:
 // each shuts staged buckets down first, so a failed shutdown must block
 // removal — otherwise an open bucket's directory leaks mmaps and in-flight
 // compactions, and removing the record on top strands it unattributed.
 func TestShutdownFailureHoldsBackRemoval(t *testing.T) {
-	const taskID = "Books:change-tokenization:title:ab12"
 	key := func(version uint64) MigrationRecordKey {
 		return MigrationRecordKey{
 			TaskVersion: version, StrategyCode: StrategyCodeSearchableRetokenize,
@@ -316,19 +288,6 @@ func TestShutdownFailureHoldsBackRemoval(t *testing.T) {
 		key     MigrationRecordKey
 		dir     string
 	}{
-		{
-			name: "the cancel edge keeps the staged copy it could not close",
-			arrange: func(f *reconcileFixture) {
-				subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
-				subject.TaskID = taskID
-				f.mkdirs("property_title__g42_ingest", "property_title__s42_reindex", "property_title")
-				f.put(NewMigrationRecordMerged(subject))
-				f.tasks = []*distributedtask.Task{testTask(taskID, 42, distributedtask.TaskStatusCancelled)}
-			},
-			drive: (*reconcileFixture).reconcileWithClusterTasks,
-			key:   key(42),
-			dir:   "property_title__g42_ingest",
-		},
 		{
 			name: "the supersession edge keeps the predecessor that still names it",
 			arrange: func(f *reconcileFixture) {

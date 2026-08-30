@@ -134,9 +134,6 @@ type DB struct {
 	reindexAuditDeferredRequests       int
 	shardReindexActivityLookupBuilder  ShardReindexActivityLookupBuilder
 	reindexCleanupInProgressLookupBldr CleanupInProgressLookupBuilder
-	reindexUnitSealBuilder             ReindexUnitSealBuilder
-	migrationLocalTaskSource           MigrationLocalTaskSource
-	migrationClusterTaskSource         MigrationClusterTaskSource
 
 	bitmapBufPool      roaringset.BitmapBufPool
 	bitmapBufPoolClose func()

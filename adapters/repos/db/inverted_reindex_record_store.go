@@ -342,20 +342,6 @@ func (s *MigrationRecordStore) Records() []MigrationRecord {
 	return out
 }
 
-// HasUndecided reports whether any understood record is still pre-swap. It
-// answers under the read lock without allocating, because the shard-wiring
-// probe asks once per shard per minute and wants only a yes or no.
-func (s *MigrationRecordStore) HasUndecided() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, rec := range s.records {
-		if !rec.PointerSwapped() {
-			return true
-		}
-	}
-	return false
-}
-
 func (s *MigrationRecordStore) Unreadable() []MigrationRecordUnreadable {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

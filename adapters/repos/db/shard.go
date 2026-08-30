@@ -149,8 +149,6 @@ type ShardLike interface {
 
 	isReadOnly() error
 	pathLSM() string
-	migrationRecordStore() *MigrationRecordStore
-	migrationMirrorRegistry() *migrationMirrorRegistry
 
 	preparePutObject(context.Context, string, *storobj.Object) replica.SimpleResponse
 	preparePutObjects(context.Context, string, []*storobj.Object) replica.SimpleResponse
@@ -430,13 +428,6 @@ type Shard struct {
 	rangeableLocalReadyMu sync.RWMutex
 	rangeableLocalReady   map[string]bool
 
-	// rangeableUndecidable records that this shard's migration records could
-	// not all be read at init, so the pessimistic entries above may be
-	// incomplete: an undecoded record could be exactly the in-flight
-	// migration whose empty bucket must not be queried as ready. Written once
-	// at init, read on every filter that asks.
-	rangeableUndecidable atomic.Bool
-
 	// tokenizationOverlayMu guards tokenizationOverlay. Holds the per-prop
 	// "what tokenization should query input use on this shard?" override
 	// that closes the FINALIZING-window misalignment of a
@@ -519,11 +510,6 @@ type Shard struct {
 	// migrationRecords is this shard's reindex migration state. Reconciliation
 	// builds it at load, before any bucket opens.
 	migrationRecords *MigrationRecordStore
-
-	// migrationMirrors holds the handles that disarm a reindex migration's
-	// double-write mirror. They live here rather than on the task instance
-	// that armed them because the actor that disarms is never that one.
-	migrationMirrors migrationMirrorRegistry
 	// stores names of properties that are searchable and use buckets of
 	// inverted strategy. for such properties delta analyzer should avoid
 	// computing delta between previous and current values of properties
@@ -804,12 +790,6 @@ func (s *Shard) IsRangeableLocallyReady(propName string) bool {
 		}
 	}
 	s.rangeableLocalReadyMu.RUnlock()
-
-	// No explicit entry and no way to know whether one was owed: a record
-	// that failed to decode is not evidence that no migration is in flight.
-	if s.rangeableUndecidable.Load() {
-		return false
-	}
 
 	// Default: ready iff the rangeable bucket physically exists in the
 	// store. Cheap (a map lookup under bucketAccessLock.RLock in

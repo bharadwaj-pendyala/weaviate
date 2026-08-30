@@ -401,7 +401,7 @@ func removeStaleSidecarsForGen(lsmPath, namespace, dirName string, logger logrus
 	genTail := "_" + strconv.Itoa(gen)
 	for _, propName := range props {
 		main := suffixes.sourceBucketName(propName)
-		for _, suff := range []string{suffixes.ingestSuffix, suffixes.backupSuffix, reindexSuffixFor(namespace)} {
+		for _, suff := range []string{suffixes.ingestSuffix, suffixes.backupSuffix, reindexSuffixForFinalize(namespace)} {
 			path := filepath.Join(lsmPath, main+suff+genTail)
 			if fileExists(path) {
 				if err := os.RemoveAll(path); err != nil {
@@ -413,12 +413,12 @@ func removeStaleSidecarsForGen(lsmPath, namespace, dirName string, logger logrus
 	}
 }
 
-// reindexSuffixFor returns the per-strategy reindex bucket
+// reindexSuffixForFinalize returns the per-strategy reindex bucket
 // suffix base (e.g. `__retokenize_reindex`) used to identify older-gen
 // reindex sidecar dirs in the finalize cleanup. Kept in lockstep with
 // each strategy's ReindexSuffix() base — when a new strategy is added,
 // extend both this switch and the strategy's ReindexSuffix() method.
-func reindexSuffixFor(namespace string) string {
+func reindexSuffixForFinalize(namespace string) string {
 	switch {
 	case strings.HasPrefix(namespace, MigrationDirSearchableMapToBlockmax):
 		return "__blockmax_reindex"

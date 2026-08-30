@@ -29,18 +29,6 @@ import (
 	"github.com/weaviate/weaviate/entities/models"
 )
 
-type fakeMirrorRegistry struct {
-	disarmed []string
-	onDisarm func(key MigrationRecordKey, prop string)
-}
-
-func (f *fakeMirrorRegistry) DisarmMigrationMirror(key MigrationRecordKey, prop string) {
-	f.disarmed = append(f.disarmed, key.String()+"/"+prop)
-	if f.onDisarm != nil {
-		f.onDisarm(key, prop)
-	}
-}
-
 type fakeBucketCloser struct {
 	closed []string
 	err    error
@@ -71,14 +59,9 @@ type reconcileFixture struct {
 	lsmPath       string
 	planted       []MigrationSubject
 	store         *MigrationRecordStore
-	mirror        *fakeMirrorRegistry
 	buckets       *fakeBucketCloser
 	tasks         []*distributedtask.Task
 	tasksReadable bool
-	// clusterTasks is what the leader answers. Unset means "the same as this
-	// node", which is the ordinary case.
-	clusterTasks    []*distributedtask.Task
-	clusterTasksSet bool
 	// liveUnit, when set, is the one (task, unit) a worker is running on this
 	// node, so no teardown may seal that one. Nil means nothing is running.
 	liveUnit *liveUnitKey
@@ -94,14 +77,6 @@ type reconcileFixture struct {
 	// logs is what the reconciler wrote, for the arms whose whole outcome is
 	// a line an operator has to see.
 	logs *test.Hook
-}
-
-// leaderTasks is the list the off-load pass is handed.
-func (f *reconcileFixture) leaderTasks() []*distributedtask.Task {
-	if f.clusterTasksSet {
-		return f.clusterTasks
-	}
-	return f.tasks
 }
 
 func newReconcileFixture(t *testing.T) *reconcileFixture {
@@ -120,7 +95,6 @@ func newReconcileFixtureAt(t *testing.T, lsmPath string) *reconcileFixture {
 		tasksReadable: true,
 		lsmPath:       lsmPath,
 		store:         NewMigrationRecordStore(lsmPath, logger),
-		mirror:        &fakeMirrorRegistry{},
 		buckets:       &fakeBucketCloser{},
 		logger:        logger,
 		logs:          hook,
@@ -175,17 +149,8 @@ func (f *reconcileFixture) deps() migrationReconcileDeps {
 			return func() { f.sealsReleased++ }, true
 		},
 		Class:   func() *models.Class { return f.class },
-		Mirror:  f.mirror,
 		Buckets: f.buckets,
 	}
-}
-
-// reconcileWithClusterTasks is the off-load pass: the one that runs with the
-// leader's own task list, on shards that are already loaded.
-func (f *reconcileFixture) reconcileWithClusterTasks() {
-	f.t.Helper()
-	newMigrationReconciler(f.store, f.lsmPath, f.logger, f.deps()).
-		ReconcileWithClusterTasks(context.Background(), f.leaderTasks())
 }
 
 func (f *reconcileFixture) mkdirs(names ...string) {
@@ -680,7 +645,6 @@ func TestReconcileFlippedMigrationIgnoresAbandonedTask(t *testing.T) {
 			_, present := f.state(subject.Key)
 			require.True(t, present, "a cancelled task must never delete data a flip already committed")
 			require.True(t, f.exists("property_title"))
-			require.Empty(t, f.mirror.disarmed, "the cancel edge must not run past the flip")
 		})
 	}
 }
@@ -862,7 +826,6 @@ func TestReconcileNotUnderstoodWithholdsEverything(t *testing.T) {
 	require.True(t, present, "a cancelled migration is not discarded while an unreadable record stands")
 	require.Equal(t, MigrationStateMerged, state)
 	require.True(t, f.exists("property_title__g42_ingest"))
-	require.Empty(t, f.mirror.disarmed)
 }
 
 // TestReconcilePromotedClosure pins how long a promoted record lives. Sweeping
@@ -1083,270 +1046,6 @@ func TestReconcileCommitEdgeWritesItsVerdictFirst(t *testing.T) {
 	state, present = f.state(subject.Key)
 	require.True(t, present, "a decided flip is never re-decided, whatever the cluster later says")
 	require.Equal(t, MigrationStateSwapped, state)
-}
-
-// TestReconcileWithClusterTasksSettlesWhatTheLoadWithheld pins the off-load
-// pass: a shard loaded during RAFT catch-up leaves merged records undecided,
-// and (being non-multi-tenant) is never loaded again — so without this pass a
-// record stays at Merged forever. It's also the only place absence-everywhere
-// (neither this node's map nor the leader's list) licenses a discard.
-func TestReconcileWithClusterTasksSettlesWhatTheLoadWithheld(t *testing.T) {
-	const taskID = "Books:change-tokenization:title:ab12"
-
-	tests := []struct {
-		name string
-		task *distributedtask.Task
-		// leaderTask, when leaderSet, is what the leader answers instead of
-		// this node's own list.
-		leaderTask *distributedtask.Task
-		leaderSet  bool
-		class      *models.Class
-		unreadable bool
-		// unitLive is a worker of this migration still iterating here.
-		unitLive bool
-		// migrationType and strategyCode override the change-tokenization
-		// subject the rows otherwise share.
-		migrationType ReindexMigrationType
-		strategyCode  MigrationStrategyCode
-		wantState     MigrationState
-	}{
-		{
-			name:      "the task finished while this node was down: commit",
-			task:      testTask(taskID, 42, distributedtask.TaskStatusFinished),
-			class:     testClassWithTokenization(models.PropertyTokenizationLowercase, "title"),
-			wantState: MigrationStateSwapped,
-		},
-		{
-			name:      "the task is gone and the schema shows its effect: commit",
-			class:     testClassWithTokenization(models.PropertyTokenizationLowercase, "title"),
-			wantState: MigrationStateSwapped,
-		},
-		{
-			name:      "the task is still running: the unit discovery found resumes it",
-			task:      testTask(taskID, 42, distributedtask.TaskStatusSwapping),
-			class:     testClassWithTokenization(models.PropertyTokenizationWord, "title"),
-			wantState: MigrationStateMerged,
-		},
-		{
-			// Left to the next load, this discard would never run: sweeps
-			// preserve a committed record's directories, so nothing else
-			// reclaims an abandoned migration's staged copy.
-			name:  "the task was cancelled: the staged copy goes",
-			task:  testTask(taskID, 42, distributedtask.TaskStatusCancelled),
-			class: testClassWithTokenization(models.PropertyTokenizationWord, "title"),
-		},
-		{
-			// The reading the load path refuses to make on its own, made here
-			// against the one list entitled to make it.
-			name:  "the leader has no such task and the schema does not show its effect: discard",
-			class: testClassWithTokenization(models.PropertyTokenizationWord, "title"),
-		},
-		{
-			// This node applied a tail in which the task is gone while the
-			// leader still carries it. Its own reading would have deleted a
-			// migration the cluster owns.
-			name:       "this node reads the task as gone while the leader still has it running",
-			leaderTask: testTask(taskID, 42, distributedtask.TaskStatusStarted),
-			leaderSet:  true,
-			class:      testClassWithTokenization(models.PropertyTokenizationWord, "title"),
-			wantState:  MigrationStateMerged,
-		},
-		{
-			// This node's own map is what its unit ran from, so a task found
-			// there wins: both statuses are terminal and can't both describe
-			// this run, and the leader's list may simply predate it.
-			name:       "this node reads the task as finished while the leader reports it cancelled",
-			task:       testTask(taskID, 42, distributedtask.TaskStatusFinished),
-			leaderTask: testTask(taskID, 42, distributedtask.TaskStatusCancelled),
-			leaderSet:  true,
-			class:      testClassWithTokenization(models.PropertyTokenizationLowercase, "title"),
-			wantState:  MigrationStateSwapped,
-		},
-		{
-			// A reindex started after the leader's list was fetched is absent
-			// from it, but the record here proves a unit started on this
-			// shard from this node's own map — so absence must not delete it.
-			name:      "a migration started after the leader's list was fetched is not read as gone",
-			task:      testTask(taskID, 42, distributedtask.TaskStatusStarted),
-			leaderSet: true,
-			class:     testClassWithTokenization(models.PropertyTokenizationWord, "title"),
-			wantState: MigrationStateMerged,
-		},
-		{
-			// A cancel marks the task and signals the worker on a later
-			// scheduler tick; nothing waits for it. The worker writes through
-			// bucket pointers it captured before the iteration began, so
-			// removing those directories loses every row it has written.
-			name:      "a cancelled task whose local unit is still running keeps its directories",
-			task:      testTask(taskID, 42, distributedtask.TaskStatusCancelled),
-			class:     testClassWithTokenization(models.PropertyTokenizationWord, "title"),
-			unitLive:  true,
-			wantState: MigrationStateMerged,
-		},
-		{
-			// Nothing in the schema changes for a repair, so there is no flag
-			// to read and never will be. Reading its absence as a commit
-			// promotes here what the replicas that saw the cancel discarded,
-			// and no later load reconciles the two.
-			name:          "a repair-filterable whose task aged out is not committed on a flag it never had",
-			migrationType: ReindexTypeRepairFilterable,
-			strategyCode:  StrategyCodeFilterableRoaringsetRefresh,
-			class:         testClassWithTokenization(models.PropertyTokenizationWord, "title"),
-		},
-		{
-			name:          "a rebuild-searchable whose task aged out is not committed either",
-			migrationType: ReindexTypeRebuildSearchable,
-			strategyCode:  StrategyCodeRebuildSearchable,
-			class:         testClassWithTokenization(models.PropertyTokenizationWord, "title"),
-		},
-		{
-			// The property that carried the effect is gone, so the schema
-			// answers nothing about this migration. Committing would rename
-			// the staged data onto a canonical name the collection no longer
-			// has a property for.
-			name:  "the subject's only property was deleted while the migration sat merged",
-			class: testClassWithTokenization(models.PropertyTokenizationLowercase, "other"),
-		},
-		{
-			name:       "a record this build cannot place withholds the second pass too",
-			task:       testTask(taskID, 42, distributedtask.TaskStatusFinished),
-			class:      testClassWithTokenization(models.PropertyTokenizationLowercase, "title"),
-			unreadable: true,
-			wantState:  MigrationStateMerged,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := newReconcileFixture(t)
-			f.class = tt.class
-
-			strategyCode := tt.strategyCode
-			if strategyCode == "" {
-				strategyCode = StrategyCodeSearchableRetokenize
-			}
-			subject := testMigrationSubject(42, strategyCode, "title")
-			subject.TaskID = taskID
-			if tt.migrationType != "" {
-				subject.MigrationType = tt.migrationType
-			}
-			f.mkdirs("property_title__g42_ingest", "property_title__s42_reindex", "property_title")
-			f.put(NewMigrationRecordMerged(subject))
-			if tt.unreadable {
-				require.NoError(t, os.WriteFile(
-					filepath.Join(f.store.Dir(), "99_enable_searchable.json"), []byte("{"), 0o600))
-			}
-
-			// The load that happened before the source was installed.
-			f.tasksReadable = false
-			f.reconcile()
-			state, _ := f.state(subject.Key)
-			require.Equal(t, MigrationStateMerged, state,
-				"an unreadable task map decides nothing")
-
-			f.tasksReadable = true
-			if tt.unitLive {
-				f.liveUnit = liveUnitOf(subject)
-			}
-			if tt.task != nil {
-				f.tasks = []*distributedtask.Task{tt.task}
-			}
-			if tt.leaderSet {
-				f.clusterTasksSet = true
-				if tt.leaderTask != nil {
-					f.clusterTasks = []*distributedtask.Task{tt.leaderTask}
-				}
-			}
-			f.reconcileWithClusterTasks()
-
-			state, present := f.state(subject.Key)
-			require.Equal(t, tt.wantState != "", present)
-			require.Equal(t, tt.wantState, state)
-			require.Equal(t, "property_title", f.contentOf("property_title"),
-				"the canonical bucket survives every disposition this pass takes")
-
-			if tt.wantState == "" {
-				require.False(t, f.exists("property_title__g42_ingest"), "the staged copy of an abandoned migration goes")
-				require.Equal(t, []string{subject.Key.String() + "/title"}, f.mirror.disarmed,
-					"the mirror is disarmed before its target is removed")
-				return
-			}
-			require.True(t, f.exists("property_title__g42_ingest"),
-				"promotion renames a directory whose buckets are open by now; it belongs to the next load")
-
-			if tt.wantState != MigrationStateSwapped {
-				return
-			}
-			// The next load finds the verdict already durable and finishes it.
-			f.reconcile()
-			state, _ = f.state(subject.Key)
-			require.Equal(t, MigrationStatePromoted, state)
-			require.False(t, f.exists("property_title__g42_ingest"))
-			require.Equal(t, "property_title__g42_ingest", f.contentOf("property_title"))
-		})
-	}
-}
-
-// TestReconcileWithClusterTasksLeavesADecidedFlipAlone pins the one record
-// the off-load pass may not act on: discard reclaims directories and drops
-// the record, safe only pre-flip (canonical bucket still primary). Past the
-// flip, the staged directory is the property's live data.
-func TestReconcileWithClusterTasksLeavesADecidedFlipAlone(t *testing.T) {
-	tests := []struct {
-		name    string
-		record  func(MigrationSubject) MigrationRecord
-		planted []string
-		// liveAt is the directory that must still hold the migrated data,
-		// identified by the marker mkdirs planted in it.
-		liveAt    string
-		wantState MigrationState
-	}{
-		{
-			name: "swapped: the staged directory holds what the next load promotes",
-			record: func(subject MigrationSubject) MigrationRecord {
-				return NewMigrationRecordSwapped(subject, []string{"title"},
-					map[string]string{"title": "property_title"})
-			},
-			planted:   []string{"property_title__g42_ingest", "property_title__s42_reindex", "property_title"},
-			liveAt:    "property_title__g42_ingest",
-			wantState: MigrationStateSwapped,
-		},
-		{
-			name: "promoted: the record is what answers for the property until its effect lands",
-			record: func(subject MigrationSubject) MigrationRecord {
-				return NewMigrationRecordPromoted(subject, []string{"title"},
-					map[string]string{"title": "property_title"})
-			},
-			planted:   []string{"property_title__s42_reindex", "property_title"},
-			liveAt:    "property_title",
-			wantState: MigrationStatePromoted,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := newReconcileFixture(t)
-			// Neither map has the task and the schema does not show its
-			// effect: exactly the verdict a pre-flip record is discarded on.
-			f.class = testClassWithTokenization(models.PropertyTokenizationWord, "title")
-
-			subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
-			f.mkdirs(tt.planted...)
-			f.put(tt.record(subject))
-
-			f.reconcileWithClusterTasks()
-
-			state, present := f.state(subject.Key)
-			require.True(t, present, "a flip this pass did not decide is not one it may undo")
-			require.Equal(t, tt.wantState, state)
-			require.Equal(t, tt.liveAt, f.contentOf(tt.liveAt),
-				"the flip's data must still be where the record says it is")
-			require.True(t, f.trackerDirExists(subject),
-				"the recovery payload outlives a pass that decided nothing")
-			require.Empty(t, f.mirror.disarmed, "nothing was torn down, so no mirror was disarmed")
-			f.requireMigrationDirsTrackRecords()
-		})
-	}
 }
 
 // TestReconcilePerShardDivergentStatesConverge pins that one collection's

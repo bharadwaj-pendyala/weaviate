@@ -177,20 +177,6 @@ func migrationPreservedStateFromRecords(records []MigrationRecord, someRecordsUn
 	return state
 }
 
-// mirrorFor names the (record, property) whose staged directory is dir. Every
-// readable record answers, not just committed ones.
-func (s migrationPreservedState) mirrorFor(dir string) (MigrationRecordKey, string, bool) {
-	for _, rec := range s.records {
-		subject := rec.Subject()
-		for _, prop := range subject.Properties {
-			if subject.StagedDirs[prop] == dir {
-				return subject.Key, prop, true
-			}
-		}
-	}
-	return MigrationRecordKey{}, "", false
-}
-
 func (s migrationPreservedState) preservesBucket(dir string) bool {
 	if s.withholdEverything {
 		return true

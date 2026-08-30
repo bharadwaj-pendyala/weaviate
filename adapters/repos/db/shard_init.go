@@ -275,12 +275,6 @@ func (s *Shard) NotifyReady() {
 // in this same startup), are left untouched — the default-true policy
 // in [Shard.IsRangeableLocallyReady] applies to them.
 func markInFlightRangeableMigrationsNotReady(s *Shard) {
-	// A record that does not decode cannot be answered per property: the
-	// property list is exactly what could not be read. The shard is marked
-	// undecidable instead, which the readiness policy reads as not ready.
-	if s.migrationRecords != nil && len(s.migrationRecords.Unreadable()) > 0 {
-		s.rangeableUndecidable.Store(true)
-	}
 	migrationsDir := filepath.Join(s.pathLSM(), ".migrations")
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {

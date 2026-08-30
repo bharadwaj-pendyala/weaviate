@@ -23,8 +23,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/weaviate/weaviate/entities/diskio"
 )
 
 // ErrPrependWouldDesyncInMemoryRep is returned by PrependSegmentsFromBucket when
@@ -113,7 +111,7 @@ func (sg *SegmentGroup) PrependSegmentsFromBucket(ctx context.Context, srcDir st
 	if err != nil {
 		return fmt.Errorf("prepend segments: compute timestamp shift: %w", err)
 	}
-	copiedDBPaths, err := copySegmentFiles(srcDir, sg.dir, srcDBFiles, shift, diskio.Fsync)
+	copiedDBPaths, err := copySegmentFiles(srcDir, sg.dir, srcDBFiles, shift)
 	if err != nil {
 		return fmt.Errorf("prepend segments: copy files: %w", err)
 	}
@@ -187,15 +185,8 @@ func discoverDBFiles(dir string) ([]string, error) {
 // the suffix. A crash mid-copy leaves only .tmp files that are ignored by
 // newSegmentGroup on recovery.
 //
-// syncDir syncs dstDir once every rename is done. Without it a crash can drop
-// the rename entries while keeping the caller's durable record that the staged
-// data is complete, so the next load promotes a bucket missing segments.
-// Production passes [diskio.Fsync]; it is a parameter so a test can observe it.
-//
 // Returns the list of final .db filenames (without .tmp) in dstDir.
-func copySegmentFiles(srcDir, dstDir string, dbFiles []string, shift int64,
-	syncDir func(string) error,
-) ([]string, error) {
+func copySegmentFiles(srcDir, dstDir string, dbFiles []string, shift int64) ([]string, error) {
 	copiedDBPaths := make([]string, 0, len(dbFiles))
 
 	for _, dbFile := range dbFiles {
@@ -239,10 +230,6 @@ func copySegmentFiles(srcDir, dstDir string, dbFiles []string, shift int64,
 		// Record the final .db path.
 		dstDBFile := strings.Replace(dbFile, segPrefix, shiftedPrefix, 1)
 		copiedDBPaths = append(copiedDBPaths, dstDBFile)
-	}
-
-	if err := syncDir(dstDir); err != nil {
-		return nil, fmt.Errorf("sync %s: %w", dstDir, err)
 	}
 
 	return copiedDBPaths, nil

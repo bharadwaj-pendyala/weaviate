@@ -26,13 +26,6 @@ import (
 	"github.com/weaviate/weaviate/entities/models"
 )
 
-// migrationMirrorDisarmer disarms one record's double-write mirror for one
-// property. The disarming actor is never the arming one, so the handle
-// cannot live on the arming task; disarming an unarmed pair is a no-op.
-type migrationMirrorDisarmer interface {
-	DisarmMigrationMirror(key MigrationRecordKey, prop string)
-}
-
 // migrationStagedBucketCloser shuts a record's staged buckets down before
 // their directory is removed, so mmaps, in-flight compactions, and the
 // registry entry don't leak.
@@ -58,7 +51,6 @@ type migrationReconcileDeps struct {
 	// when the collection is not in it.
 	Class func() *models.Class
 
-	Mirror  migrationMirrorDisarmer
 	Buckets migrationStagedBucketCloser
 }
 
@@ -371,43 +363,6 @@ func (r *migrationReconciler) commitMerged(subject MigrationSubject, why string)
 	}
 	r.logger.WithField("record", subject.Key.String()).Infof("committing merged migration: %s", why)
 	return swapped, nil
-}
-
-// ReconcileWithClusterTasks settles dispositions the load path withheld
-// (task and effect were both invisible), using the leader's task list as an
-// argument so a shard load never blocks on it; it reads in-memory records
-// rather than reloading disk.
-//
-// Commit only records the decision (promotion waits for the next load).
-// Discard runs immediately, pre-flip only, under the unit's seal. The
-// reverse edge is left to a load, since it would reset live iteration.
-func (r *migrationReconciler) ReconcileWithClusterTasks(ctx context.Context, tasks []*distributedtask.Task) {
-	if len(r.store.Unreadable()) > 0 {
-		return
-	}
-	records := r.store.Records()
-	for _, rec := range records {
-		if rec.PointerSwapped() {
-			continue
-		}
-		subject := rec.Subject()
-		verdict, why := r.clusterVerdict(subject, tasks)
-		switch {
-		case verdict == migrationVerdictDiscard:
-			if err := r.discard(ctx, records, subject, why); err != nil {
-				r.logger.WithField("record", subject.Key.String()).Errorf(
-					"discard a migration the leader's task list settled: %v", err)
-			}
-		case verdict == migrationVerdictCommit && rec.State() == MigrationStateMerged:
-			if _, err := r.commitMerged(subject, why); err != nil {
-				r.logger.WithField("record", subject.Key.String()).Errorf(
-					"commit a merged migration the leader's task list settled: %v", err)
-				continue
-			}
-			r.logger.WithField("record", subject.Key.String()).Info(
-				"the staged data is the data; the next shard load promotes it onto the canonical name")
-		}
-	}
 }
 
 // reconcileSwapped promotes. Every arm is decided by probing the handles the
@@ -770,8 +725,7 @@ func (r *migrationReconciler) repromoteWhatTheRecordOutran(all []MigrationRecord
 // localVerdict is what this node can decide alone: a task in its own applied
 // map, or the effect in its own applied schema — both positive evidence that
 // can't be undone. Two absences at once can't be told apart from "not
-// applied yet", so it withholds instead of guessing; see
-// [migrationReconciler.ReconcileWithClusterTasks] for how those get settled.
+// applied yet", so it withholds instead of guessing.
 func (r *migrationReconciler) localVerdict(subject MigrationSubject) (migrationVerdict, string) {
 	if r.deps.LocalTasks == nil {
 		return migrationVerdictLeave, "this node's task map cannot be read yet"
@@ -781,25 +735,6 @@ func (r *migrationReconciler) localVerdict(subject MigrationSubject) (migrationV
 		return migrationVerdictLeave, "this node's task map cannot be read yet"
 	}
 	return r.verdictFrom(subject, tasks, taskListMayLag)
-}
-
-// clusterVerdict decides what the load path withheld. It checks this node's
-// own applied map first (positive evidence no snapshot age can spoil, since a
-// unit only starts from that map), then the leader's list, which is fetched
-// once per walk and can go stale. A map that can't be read yet withholds
-// outright — falling through would read an absent task as gone.
-func (r *migrationReconciler) clusterVerdict(subject MigrationSubject, tasks []*distributedtask.Task) (migrationVerdict, string) {
-	if r.deps.LocalTasks == nil {
-		return migrationVerdictLeave, "this node's task map cannot be read yet"
-	}
-	local, readable := r.deps.LocalTasks()
-	if !readable {
-		return migrationVerdictLeave, "this node's task map cannot be read yet"
-	}
-	if task := findMigrationTask(subject, local); task != nil {
-		return migrationVerdictForTask(task)
-	}
-	return r.verdictFrom(subject, tasks, taskListIsComplete)
 }
 
 // sealUnit holds this migration's unit for the length of a teardown, or
@@ -833,10 +768,7 @@ func (r *migrationReconciler) withSealedUnit(subject MigrationSubject, what stri
 // leader's list is the cluster's, so absence there means gone.
 type taskListCompleteness bool
 
-const (
-	taskListMayLag     taskListCompleteness = false
-	taskListIsComplete taskListCompleteness = true
-)
+const taskListMayLag taskListCompleteness = false
 
 // verdictFrom consults the two external facts, in an order that skips the
 // second whenever the first is conclusive.
@@ -932,9 +864,6 @@ func (r *migrationReconciler) discardSealed(ctx context.Context, all []Migration
 // caller removes the property's directory next, and an open bucket's
 // directory leaves mmaps, in-flight compactions, and a registry entry behind.
 func (r *migrationReconciler) disarmAndClose(ctx context.Context, key MigrationRecordKey, prop string) error {
-	if r.deps.Mirror != nil {
-		r.deps.Mirror.DisarmMigrationMirror(key, prop)
-	}
 	if r.deps.Buckets == nil {
 		return nil
 	}
