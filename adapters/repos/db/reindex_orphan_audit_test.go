@@ -925,3 +925,44 @@ func TestRemoveUnloadedSidecarsForOrphanNamesTheBackupItLeaves(t *testing.T) {
 	}
 	require.True(t, named, "the left-behind backup dir must be named in an Info log entry")
 }
+
+// A withheld sweep removes nothing, so an orphan the preserve set stopped the
+// audit from cleaning must not be reported cleaned — that line would repeat
+// on every audit while the tracker sits on disk untouched.
+func TestAuditOrphanReindexTrackers_WithheldSweepIsNotReportedCleaned(t *testing.T) {
+	ctx := testCtx()
+	className := "AuditWithheldClass"
+	shd, idx := testShard(t, ctx, className)
+
+	lsmPath := shd.(*Shard).pathLSM()
+	migsDir := filepath.Join(lsmPath, ".migrations")
+
+	orphanDir := filepath.Join(migsDir, "searchable_retokenize_orphan_1")
+	require.NoError(t, os.MkdirAll(orphanDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(orphanDir, "started.mig"), nil, 0o600))
+	writePayload(t, orphanDir, "task-orphan", 9, "unit-orphan", className,
+		ReindexTypeChangeTokenization, []string{"orphan"})
+	writePreAgedQuarantineSentinel(t, orphanDir)
+
+	// A record this build cannot read withholds every removal on the shard,
+	// so the sweep the audit delegates to removes nothing.
+	records := filepath.Join(migsDir, migrationRecordsDirName)
+	require.NoError(t, os.MkdirAll(records, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(records, "99_searchable_retokenize.json"), []byte("{"), 0o644))
+
+	db := &DB{
+		indices: map[string]*Index{indexID(idx.Config.ClassName): idx},
+		config:  Config{RootPath: idx.Config.RootPath},
+	}
+	logger := logrus.New()
+	outcome, err := db.AuditOrphanReindexTrackers(ctx, func(string, uint64) bool { return false }, logger)
+	require.NoError(t, err)
+
+	require.True(t, dirExistsAt(t, lsmPath, ".migrations/searchable_retokenize_orphan_1"),
+		"a withheld sweep removes nothing, the orphan tracker included")
+	require.Equal(t, 0, outcome.OrphansClean,
+		"an orphan still on disk was not cleaned, whatever the sweep's error value")
+	require.Contains(t, outcome.FailedDirs, "searchable_retokenize_orphan_1",
+		"the withheld orphan must stay visible so the next audit retries it")
+}

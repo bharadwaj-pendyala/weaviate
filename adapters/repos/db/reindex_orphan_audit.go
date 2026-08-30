@@ -907,8 +907,18 @@ func (db *DB) cleanupOrphanTrackerCompactionPaused(ctx context.Context, shard *S
 		for _, indexType := range o.indexTypes {
 			// The audit reports per orphan, not per payload, so the read count
 			// has no line here to land on.
-			if _, err := shard.CleanStalePartialReindexState(ctx, propName, indexType); err != nil {
+			report, err := shard.CleanStalePartialReindexState(ctx, propName, indexType)
+			if err != nil {
 				return fmt.Errorf("clean stale partial reindex state for (prop=%q,indexType=%q): %w", propName, indexType, err)
+			}
+			if report.withheld {
+				// The sweep withheld every removal on this shard, so the
+				// orphan is still on disk. Reporting it cleaned would repeat
+				// forever; as a failure it stays visible and the next audit
+				// retries once the withhold is resolved.
+				return fmt.Errorf("cleanup withheld for (prop=%q,indexType=%q): "+
+					"the shard's migration state withheld every removal; deferred to a later audit",
+					propName, indexType)
 			}
 		}
 	}
