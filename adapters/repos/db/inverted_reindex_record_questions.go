@@ -45,9 +45,9 @@ type migrationRecordQuestions interface {
 // it created from creation until they are gone. The canonical directory is
 // deliberately not among them — it predates the migration and outlives it.
 //
-// Keyed by Properties, like [migrationOwnedDirs]: the one caller is the
-// invariant check that no directory survives unattributed, and an answer more
-// generous than the reclaimer's would pass on a state the reclaimer leaks.
+// Keyed by Properties, like [migrationOwnedDirs], so it never answers wider
+// than the reclaimer. A directory this reports owned and the reclaimer skips
+// would survive with nothing attributing it.
 func (b migrationRecordBase) OwnsBucket(dir string) bool {
 	if dir == "" {
 		return false

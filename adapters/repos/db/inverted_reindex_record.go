@@ -129,8 +129,8 @@ type MigrationSubject struct {
 	// IterationCutoff is the horizon the rebuild iterates up to: an object
 	// updated at or after it is left to the double-write mirror. Fixed at the
 	// record's first write and carried unchanged after, so a resume never
-	// re-derives it from a moved clock. The reverse edge raises it to
-	// migrationHorizonEverything once the mirror's own directory is lost.
+	// re-derives it from a moved clock. [migrationReconciler.restartIfRebuiltDataGone]
+	// raises it to migrationHorizonEverything once the mirror's own directory is lost.
 	IterationCutoff time.Time `json:"iterationCutoff"`
 
 	// TrackerDir is the migration's directory under .migrations, relative to
@@ -139,9 +139,9 @@ type MigrationSubject struct {
 	// generation counter, which no record key can be compared against.
 	TrackerDir string `json:"trackerDir,omitempty"`
 
-	// StagedDirs is the re-derivation's "live-data dir": per property, the
-	// directory holding this migration's own data. The flip makes it live and
-	// promotion renames it onto CanonicalDirs.
+	// StagedDirs names, per property, the directory holding this migration's
+	// own data. The flip makes it live and promotion renames it onto
+	// CanonicalDirs.
 	StagedDirs    map[string]string `json:"stagedDirs,omitempty"`
 	CanonicalDirs map[string]string `json:"canonicalDirs,omitempty"`
 
@@ -552,9 +552,9 @@ const (
 	// a property's index. Those are reclaimed on every teardown path, so they
 	// must carry the shape a writer emits rather than name any directory.
 	migrationShapeSidecar
-	// migrationShapePropertyBucket marks the roles holding the shard's own
-	// copy of a property's index. A promotion removes both, so they must at
-	// least be property buckets.
+	// migrationShapePropertyBucket marks the roles a promotion removes,
+	// CanonicalDirs and DisplacedDirs. A displaced entry can name a staged
+	// directory, so the shape asks only for a property bucket.
 	//
 	// Only that: every property_-prefixed name passes, including the shard's
 	// own property__id, a property_<p>_propertyLength and another property's
@@ -699,12 +699,8 @@ func validateMigrationHandles(e migrationRecordEnvelope) error {
 					e.Subject.Key, group.field, handle)
 			}
 			if group.namesDirectory && migrationReservedDirName(handle) {
-				what := "a store the shard serves from"
-				if group.underMigrationsDir {
-					what = "a name the migration record store reserves"
-				}
-				return fmt.Errorf("record %q names %s %q, which is %s",
-					e.Subject.Key, group.field, handle, what)
+				return fmt.Errorf("record %q names %s %q, which is a directory no migration may own",
+					e.Subject.Key, group.field, handle)
 			}
 			switch group.shape {
 			case migrationShapeUnchecked:

@@ -606,7 +606,7 @@ func newPrometheusMetrics() *PrometheusMetrics {
 		}),
 		MigrationRecordsNotUnderstood: promauto.NewCounter(prometheus.CounterOpts{
 			Name: "migration_records_not_understood_total",
-			Help: "Reindex migration records a shard load could not decode. Each one withholds every promoting and destructive reindex action on its shard, and is normally a downgrade artifact rather than a migration outcome; the log line names the files.",
+			Help: "Reindex migration records a shard load could not decode, plus a records directory it could not read at all. Each withholds every promoting and destructive reindex action on its shard; the log line names what could not be read.",
 		}),
 
 		// Queue metrics
@@ -1062,18 +1062,17 @@ func (m *PrometheusMetrics) initObjectsTtl() error {
 
 // AddMigrationRecordsWedged counts what one shard load left standing.
 //
-// Node-wide and unlabelled: class/shard names are user-chosen, so a
-// per-shard series would be one series per tenant. A wedged record's
-// identity belongs in the log line; the metric only signals that one exists
-// to go read.
+// Node-wide and unlabelled: class/shard names are user-chosen, so a per-shard
+// series would be one series per tenant, which the metricsCount acceptance
+// test forbids. A wedged record's identity belongs in the log line; the metric
+// only signals that one exists to go read.
 //
 // Counters, not gauges: an unlabelled gauge can't be reset by the shard that
 // healed, so it would report its last non-zero value forever. An increase
 // over a window is the actionable signal.
 //
-// The two series are separate because they clear differently: not-understood
-// is a downgrade artifact that clears by running the newer build again;
-// wedged is a migration outcome that clears by resubmitting the migration.
+// The two series are separate because they carry different facts: a wedged
+// record was decoded and decided, a not-understood one was never decoded.
 func (m *PrometheusMetrics) AddMigrationRecordsWedged(wedged, notUnderstood int) {
 	if m == nil {
 		return

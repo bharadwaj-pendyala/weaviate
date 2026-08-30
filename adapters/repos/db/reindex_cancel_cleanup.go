@@ -341,7 +341,8 @@ func hasStalePartialReindexState(
 	switch {
 	case committed.recordSetUnreadable, committed.migrationsDirUnlistable:
 		// Nothing about this shard could be read, so reporting it clean would
-		// be a guess. Hydrating is what turns it into an error a caller sees.
+		// be a guess. A load re-reads it, and an unlistable .migrations then
+		// fails the sweep instead of finishing silently.
 		return true, false
 	case committed.withholdEverything:
 		// Every removal here is withheld, so the sweep finds nothing whatever
@@ -357,9 +358,9 @@ func hasStalePartialReindexState(
 			return false, false
 		case committed.withheld.undecided:
 			// Whether a migration completed could not be read, so "clean" would
-			// be a guess. Hydrating is what turns it into an error a caller
-			// sees, and finalize skips a marker it cannot stat, so the trip
-			// destroys nothing.
+			// be a guess. The load withholds every removal and raises the
+			// sweep's summary to a warning, and finalize skips a marker it
+			// cannot stat, so the trip destroys nothing.
 			return true, false
 		case committed.withheld.completedActionable:
 			// It completed, and finalize reads properties.mig rather than the
@@ -450,10 +451,11 @@ type dirNamesCache struct {
 }
 
 // committedMigrations answers, per shard, which directories a committed
-// migration owns. Memoized here because one run asks per (property, index
-// type) tuple over the same shards, and the answer can't change while a
-// sweep holds it: records are written only by a loaded shard's own engine or
-// by reconciliation, and a loaded shard has already left this sweep's path.
+// migration owns, memoized because one run asks per (property, index type)
+// tuple over the same shards. Only a loaded shard's engine or reconciliation
+// writes a record, and neither reaches a shard on this path. A failed read is
+// memoized too, so one unlistable .migrations withholds this shard for the
+// rest of the run.
 //
 // props is the caller's payload memo. This reads every tracker on the shard,
 // so without it the payloads it parses are invisible to the caller counting

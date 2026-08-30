@@ -209,9 +209,7 @@ type divergence struct {
 }
 
 // Pins the widened name shortcut against [narrowMatchByName], so a dir the
-// shortcut moves is a dir the sweep would delete or spare differently. Coverage gap: every record here uses one strategy/index-type
-// combination and only Iterating/Swapped states, so migrationPreservedStateAt's
-// promoted-tracker arm is never exercised.
+// shortcut moves is a dir the sweep would delete or spare differently.
 func TestWidenedMatchesAgreesWithTheNarrowGate(t *testing.T) {
 	logger, _ := test.NewNullLogger()
 

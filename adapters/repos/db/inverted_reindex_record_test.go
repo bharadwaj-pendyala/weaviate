@@ -448,7 +448,7 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 			data: valid(func(env map[string]any) {
 				env["subject"].(map[string]any)["stagedDirs"].(map[string]any)["title"] = migrationsDir
 			}),
-			wantErr: `names staged directory ".migrations", which is a store the shard serves from`,
+			wantErr: `names staged directory ".migrations", which is a directory no migration may own`,
 		},
 		{
 			// The object store is the shard's whole object store, and a
@@ -457,7 +457,7 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 			data: valid(func(env map[string]any) {
 				env["subject"].(map[string]any)["stagedDirs"].(map[string]any)["title"] = "objects"
 			}),
-			wantErr: `names staged directory "objects", which is a store the shard serves from`,
+			wantErr: `names staged directory "objects", which is a directory no migration may own`,
 		},
 		{
 			// A live bucket no record covers passes every cross-record check,
@@ -475,7 +475,7 @@ func TestMigrationRecordNotUnderstood(t *testing.T) {
 			data: valid(func(env map[string]any) {
 				env["subject"].(map[string]any)["trackerDir"] = migrationRecordsDirName
 			}),
-			wantErr: `names tracker directory "records", which is a name the migration record store reserves`,
+			wantErr: `names tracker directory "records", which is a directory no migration may own`,
 		},
 		{
 			name: "a unit the record file name could not carry",
@@ -1123,7 +1123,7 @@ func TestTheWriterRefusesWhatTheLoaderWouldReject(t *testing.T) {
 			name:    "a sidecar directory that is the shard's migrations tree",
 			mangle:  func(s *MigrationSubject) { s.SidecarDirs = map[string]string{"title": migrationsDir} },
 			because: "a sidecar handle is reclaimed by os.RemoveAll like every other owned directory",
-			wantErr: `names sidecar directory ".migrations", which is a store the shard serves from`,
+			wantErr: `names sidecar directory ".migrations", which is a directory no migration may own`,
 		},
 		{
 			name: "a staged directory that is a live bucket of another property",
@@ -1139,7 +1139,7 @@ func TestTheWriterRefusesWhatTheLoaderWouldReject(t *testing.T) {
 				s.StagedDirs = map[string]string{"title": "objects"}
 			},
 			because: "the object store is the shard's whole object store",
-			wantErr: `names staged directory "objects", which is a store the shard serves from`,
+			wantErr: `names staged directory "objects", which is a directory no migration may own`,
 		},
 		{
 			name:    "a strategy code outside the known set",

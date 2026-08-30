@@ -803,9 +803,6 @@ func writePayload(t *testing.T, dir, taskID string, taskVersion uint64, unitID, 
 // so reclaiming it here can destroy the property's only data. The later
 // property-DELETE sweep reclaims it instead, once the property is provably
 // gone.
-//
-// One row per distinct backup suffix and main-bucket shape, so a strategy whose
-// naming diverges is covered rather than assumed.
 func TestAuditOrphanReindexTrackers_UnloadedShard_KeepsBackupSidecar(t *testing.T) {
 	cases := []struct {
 		name          string

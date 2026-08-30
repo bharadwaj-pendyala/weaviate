@@ -98,10 +98,8 @@ type migrationPassRecords struct {
 
 // migrationWedgeRemedy is the one thing an operator can do about a record no
 // further shard load can advance: submit a new migration for the property so
-// it supersedes this record, which the next load then retires. The predicate
-// gating the resubmit is the same one gating the wedge, so the resubmit is
-// never refused. It's per property: a wedge over two properties needs one
-// resubmit each.
+// it supersedes this record, which the next load then retires. It's per
+// property: a wedge over two properties needs one resubmit each.
 const migrationWedgeRemedy = "Submit a new migration for this property; " +
 	"once its flip is durable it supersedes this record, and the next shard load " +
 	"reclaims the record and its directories."
@@ -426,11 +424,9 @@ func (r *migrationReconciler) promoteSealed(rec MigrationRecordSwapped,
 // promoteProperty renames one property's staged directory onto its canonical
 // name, and is idempotent across a crash in the middle of that rename.
 //
-// Which of the two it's doing isn't readable from the directories: a shard
-// load re-creates the canonical directory empty for every property, and a
-// strategy pre-creates it when arming, so neither its presence nor its
-// contents (which the store rewrites via compaction) prove anything about a
-// rename.
+// Whether the rename already ran is not readable from the directories. A shard
+// load re-creates the canonical directory empty, and a strategy pre-creates it
+// when arming, so its presence and contents prove nothing about a rename.
 //
 // So the record carries the answer. The rename is bracketed by a start and a
 // finish write with nothing between them; only a crash between those two

@@ -191,11 +191,9 @@ func migrationPerPropertyDirPrefixes() []string {
 // a bucket of propName, deciding from the directory name alone.
 //
 // [migrationDirWithProps] builds a per-property tracker's name from its sorted
-// property list, so a name that does not carry propName proves the tracker
-// stages nothing for it and its payload need never be parsed. A class-level
-// tracker names no property at all, so the answer for one is always yes and the
-// payload decides — which is what keeps a completed class-level migration's
-// sidecars in the preserve set.
+// property list, so a name listing other properties proves the tracker stages
+// nothing for propName. A name listing none answers yes and lets the payload
+// decide, which keeps a completed class-level migration's sidecars preserved.
 func migrationTrackerMayOwnProperty(name, propName string) bool {
 	base := migrationDirBase(name)
 	for _, prefix := range migrationPerPropertyDirPrefixes() {

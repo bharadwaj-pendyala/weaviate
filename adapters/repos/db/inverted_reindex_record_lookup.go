@@ -134,9 +134,9 @@ func migrationPreservedStateFor(lsmPath, propName string, props *taskPropsCache,
 	state.settled = migrationReadSettledNote(lsmPath)
 	legacyTrackers, listed, listErr := migrationLegacyMarkerTrackersAt(lsmPath, records, propName, props)
 	if someRecordsUnreadable && listed {
-		// Already preserving the whole shard, so reading trackers would only
-		// cost syscalls; listing still had to happen to catch an unlistable
-		// directory.
+		// The whole shard is already withheld, so the tracker names below
+		// change no answer. The listing above still runs, because an
+		// unlistable directory is a different fault.
 		return state
 	}
 	if !listed {
@@ -166,9 +166,9 @@ func migrationPreservedStateFor(lsmPath, propName string, props *taskPropsCache,
 			}
 			continue
 		}
-		// false: the tracker's own sidecars go into state.buckets below, and
-		// the gate already reports those as reclaimable-by-load, so nothing
-		// more is gained by asking for the load on the tracker's account.
+		// False because the tracker's own sidecars go into state.buckets
+		// below, where [migrationPreservedState.bucketNeedsLoad] already
+		// reports them as reclaimable by a load.
 		state.trackers[legacy.dirName] = false
 		for _, dir := range legacy.sidecars {
 			// A marker-era tracker has no record to have written a promotion

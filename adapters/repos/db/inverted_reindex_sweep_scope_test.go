@@ -130,7 +130,7 @@ func TestAMarkerEraTrackerIsPreservedForEveryPropertyItsNameCouldOwn(t *testing.
 		want bool
 	}{
 		{dir: "enable_filterable_a_b_1", prop: "a", want: true},
-		{dir: "enable_filterable_cat_x_1", prop: "cat", want: true},
+		{dir: "enable_filterable_a_b_1", prop: "a_b", want: true},
 		{dir: "enable_filterable_b_a_1", prop: "a", want: true},
 		{dir: "enable_filterable_x_a_y_1", prop: "a", want: true},
 		{dir: "enable_filterable_a_b_c_1", prop: "b", want: true},

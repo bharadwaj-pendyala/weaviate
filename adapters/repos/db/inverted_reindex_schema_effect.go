@@ -125,32 +125,35 @@ func migrationPropertyEffectVisible(subject MigrationSubject, prop *models.Prope
 // narrows and the reader's does not, the read reports pending forever and a
 // promoted record never retires its directories, with no error and no log.
 
-// propertyTokenizationAtTarget: change-tokenization and
-// change-tokenization-filterable write Tokenization.
+// propertyTokenizationAtTarget reports whether the property carries the
+// tokenization change-tokenization and change-tokenization-filterable write.
 func propertyTokenizationAtTarget(prop *models.Property, target string) bool {
 	return prop.Tokenization == target
 }
 
-// propertyFilterableEnabled: enable-filterable writes IndexFilterable.
+// propertyFilterableEnabled reports whether IndexFilterable is set, the field
+// enable-filterable writes.
 func propertyFilterableEnabled(prop *models.Property) bool {
 	return prop.IndexFilterable != nil && *prop.IndexFilterable
 }
 
-// propertySearchableAtTarget: enable-searchable writes IndexSearchable,
-// Tokenization and SearchableBlockmax in one commit, so all three must hold.
+// propertySearchableAtTarget reports whether IndexSearchable, Tokenization and
+// SearchableBlockmax all hold, the three fields enable-searchable writes in one
+// commit.
 func propertySearchableAtTarget(prop *models.Property, target string) bool {
 	return prop.IndexSearchable != nil && *prop.IndexSearchable &&
 		propertyTokenizationAtTarget(prop, target) &&
 		propertyBlockmaxStamped(prop)
 }
 
-// propertyBlockmaxStamped: change-algorithm writes SearchableBlockmax.
+// propertyBlockmaxStamped reports whether SearchableBlockmax is set, the field
+// change-algorithm writes.
 func propertyBlockmaxStamped(prop *models.Property) bool {
 	return prop.SearchableBlockmax != nil && *prop.SearchableBlockmax
 }
 
-// propertyRangeableEnabled: enable-rangeable and repair-rangeable write
-// IndexRangeFilters.
+// propertyRangeableEnabled reports whether IndexRangeFilters is set, the field
+// enable-rangeable and repair-rangeable write.
 func propertyRangeableEnabled(prop *models.Property) bool {
 	return prop.IndexRangeFilters != nil && *prop.IndexRangeFilters
 }

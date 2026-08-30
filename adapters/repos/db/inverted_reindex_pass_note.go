@@ -23,19 +23,13 @@ import (
 // migrationSettledNoteFile holds the directories the last reconciliation pass
 // left exactly as it found them. It sits beside the tracker directories, not
 // inside the record store, so nothing that enumerates records needs to know
-// about it, and every reader of .migrations already skips non-directories.
+// about it. [lsmkv.Store.listMigrationFiles] and listInactiveLSMFiles list
+// files under .migrations, so both skip it by name.
 const migrationSettledNoteFile = lsmkv.MigrationSettledNoteFile
 
-// The note is a cache, not a state: losing it costs one hydration, never
-// correctness, and a stale one leaves a directory on disk until the tenant
-// loads for some other reason. A sweep reads it as "this load would not
-// change anything either" to skip hydrating a cold tenant.
-//
-// This node's applied task map can change what a load would do with no
-// record write, so a pass names a directory here only when it reaches an
-// answer nothing else can later revisit — the same bar as reporting the
-// record wedged ([migrationReconciler.wedged]). A pass that merely could not
-// decide names nothing.
+// migrationSettledNotePath names the file holding the note. The note is a
+// cache, so losing it costs one hydration and a stale one leaves a directory
+// on disk until the tenant loads for another reason.
 func migrationSettledNotePath(lsmPath string) string {
 	return filepath.Join(lsmPath, migrationsDir, migrationSettledNoteFile)
 }
@@ -60,6 +54,12 @@ func migrationReadSettledNote(lsmPath string) map[string]bool {
 // migrationWriteSettledNote replaces the note with dirs, or removes it when
 // the pass settled nothing. Failures are the caller's to log: a note that
 // could not be written costs the hydration it would have saved.
+//
+// This node's applied task map can change what a load would do with no
+// record write, so a pass names a directory here only when it reaches an
+// answer nothing else can later revisit — the same bar as reporting the
+// record wedged ([migrationReconciler.wedged]). A pass that merely could not
+// decide names nothing.
 func migrationWriteSettledNote(lsmPath string, dirs []string) error {
 	path := migrationSettledNotePath(lsmPath)
 	if len(dirs) == 0 {
@@ -76,7 +76,8 @@ func migrationWriteSettledNote(lsmPath string, dirs []string) error {
 }
 
 // migrationDiscardSettledNote drops the note. Every record write and removal
-// calls this, so a note never outlives the record set it was computed from.
+// calls it, so a note outlives its record set only where the unlink fails,
+// which leaves a directory on disk until some later load.
 func migrationDiscardSettledNote(lsmPath string) {
 	os.Remove(migrationSettledNotePath(lsmPath))
 }

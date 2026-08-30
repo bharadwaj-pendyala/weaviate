@@ -167,9 +167,9 @@ func migrationTrackerHeldByAnotherRecord(all []MigrationRecord, subject Migratio
 }
 
 // migrationDirClaimedAsDisplaced reports whether a surviving later-versioned
-// record claims dir as what its flip displaced. A predecessor that flipped
-// but never promoted still holds live data at that staged name — exactly
-// what a successor displaces, making that directory the property's only copy.
+// record claims dir as what its flip displaced. That successor is the one
+// record that may remove it, and dir can be a staged name, since a
+// predecessor that flipped and never promoted served from one.
 func migrationDirClaimedAsDisplaced(all []MigrationRecord, subject MigrationSubject, dir string) bool {
 	for _, other := range all {
 		if !migrationSupersedes(other, subject) {
