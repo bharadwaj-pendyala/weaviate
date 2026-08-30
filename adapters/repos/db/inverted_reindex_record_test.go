@@ -26,6 +26,7 @@ import (
 	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/require"
 	"github.com/weaviate/weaviate/adapters/repos/db/helpers"
+	"github.com/weaviate/weaviate/entities/filters"
 	"github.com/weaviate/weaviate/entities/models"
 )
 
@@ -1189,6 +1190,12 @@ func TestTheLargestRecordTheWriterCanBuildFitsTheLoadersBound(t *testing.T) {
 		const tail = "_ingest"
 		return s + strings.Repeat("x", maxDirEntryNameBytes-len(s)-len(tail)) + tail
 	}
+	// Canonical and displaced handles must be property buckets. Still the
+	// full entry length, so the bound is measured at the maximum either way.
+	longestBucket := func(role string, i int) string {
+		s := fmt.Sprintf("property_%s_%d_", role, i)
+		return s + strings.Repeat("x", maxDirEntryNameBytes-len(s))
+	}
 
 	subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize)
 	subject.TrackerDir = longest("tracker", 0)
@@ -1201,9 +1208,9 @@ func TestTheLargestRecordTheWriterCanBuildFitsTheLoadersBound(t *testing.T) {
 		prop := longest("property", i)
 		subject.Properties[i] = prop
 		subject.StagedDirs[prop] = longestSidecar("staged", i)
-		subject.CanonicalDirs[prop] = longest("canonical", i)
+		subject.CanonicalDirs[prop] = longestBucket("canonical", i)
 		subject.SidecarDirs[prop] = longestSidecar("sidecar", i)
-		displaced[prop] = longest("displaced", i)
+		displaced[prop] = longestBucket("displaced", i)
 	}
 
 	swapped := NewMigrationRecordSwapped(subject, slices.Clone(subject.Properties), displaced)
@@ -1288,21 +1295,20 @@ func TestEveryPropertyBucketCarriesTheMigrationPrefix(t *testing.T) {
 	}
 }
 
-// TestNoStoreTheShardServesFromCanBeStaged is the rule-3 half of the shape
-// check. A record's staged and sidecar handles reach os.RemoveAll on every
-// teardown path, so every store the shard serves from has to be refused —
-// not the four someone remembered to name.
+// TestNoStoreTheShardServesFromCanBeNamedInAnyDirectoryRole is the rule-3 half
+// of the shape check. Every directory role reaches os.RemoveAll — the staged
+// and sidecar ones on every teardown path, the canonical and displaced ones
+// through the promotion that replaces them — so every store the shard serves
+// from has to be refused in all four, not the four names someone remembered.
 //
 // The names come from the helpers that build them rather than from a literal
 // list here, so a store added later fails this test instead of passing
 // silently.
-func TestNoStoreTheShardServesFromCanBeStaged(t *testing.T) {
+func TestNoStoreTheShardServesFromCanBeNamedInAnyDirectoryRole(t *testing.T) {
+	// Not property buckets at all, so no role may hold one.
 	stores := []string{
 		helpers.ObjectsBucketLSM,
 		helpers.DimensionsBucketLSM,
-		helpers.BucketFromPropNameLSM("title"),
-		helpers.BucketSearchableFromPropNameLSM("title"),
-		helpers.BucketRangeableFromPropNameLSM("title"),
 		migrationsDir,
 		migrationRecordsDirName,
 	}
@@ -1313,23 +1319,102 @@ func TestNoStoreTheShardServesFromCanBeStaged(t *testing.T) {
 		stores = append(stores, helpers.VectorIndexArtifactsFor(targetVector, nil).LSMBuckets...)
 	}
 
-	for _, store := range stores {
-		t.Run(store, func(t *testing.T) {
-			subject := testMigrationSubject(1, StrategyCodeSearchableRetokenize, "title")
-			subject.StagedDirs["title"] = store
-			err := validateMigrationHandles(migrationRecordEnvelope{
-				Subject: subject, State: MigrationStateIterating,
-				Checkpoint: &MigrationCheckpoint{},
+	// A property's own live bucket, which only the sidecar-shaped roles
+	// refuse: a migration's own copy is never the live bucket, while the
+	// canonical and displaced roles are exactly where a live bucket belongs.
+	// What that costs is pinned by
+	// TestThePropertyBucketRuleAcceptsTheShardsOwnBuckets below.
+	liveBuckets := []string{
+		helpers.BucketFromPropNameLSM("title"),
+		helpers.BucketSearchableFromPropNameLSM("title"),
+		helpers.BucketRangeableFromPropNameLSM("title"),
+	}
+
+	for _, role := range migrationShardRootDirectoryRoles(t) {
+		refused := stores
+		if role.shape == migrationShapeSidecar {
+			refused = slices.Concat(stores, liveBuckets)
+		}
+		for _, store := range refused {
+			t.Run(role.field+"/"+store, func(t *testing.T) {
+				env := migrationRecordEnvelope{
+					Subject:    testMigrationSubject(1, StrategyCodeSearchableRetokenize, "title"),
+					State:      MigrationStateIterating,
+					Checkpoint: &MigrationCheckpoint{},
+				}
+				migrationDirectoryRolePlacers[role.field](&env, "title", store)
+				err := validateMigrationHandles(env)
+				require.Errorf(t, err, "a record naming this as its %s hands it to os.RemoveAll", role.field)
+				require.Contains(t, err.Error(), store)
 			})
-			require.Error(t, err, "a record naming this in a staged role hands it to os.RemoveAll")
-			require.Contains(t, err.Error(), store)
+		}
+	}
+}
+
+// migrationDirectoryRolePlacers puts a handle in one role, keyed by that
+// role's name in [migrationHandleGroups]. Only the placing is written out
+// here: which roles exist, and what each one refuses, come from the
+// production table, so a role added there is picked up by every test below.
+var migrationDirectoryRolePlacers = map[string]func(env *migrationRecordEnvelope, prop, handle string){
+	"staged directory": func(env *migrationRecordEnvelope, prop, handle string) {
+		env.Subject.StagedDirs[prop] = handle
+	},
+	"sidecar directory": func(env *migrationRecordEnvelope, prop, handle string) {
+		env.Subject.SidecarDirs[prop] = handle
+	},
+	"canonical directory": func(env *migrationRecordEnvelope, prop, handle string) {
+		env.Subject.CanonicalDirs[prop] = handle
+	},
+	"displaced directory": func(env *migrationRecordEnvelope, prop, handle string) {
+		env.Flip = &migrationFlipEnvelope{
+			Flipped:       []string{prop},
+			DisplacedDirs: map[string]string{prop: handle},
+		}
+	},
+}
+
+// migrationShardRootDirectoryRoles are the roles whose handle names a
+// directory in the shard's LSM directory, where every store the shard serves
+// from also lives. The tracker is not one: it is joined onto .migrations, so
+// no store is reachable from it.
+//
+// A role with no placer fails here rather than going untested.
+func migrationShardRootDirectoryRoles(t *testing.T) []migrationHandleGroup {
+	t.Helper()
+	var out []migrationHandleGroup
+	for _, group := range migrationHandleGroups {
+		if !group.namesDirectory || group.underMigrationsDir {
+			continue
+		}
+		require.Containsf(t, migrationDirectoryRolePlacers, group.field,
+			"the %s role has no placer here, so no test below covers it", group.field)
+		out = append(out, group)
+	}
+	return out
+}
+
+// TestEveryDirectoryRoleUnderTheShardRootCarriesAShapeRule is what stops the
+// next role from arriving with no rule at all. The two direction tests around
+// it walk the same table, so a role carrying neither shape gives them nothing
+// to assert and passes both in silence — while still handing its handle to
+// os.RemoveAll beside the stores the shard serves from.
+func TestEveryDirectoryRoleUnderTheShardRootCarriesAShapeRule(t *testing.T) {
+	for _, group := range migrationShardRootDirectoryRoles(t) {
+		t.Run(group.field, func(t *testing.T) {
+			require.Containsf(t,
+				[]migrationHandleShape{migrationShapeSidecar, migrationShapePropertyBucket},
+				group.shape,
+				"the %s role reaches os.RemoveAll in the shard's LSM directory, so its handle has to take either the sidecar shape or the property-bucket rule",
+				group.field)
 		})
 	}
 }
 
 // TestEveryWriterEmittedSidecarNameIsAccepted is the other direction, and the
-// one a false positive would break: the shape rule refusing a name a strategy
-// really emits refuses a legitimate migration outright.
+// one a false positive would break: a shape rule refusing a name a strategy
+// really emits refuses a legitimate migration outright. It covers both rules
+// — the sidecar shape the staged and sidecar roles take, and the property
+// bucket the canonical and displaced roles take.
 //
 // Driven off the strategies themselves, over property names carrying the
 // separators the rule reads ("__" and a trailing role word), so a strategy
@@ -1362,14 +1447,70 @@ func TestEveryWriterEmittedSidecarNameIsAccepted(t *testing.T) {
 				// The composition the writer uses: no generation is appended
 				// here, since each strategy's suffix already carries its own.
 				main := strategy.SourceBucketName(prop)
+				// A predecessor that flipped and never promoted leaves live
+				// data at a staged name, so both the main bucket and a
+				// sidecar of it are names the promote roles legitimately hold.
+				requireAcceptedInPromoteRoles(t, main)
 				for _, suffix := range []string{
 					strategy.ReindexSuffix(), strategy.IngestSuffix(), strategy.BackupSuffix(),
 				} {
 					name := main + suffix
 					require.Truef(t, migrationHandleIsSidecarShaped(name),
 						"%T emits %q, and refusing it refuses the migration", strategy, name)
+					requireAcceptedInPromoteRoles(t, name)
 				}
 			}
 		}
+	}
+	// The canonical name the promote path renames onto, which no strategy
+	// suffix reaches.
+	for _, prop := range props {
+		for _, indexType := range []string{"filterable", "searchable", "rangeable"} {
+			main, ok := mainBucketForPropertyIndex(prop, indexType)
+			require.True(t, ok, indexType)
+			requireAcceptedInPromoteRoles(t, main)
+		}
+	}
+}
+
+// requireAcceptedInPromoteRoles asserts that handle passes validation in
+// every role taking the property-bucket rule — the ones the promote path
+// reclaims.
+func requireAcceptedInPromoteRoles(t *testing.T, handle string) {
+	t.Helper()
+	for _, role := range migrationShardRootDirectoryRoles(t) {
+		if role.shape != migrationShapePropertyBucket {
+			continue
+		}
+		env := migrationRecordEnvelope{
+			Subject:    testMigrationSubject(1, StrategyCodeSearchableRetokenize, "title"),
+			State:      MigrationStateIterating,
+			Checkpoint: &MigrationCheckpoint{},
+		}
+		migrationDirectoryRolePlacers[role.field](&env, "title", handle)
+		require.NoErrorf(t, validateMigrationHandles(env),
+			"a writer puts %q in the %s role", handle, role.field)
+	}
+}
+
+// TestThePropertyBucketRuleAcceptsTheShardsOwnBuckets records what the
+// canonical and displaced roles let through, so the decision is written down
+// rather than left to be rediscovered. The rule is a property_ prefix and
+// nothing more, and no later check narrows it: the cross-record guard asks
+// only about staged and sidecar roles, which a bare bucket name can never be
+// held in. A record naming one of these has it removed by the promotion that
+// replaces the role's directory. Accepted by design, filed separately.
+func TestThePropertyBucketRuleAcceptsTheShardsOwnBuckets(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		handle string
+	}{
+		{name: "the shard's own id index", handle: helpers.BucketFromPropNameLSM(filters.InternalPropID)},
+		{name: "a property length index", handle: helpers.BucketFromPropNameLengthLSM("title")},
+		{name: "another property's bucket", handle: helpers.BucketFromPropNameLSM("body")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			requireAcceptedInPromoteRoles(t, tt.handle)
+		})
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 )
 
 // migrationDisplacer is the part of a flipped record that names what its flip
@@ -65,7 +66,8 @@ func migrationSupersedes(candidate MigrationRecord, subject MigrationSubject) bo
 }
 
 // migrationDirRole is how one record holds a directory, for the log line that
-// refuses to take it away.
+// refuses to take it away. Each value is a [migrationHandleGroup] field name,
+// which is what [migrationDirsInRole] resolves it against.
 type migrationDirRole string
 
 const (
@@ -77,13 +79,15 @@ const (
 // migrationLiveDataRoles are the roles in which a directory holds a record's
 // own copy of a property's index. A record that replaces a directory another
 // record holds in one of these takes that copy with it.
-var migrationLiveDataRoles = []migrationDirRole{migrationRoleStaged, migrationRoleSidecar}
+//
+// Read off [migrationHandleGroups] rather than listed again here: those roles
+// are exactly the ones whose handles have to be a writer-emitted sidecar
+// name, so a role added there with that rule is guarded here too.
+var migrationLiveDataRoles = migrationRolesWithShape(migrationShapeSidecar)
 
 // migrationOwnedRoles adds the canonical role, which no record may reclaim
 // because it is where the holder's property serves from.
-var migrationOwnedRoles = []migrationDirRole{
-	migrationRoleCanonical, migrationRoleStaged, migrationRoleSidecar,
-}
+var migrationOwnedRoles = append(slices.Clone(migrationLiveDataRoles), migrationRoleCanonical)
 
 // migrationDirHeldByAnotherRecord reports whether any other record on the
 // shard names dir in one of roles.
@@ -116,16 +120,31 @@ func migrationDirHeldByAnotherRecord(all []MigrationRecord, subject MigrationSub
 	return MigrationRecordKey{}, "", false
 }
 
+// migrationDirsInRole reads the directories a subject holds in one role off
+// [migrationHandleGroups], the same table the shape check reads. A subject
+// carries no flip block, so it holds nothing in the displaced role — which is
+// where that role belongs, for the reason on [migrationDirHeldByAnotherRecord].
 func migrationDirsInRole(subject MigrationSubject, role migrationDirRole) map[string]string {
-	switch role {
-	case migrationRoleCanonical:
-		return subject.CanonicalDirs
-	case migrationRoleStaged:
-		return subject.StagedDirs
-	case migrationRoleSidecar:
-		return subject.SidecarDirs
+	for _, group := range migrationHandleGroups {
+		if group.field == string(role) && group.dirs != nil {
+			return group.dirs(migrationRecordEnvelope{Subject: subject})
+		}
 	}
 	return nil
+}
+
+// migrationOwnCopyDirs names the directories holding a record's own copy of
+// one property's index. Read off [migrationLiveDataRoles], so a role added to
+// that rule is reclaimed, attributed and preserved with the rest rather than
+// only where someone remembered to name both maps.
+func migrationOwnCopyDirs(subject MigrationSubject, prop string) []string {
+	dirs := make([]string, 0, len(migrationLiveDataRoles))
+	for _, role := range migrationLiveDataRoles {
+		if dir := migrationDirsInRole(subject, role)[prop]; dir != "" {
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs
 }
 
 // migrationTrackerHeldByAnotherRecord reports whether another record names the

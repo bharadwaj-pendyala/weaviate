@@ -201,10 +201,7 @@ func migrationPreservedStateFromRecords(records []MigrationRecord, someRecordsUn
 			// because a sibling's is lost.
 			canAct := migrationPropertyLoadCanStillAct(rec, prop)
 			anyCanAct = anyCanAct || canAct
-			if dir := subject.StagedDirs[prop]; dir != "" {
-				state.buckets[dir] = canAct
-			}
-			if dir := subject.SidecarDirs[prop]; dir != "" {
+			for _, dir := range migrationOwnCopyDirs(subject, prop) {
 				state.buckets[dir] = canAct
 			}
 		}

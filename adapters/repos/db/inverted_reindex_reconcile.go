@@ -961,12 +961,7 @@ func (r *migrationReconciler) mayReplace(all []MigrationRecord, subject Migratio
 func migrationOwnedDirs(subject MigrationSubject) []string {
 	dirs := make([]string, 0, len(subject.StagedDirs)+len(subject.SidecarDirs))
 	for _, prop := range subject.Properties {
-		if dir := subject.StagedDirs[prop]; dir != "" {
-			dirs = append(dirs, dir)
-		}
-		if dir := subject.SidecarDirs[prop]; dir != "" {
-			dirs = append(dirs, dir)
-		}
+		dirs = append(dirs, migrationOwnCopyDirs(subject, prop)...)
 	}
 	return dirs
 }

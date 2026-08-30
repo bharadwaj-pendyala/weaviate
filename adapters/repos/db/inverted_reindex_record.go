@@ -452,39 +452,26 @@ func validatePromotion(e migrationRecordEnvelope) error {
 // archive may carry any handle.)
 func validateOneOwnerPerDirectory(e migrationRecordEnvelope) error {
 	type claim struct{ role, prop string }
+	owner := map[string]claim{}
 
-	var displaced map[string]string
-	if e.Flip != nil {
-		displaced = e.Flip.DisplacedDirs
-	}
-	owner := make(map[string]claim, len(e.Subject.StagedDirs)+
-		len(e.Subject.CanonicalDirs)+len(e.Subject.SidecarDirs)+len(displaced))
-
-	for _, group := range []struct {
-		role string
-		dirs map[string]string
-		// isDisplaced marks the one repeat a record legitimately carries: what
-		// a flip displaced is the canonical name that flip replaced.
-		isDisplaced bool
-	}{
-		{role: "staged directory", dirs: e.Subject.StagedDirs},
-		{role: "canonical directory", dirs: e.Subject.CanonicalDirs},
-		{role: "sidecar directory", dirs: e.Subject.SidecarDirs},
-		{role: "displaced directory", dirs: displaced, isDisplaced: true},
-	} {
+	for _, group := range migrationHandleGroups {
+		if group.dirs == nil {
+			continue
+		}
+		dirs := group.dirs(e)
 		// Sorted, so a record with two collisions names the same one every
 		// time. Ranging the map would make the error text a coin flip.
-		for _, prop := range slices.Sorted(maps.Keys(group.dirs)) {
-			dir := group.dirs[prop]
-			if dir == "" || (group.isDisplaced && dir == e.Subject.CanonicalDirs[prop]) {
+		for _, prop := range slices.Sorted(maps.Keys(dirs)) {
+			dir := dirs[prop]
+			if dir == "" || (group.displacesCanonical && dir == e.Subject.CanonicalDirs[prop]) {
 				continue
 			}
 			if held, taken := owner[dir]; taken {
 				return fmt.Errorf(
 					"record %q names directory %q as both the %s of property %q and the %s of property %q",
-					e.Subject.Key, dir, held.role, held.prop, group.role, prop)
+					e.Subject.Key, dir, held.role, held.prop, group.field, prop)
 			}
-			owner[dir] = claim{group.role, prop}
+			owner[dir] = claim{group.field, prop}
 		}
 	}
 	return nil
@@ -549,6 +536,148 @@ func migrationHandleIsOneElement(h string) bool {
 	return !strings.ContainsRune(h, '/') && !strings.ContainsRune(h, os.PathSeparator)
 }
 
+// migrationHandleShape is the rule a role's handles take beyond naming one
+// entry under the shard root. A role carries exactly one, so a role added
+// later cannot end up with both, or silently with none:
+// [TestEveryDirectoryRoleUnderTheShardRootCarriesAShapeRule] refuses that.
+type migrationHandleShape uint8
+
+const (
+	// migrationShapeUnchecked is the zero value. Only the roles that name no
+	// directory under the shard's LSM root may carry it: property names,
+	// which are user-chosen, and the tracker, which is joined onto
+	// .migrations and so can never reach a store the shard serves from.
+	migrationShapeUnchecked migrationHandleShape = iota
+	// migrationShapeSidecar marks the roles holding a migration's own copy of
+	// a property's index. Those are reclaimed on every teardown path, so they
+	// must carry the shape a writer emits rather than name any directory.
+	migrationShapeSidecar
+	// migrationShapePropertyBucket marks the roles holding the shard's own
+	// copy of a property's index. A promotion removes both, so they must at
+	// least be property buckets.
+	//
+	// Only that: every property_-prefixed name passes, including the shard's
+	// own property__id, a property_<p>_propertyLength and another property's
+	// buckets, and nothing downstream refuses those either.
+	migrationShapePropertyBucket
+)
+
+// migrationHandleGroup is one role a record holds strings in, together with
+// the rule those strings take. [validateMigrationHandles] and the tests that
+// walk every role read this one table, so a role added here is picked up by
+// both instead of by whichever the author remembered.
+type migrationHandleGroup struct {
+	// field names the role in the refusal a bad handle produces. It is also
+	// the [migrationDirRole] value for the roles supersession asks about.
+	field string
+	// dirs reads the role's directories off a record, keyed by property. Nil
+	// for the two roles that are not one map per property: the tracker, which
+	// is a single name, and the property names themselves.
+	dirs func(e migrationRecordEnvelope) map[string]string
+	// envelopeHandles reads the role's strings off a whole record, and is set
+	// only where dirs cannot be.
+	envelopeHandles func(e migrationRecordEnvelope) []string
+	// displacesCanonical marks the one role whose directory a record may name
+	// twice: what a flip displaced is the canonical name that flip replaced.
+	displacesCanonical bool
+	// namesDirectory separates the handles a sweep hands to os.RemoveAll from
+	// the property names it composes bucket names out of. Only the former may
+	// be checked against the reserved set: property names are user-chosen,
+	// and a collection may legitimately have one called "records".
+	namesDirectory bool
+	// underMigrationsDir marks the roles rooted in .migrations rather than in
+	// the shard's LSM directory, which decides what removing a reserved name
+	// in that role would take with it.
+	underMigrationsDir bool
+	// shape is the rule this role's handles take on top of the reserved set.
+	shape migrationHandleShape
+}
+
+// handles reads one role's strings out of a record, sorted by property where
+// the role is keyed by one — so a record with two bad handles names the same
+// one every time. Ranging the maps directly would make the error a coin flip.
+func (g migrationHandleGroup) handles(e migrationRecordEnvelope) []string {
+	if g.dirs == nil {
+		return g.envelopeHandles(e)
+	}
+	dirs := g.dirs(e)
+	out := make([]string, 0, len(dirs))
+	for _, prop := range slices.Sorted(maps.Keys(dirs)) {
+		out = append(out, dirs[prop])
+	}
+	return out
+}
+
+// migrationHandleGroups is the whole set of roles a record holds strings in.
+var migrationHandleGroups = []migrationHandleGroup{
+	{
+		field:          "tracker directory",
+		namesDirectory: true, underMigrationsDir: true,
+		envelopeHandles: func(e migrationRecordEnvelope) []string { return []string{e.Subject.TrackerDir} },
+	},
+	{
+		field:          string(migrationRoleStaged),
+		dirs:           func(e migrationRecordEnvelope) map[string]string { return e.Subject.StagedDirs },
+		namesDirectory: true, shape: migrationShapeSidecar,
+	},
+	{
+		field: "property",
+		envelopeHandles: func(e migrationRecordEnvelope) []string {
+			return slices.Concat(
+				e.Subject.Properties,
+				slices.Sorted(maps.Keys(e.Subject.StagedDirs)),
+				slices.Sorted(maps.Keys(e.Subject.CanonicalDirs)),
+				slices.Sorted(maps.Keys(e.Subject.SidecarDirs)),
+				slices.Sorted(maps.Keys(e.displacedDirs())),
+				e.flippedProps())
+		},
+	},
+	{
+		field:          string(migrationRoleCanonical),
+		dirs:           func(e migrationRecordEnvelope) map[string]string { return e.Subject.CanonicalDirs },
+		namesDirectory: true, shape: migrationShapePropertyBucket,
+	},
+	{
+		field:          string(migrationRoleSidecar),
+		dirs:           func(e migrationRecordEnvelope) map[string]string { return e.Subject.SidecarDirs },
+		namesDirectory: true, shape: migrationShapeSidecar,
+	},
+	{
+		field:              "displaced directory",
+		dirs:               func(e migrationRecordEnvelope) map[string]string { return e.displacedDirs() },
+		namesDirectory:     true,
+		shape:              migrationShapePropertyBucket,
+		displacesCanonical: true,
+	},
+}
+
+// migrationRolesWithShape names the roles taking one shape rule, so a caller
+// meaning "the roles holding a migration's own copy" reads that off the rule
+// defining them instead of keeping a second list of the same roles.
+func migrationRolesWithShape(shape migrationHandleShape) []migrationDirRole {
+	var out []migrationDirRole
+	for _, group := range migrationHandleGroups {
+		if group.shape == shape {
+			out = append(out, migrationDirRole(group.field))
+		}
+	}
+	return out
+}
+
+func (e migrationRecordEnvelope) displacedDirs() map[string]string {
+	if e.Flip == nil {
+		return nil
+	}
+	return e.Flip.DisplacedDirs
+}
+
+func (e migrationRecordEnvelope) flippedProps() []string {
+	if e.Flip == nil {
+		return nil
+	}
+	return e.Flip.Flipped
+}
+
 // validateMigrationHandles rejects any recorded string that doesn't name a
 // single entry under the shard root: directory handles (removed via
 // os.RemoveAll) and property names (used to compose bucket/sidecar names to
@@ -556,52 +685,8 @@ func migrationHandleIsOneElement(h string) bool {
 // a strategy prefix plus sorted property names; a restored backup archive is
 // the only reachable producer of anything else. Both directions call this.
 func validateMigrationHandles(e migrationRecordEnvelope) error {
-	// Sorted, so a record with two bad handles names the same one every time.
-	// Ranging the maps directly would make the error text a coin flip.
-	byProperty := func(dirs map[string]string) (props, handles []string) {
-		props = slices.Sorted(maps.Keys(dirs))
-		for _, prop := range props {
-			handles = append(handles, dirs[prop])
-		}
-		return props, handles
-	}
-	stagedProps, staged := byProperty(e.Subject.StagedDirs)
-	canonicalProps, canonical := byProperty(e.Subject.CanonicalDirs)
-	sidecarProps, sidecars := byProperty(e.Subject.SidecarDirs)
-	var flipped, displacedProps, displaced []string
-	if e.Flip != nil {
-		flipped = e.Flip.Flipped
-		displacedProps, displaced = byProperty(e.Flip.DisplacedDirs)
-	}
-
-	for _, group := range []struct {
-		field string
-		// namesDirectory separates the handles a sweep hands to os.RemoveAll
-		// from the property names it composes bucket names out of. Only the
-		// former may be checked against the reserved set: property names are
-		// user-chosen, and a collection may legitimately have one called
-		// "records".
-		namesDirectory bool
-		// underMigrationsDir marks the roles rooted in .migrations rather than
-		// in the shard's LSM directory, which decides what removing a reserved
-		// name in that role would take with it.
-		underMigrationsDir bool
-		// stagesData marks the roles that hold a migration's own copy of a
-		// property's index. Those are reclaimed on every teardown path, so
-		// they must carry the shape a writer emits rather than name any
-		// directory at all.
-		stagesData bool
-		handles    []string
-	}{
-		{field: "tracker directory", namesDirectory: true, underMigrationsDir: true, handles: []string{e.Subject.TrackerDir}},
-		{field: "sidecar directory", namesDirectory: true, stagesData: true, handles: sidecars},
-		{field: "property", handles: slices.Concat(
-			e.Subject.Properties, stagedProps, canonicalProps, sidecarProps, displacedProps, flipped)},
-		{field: "staged directory", namesDirectory: true, stagesData: true, handles: staged},
-		{field: "canonical directory", namesDirectory: true, handles: canonical},
-		{field: "displaced directory", namesDirectory: true, handles: displaced},
-	} {
-		for _, handle := range group.handles {
+	for _, group := range migrationHandleGroups {
+		for _, handle := range group.handles(e) {
 			// An empty handle is the ordinary "this record names none", and
 			// every reader already guards on it. An empty property name is
 			// not: nothing legitimate emits one, and it composes into a
@@ -621,9 +706,19 @@ func validateMigrationHandles(e migrationRecordEnvelope) error {
 				return fmt.Errorf("record %q names %s %q, which is %s",
 					e.Subject.Key, group.field, handle, what)
 			}
-			if group.stagesData && !migrationHandleIsSidecarShaped(handle) {
-				return fmt.Errorf("record %q names %s %q, which is not shaped like a sidecar of a property bucket",
-					e.Subject.Key, group.field, handle)
+			switch group.shape {
+			case migrationShapeUnchecked:
+				// Property names and the tracker: nothing beyond the above.
+			case migrationShapeSidecar:
+				if !migrationHandleIsSidecarShaped(handle) {
+					return fmt.Errorf("record %q names %s %q, which is not shaped like a sidecar of a property bucket",
+						e.Subject.Key, group.field, handle)
+				}
+			case migrationShapePropertyBucket:
+				if !strings.HasPrefix(handle, migrationPropertyBucketPrefix) {
+					return fmt.Errorf("record %q names %s %q, which is not a property bucket",
+						e.Subject.Key, group.field, handle)
+				}
 			}
 		}
 	}
