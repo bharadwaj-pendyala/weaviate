@@ -99,23 +99,58 @@ func migrationEffectConfirmsCommit(class *models.Class, subject MigrationSubject
 func migrationPropertyEffectVisible(subject MigrationSubject, prop *models.Property) bool {
 	switch subject.MigrationType {
 	case ReindexTypeChangeTokenization, ReindexTypeChangeTokenizationFilterable:
-		return prop.Tokenization == subject.TargetTokenization
+		return propertyTokenizationAtTarget(prop, subject.TargetTokenization)
 	case ReindexTypeEnableFilterable:
-		return prop.IndexFilterable != nil && *prop.IndexFilterable
+		return propertyFilterableEnabled(prop)
 	case ReindexTypeEnableSearchable:
-		return prop.IndexSearchable != nil && *prop.IndexSearchable &&
-			prop.Tokenization == subject.TargetTokenization &&
-			prop.SearchableBlockmax != nil && *prop.SearchableBlockmax
+		return propertySearchableAtTarget(prop, subject.TargetTokenization)
 	case ReindexTypeChangeAlgorithm:
-		return prop.SearchableBlockmax != nil && *prop.SearchableBlockmax
+		return propertyBlockmaxStamped(prop)
 	case ReindexTypeEnableRangeable, ReindexTypeRepairRangeable:
 		// This flag commits on the FIRST shard's swap, unconditionally, so it is
 		// never proof THIS shard swapped. Still sound: it is monotonic and never
 		// reverted, and an unswapped shard serves range queries from filterable.
-		return prop.IndexRangeFilters != nil && *prop.IndexRangeFilters
+		return propertyRangeableEnabled(prop)
 	default:
 		// The two flagless types never reach here: [migrationEffectStatus]
 		// decides them before any property is read.
 		return false
 	}
+}
+
+// Each predicate below answers "is this property already at the target this
+// migration type writes?". The cutover writer uses it to skip a no-op RAFT
+// update, and [migrationPropertyEffectVisible] uses it to read the effect back
+// out of the schema. Both must ask the same question: if a writer's condition
+// narrows and the reader's does not, the read reports pending forever and a
+// promoted record never retires its directories, with no error and no log.
+
+// propertyTokenizationAtTarget: change-tokenization and
+// change-tokenization-filterable write Tokenization.
+func propertyTokenizationAtTarget(prop *models.Property, target string) bool {
+	return prop.Tokenization == target
+}
+
+// propertyFilterableEnabled: enable-filterable writes IndexFilterable.
+func propertyFilterableEnabled(prop *models.Property) bool {
+	return prop.IndexFilterable != nil && *prop.IndexFilterable
+}
+
+// propertySearchableAtTarget: enable-searchable writes IndexSearchable,
+// Tokenization and SearchableBlockmax in one commit, so all three must hold.
+func propertySearchableAtTarget(prop *models.Property, target string) bool {
+	return prop.IndexSearchable != nil && *prop.IndexSearchable &&
+		propertyTokenizationAtTarget(prop, target) &&
+		propertyBlockmaxStamped(prop)
+}
+
+// propertyBlockmaxStamped: change-algorithm writes SearchableBlockmax.
+func propertyBlockmaxStamped(prop *models.Property) bool {
+	return prop.SearchableBlockmax != nil && *prop.SearchableBlockmax
+}
+
+// propertyRangeableEnabled: enable-rangeable and repair-rangeable write
+// IndexRangeFilters.
+func propertyRangeableEnabled(prop *models.Property) bool {
+	return prop.IndexRangeFilters != nil && *prop.IndexRangeFilters
 }
