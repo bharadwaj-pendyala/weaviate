@@ -509,6 +509,10 @@ type taskProps struct {
 	migrationType ReindexMigrationType
 	ok            bool
 	unreadable    bool
+	// viaSidecar means props came from properties.mig itself (non-empty and
+	// reconstructing the dir name), so finalize's own promotion source is
+	// known good without a second read.
+	viaSidecar bool
 	// taskID, taskVersion and unitID are the migration's identity, which the
 	// orphan audit needs to ask whether the task owning a record-less tracker
 	// is still live before it reclaims one.
@@ -571,7 +575,7 @@ func (c *taskPropsCache) count() int {
 // counter keeps meaning what it says. A refusal opens nothing.
 func readTaskProps(migDir string) (answer taskProps, readPayload bool) {
 	if props, ok := propsFromSidecar(migDir, migrationPerPropertyDirPrefixes()); ok {
-		return taskProps{props: props, ok: true}, false
+		return taskProps{props: props, ok: true, viaSidecar: true}, false
 	}
 	facts, err := readRecoveryPayloadFacts(migDir)
 	if err != nil {

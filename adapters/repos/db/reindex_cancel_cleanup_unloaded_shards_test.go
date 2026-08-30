@@ -417,7 +417,12 @@ func TestHasStalePartialReindexStateNotStaleMeansTheSweepFindsNothing(t *testing
 		// wantSweepFails says the sweep this gate stands in front of cannot
 		// run at all, so there is no post-state to compare.
 		wantSweepFails bool
-		wantStale      bool
+		// wantSweepRemoves names dirs the loaded sweep removes although the
+		// cold gate skips the shard: hydration is shard-atomic, so the gate
+		// weighs every tracker on it, while the loaded sweep acts per
+		// property and may ignore an unrelated one by name.
+		wantSweepRemoves []string
+		wantStale        bool
 		// wantFinalizable says a load would reclaim something here even with
 		// nothing for the sweep to remove — the gate's other half. Reporting
 		// it wrongly either wakes a cold tenant forever, or leaves a
@@ -868,7 +873,8 @@ func TestHasStalePartialReindexStateNotStaleMeansTheSweepFindsNothing(t *testing
 			// A property-index DELETE removes a completed tracker's sidecar
 			// dirs without touching the tracker. The tracker still asks for
 			// the load on its own account — a load's finalize reclaims it —
-			// so one DELETE must not leave the shard skipped forever.
+			// so one DELETE must not leave the shard skipped until something
+			// else happens to load it.
 			name:      "a completed tracker whose sidecars a DELETE already removed",
 			indexType: "filterable",
 			markerTrackers: []markerTracker{{
@@ -890,7 +896,11 @@ func TestHasStalePartialReindexStateNotStaleMeansTheSweepFindsNothing(t *testing
 			}},
 			wantStale: true,
 		},
-		// Two trackers, two answers: the shard gets the one that risks least.
+		// Two trackers, two interests: the load promotes one, and finalize's
+		// tracker removal strands the other. The promotable one wins —
+		// refusing the load would park it until the tenant loads for some
+		// other reason, while the stuck one loses its tracker to finalize
+		// either way once the shard hydrates.
 		{
 			name:      "one tracker finalize promotes and one it cannot",
 			indexType: "filterable",
@@ -905,7 +915,10 @@ func TestHasStalePartialReindexStateNotStaleMeansTheSweepFindsNothing(t *testing
 					sentinels: []string{"swapped.mig", "tidied.mig"},
 				},
 			},
+			wantFinalizable: true,
 		},
+		// The load serves both interests here: it promotes the one and turns
+		// the unreadable completion into an error someone sees.
 		{
 			name:      "one tracker finalize promotes and one whose completion cannot be read",
 			indexType: "filterable",
@@ -922,7 +935,170 @@ func TestHasStalePartialReindexStateNotStaleMeansTheSweepFindsNothing(t *testing
 					unstattable: true,
 				},
 			},
-			wantStale: true,
+			wantFinalizable: true,
+		},
+		// Two generations of one namespace: finalize promotes only the
+		// effective (highest completed) one and removes the lower as stale,
+		// so only the effective generation decides what a load would do.
+		{
+			name:      "a stuck lower generation under a promotable higher one",
+			indexType: "filterable",
+			markerTrackers: []markerTracker{
+				{
+					dir:       "enable_filterable_category_1",
+					sentinels: []string{"merged.mig"},
+				},
+				{
+					dir:       "enable_filterable_category_2",
+					sentinels: []string{"swapped.mig", "tidied.mig"},
+					props:     []string{"category"},
+				},
+			},
+			sidecars:        []string{"property_category__enable_filterable_ingest_2"},
+			wantFinalizable: true,
+		},
+		// The namespace grouping is prefix-generic, so a class-level pair pins
+		// it too: the stuck lower generation is deleted by the load either
+		// way, and only the effective one decides.
+		{
+			name:      "class-level: a stuck lower generation under a promotable higher one",
+			propName:  "descr",
+			indexType: "searchable",
+			markerTrackers: []markerTracker{
+				{
+					dir:       "searchable_map_to_blockmax_1",
+					sentinels: []string{"merged.mig"},
+				},
+				{
+					dir:       "searchable_map_to_blockmax_2",
+					sentinels: []string{"swapped.mig", "tidied.mig"},
+					props:     []string{"descr"},
+				},
+			},
+			sidecars:        []string{"property_descr_searchable__blockmax_ingest_2"},
+			wantFinalizable: true,
+		},
+		// The same rule in the other direction: when the effective generation
+		// is the stuck one, a promotable generation below it cannot make the
+		// load safe — finalize would remove the stuck tracker promoting
+		// nothing and delete the lower generation as stale.
+		{
+			name:      "a promotable lower generation under a stuck higher one",
+			indexType: "filterable",
+			markerTrackers: []markerTracker{
+				{
+					dir:       "enable_filterable_category_1",
+					sentinels: []string{"swapped.mig", "tidied.mig"},
+					props:     []string{"category"},
+				},
+				{
+					dir:       "enable_filterable_category_2",
+					sentinels: []string{"tidied.mig"},
+					props:     []string{"category"},
+				},
+			},
+			sidecars: []string{"property_category__enable_filterable_ingest_1"},
+		},
+		// Hydration is shard-atomic, so another property's stuck tracker does
+		// decide this property's gate: the load that would clean this
+		// property's stale sidecar also runs finalize, which removes the
+		// stuck tracker having promoted nothing and strands its only copy.
+		// The sidecar stays until the shard loads for a reason of its own.
+		{
+			name:      "another property's stuck tracker beside this property's stale sidecar",
+			indexType: "filterable",
+			markerTrackers: []markerTracker{{
+				dir:       "enable_filterable_other_1",
+				sentinels: []string{"merged.mig"},
+			}},
+			sidecars:         []string{"property_category__enable_filterable_ingest_1"},
+			wantSweepRemoves: []string{"property_category__enable_filterable_ingest_1"},
+		},
+		// A completed tracker whose dir name no strategy claims cannot be
+		// promoted by finalize, whatever its sentinels and property list say.
+		{
+			name:      "a completed tracker of a strategy this build does not know",
+			indexType: "filterable",
+			markerTrackers: []markerTracker{{
+				dir:       "future_strategy_category_1",
+				sentinels: []string{"swapped.mig", "tidied.mig"},
+				props:     []string{"category"},
+			}},
+		},
+		// Readable and complete, but finalize cannot promote it (no
+		// swapped.mig): a load would remove the tracker having promoted
+		// nothing and strand the staged copy, so the gate must not wake the
+		// shard for it. The merge base hydrated here and lost the copy.
+		{
+			name:      "a readable completed tracker finalize cannot promote",
+			indexType: "filterable",
+			markerTrackers: []markerTracker{{
+				dir:       "enable_filterable_category_1",
+				sentinels: []string{"tidied.mig"},
+				props:     []string{"category"},
+				payload:   []string{"category"},
+			}},
+			sidecars: []string{"property_category__enable_filterable_ingest_1"},
+		},
+		// The population the first cut of the aggregation fix routed wrong:
+		// the stuck tracker withholds, and its readable neighbour is one a
+		// load also cannot promote, so nothing on the shard justifies the
+		// wake — reclaim must never be reported as promotion.
+		{
+			name:      "a stuck tracker beside a readable one finalize cannot promote",
+			indexType: "filterable",
+			markerTrackers: []markerTracker{
+				{
+					dir:       "enable_filterable_category_1",
+					sentinels: []string{"merged.mig"},
+				},
+				{
+					dir:       "filterable_retokenize_category_1",
+					sentinels: []string{"tidied.mig"},
+					props:     []string{"category"},
+					payload:   []string{"category"},
+				},
+			},
+			sidecars: []string{"property_category__enable_filterable_ingest_1"},
+		},
+		// A downgrade-shaped tracker reads fine but no strategy on this build
+		// claims its name, so finalize cannot promote it either; its bare
+		// tracker flag alone must not wake the shard.
+		{
+			name:      "a stuck tracker beside a readable tracker of an unknown strategy",
+			indexType: "filterable",
+			markerTrackers: []markerTracker{
+				{
+					dir:       "enable_filterable_category_1",
+					sentinels: []string{"merged.mig"},
+				},
+				{
+					dir:       "future_strategy_category_1",
+					sentinels: []string{"swapped.mig", "tidied.mig"},
+					props:     []string{"category"},
+					payload:   []string{"category"},
+				},
+			},
+		},
+		// A stuck tracker's protection outranks an undecided one's
+		// error-surfacing: hydrating would let finalize remove the stuck
+		// tracker having promoted nothing.
+		{
+			name:      "a stuck tracker beside one whose completion cannot be read",
+			indexType: "filterable",
+			markerTrackers: []markerTracker{
+				{
+					dir:       "enable_filterable_category_1",
+					sentinels: []string{"tidied.mig"},
+					props:     []string{"category"},
+				},
+				{
+					dir:         "filterable_retokenize_category_1",
+					sentinels:   []string{"swapped.mig", "tidied.mig"},
+					props:       []string{"category"},
+					unstattable: true,
+				},
+			},
 		},
 	}
 
@@ -1025,7 +1201,7 @@ func TestHasStalePartialReindexStateNotStaleMeansTheSweepFindsNothing(t *testing
 			}
 
 			logger, _ := test.NewNullLogger()
-			stale, finalizable := hasStalePartialReindexState(lsm, propName, tc.indexType, nil, nil, logger)
+			stale, finalizable, _ := hasStalePartialReindexState(lsm, propName, tc.indexType, nil, nil, logger)
 			require.Equal(t, tc.wantStale, stale)
 			// Asserted on a hydrating row too: the two returns are read
 			// together, so (true, true) is not (true, false) and a harness
@@ -1047,6 +1223,15 @@ func TestHasStalePartialReindexStateNotStaleMeansTheSweepFindsNothing(t *testing
 
 			before := lsmDirNames(t, lsm)
 			cleanSweep(t, ctx, shard, propName, tc.indexType)
+			if len(tc.wantSweepRemoves) > 0 {
+				after := lsmDirNames(t, lsm)
+				for _, dir := range tc.wantSweepRemoves {
+					require.NotContains(t, after, dir,
+						"the loaded sweep acts per property, so it removes what "+
+							"the shard-atomic cold gate had to leave in place")
+				}
+				return
+			}
 			require.Equal(t, before, lsmDirNames(t, lsm),
 				"the predicate said this shard has nothing to clean, so the sweep it gates "+
 					"must not find anything either — a shard it skips is never looked at again")
@@ -1095,7 +1280,7 @@ func TestHasStalePartialReindexStateStopsAskingOnceTheLoadHasFinalized(t *testin
 			require.NoError(t, os.WriteFile(filepath.Join(lsm, ingest, staged), []byte("x"), 0o644))
 
 			logger, _ := test.NewNullLogger()
-			stale, finalizable := hasStalePartialReindexState(lsm, propName, indexType, nil, nil, logger)
+			stale, finalizable, _ := hasStalePartialReindexState(lsm, propName, indexType, nil, nil, logger)
 			require.False(t, stale, "the sweep removes nothing here")
 			require.True(t, finalizable, "so the only reason to load the shard is the finalize")
 
@@ -1107,7 +1292,7 @@ func TestHasStalePartialReindexStateStopsAskingOnceTheLoadHasFinalized(t *testin
 			require.False(t, dirExistsAt(t, lsm, ".migrations/"+tracker))
 			require.False(t, dirExistsAt(t, lsm, backup))
 
-			stale, finalizable = hasStalePartialReindexState(lsm, propName, indexType, nil, nil, logger)
+			stale, finalizable, _ = hasStalePartialReindexState(lsm, propName, indexType, nil, nil, logger)
 			require.False(t, stale)
 			require.False(t, finalizable,
 				"asking for the same load again after it has run is asking forever")
@@ -1196,7 +1381,7 @@ func TestShardCleanStalePartialReindexStateSweepsAMultiPropertyTracker(t *testin
 			mkSidecarDir(t, lsm, sidecar)
 
 			logger, _ := test.NewNullLogger()
-			stale, finalizable := hasStalePartialReindexState(lsm, tc.propName, "filterable", nil, nil, logger)
+			stale, finalizable, _ := hasStalePartialReindexState(lsm, tc.propName, "filterable", nil, nil, logger)
 			require.Equal(t, tc.wantStale, stale,
 				"the gate has to load the shard for exactly the sweeps that would clean it")
 			require.False(t, finalizable, "the skip is !stale && !finalizable, so a row claiming a skip owes both")
@@ -1296,7 +1481,7 @@ func TestShardCleanStalePartialReindexStatePreservesACompletedMultiPropertyTrack
 			mkSidecarDir(t, lsm, sidecar)
 
 			logger, _ := test.NewNullLogger()
-			gateHold, finalizable := hasStalePartialReindexState(lsm, "a", "filterable", nil, nil, logger)
+			gateHold, finalizable, _ := hasStalePartialReindexState(lsm, "a", "filterable", nil, nil, logger)
 			require.Equal(t, tc.wantGateHold, gateHold,
 				"the gate has to load the shard for exactly the sweeps that would clean it")
 			require.Equal(t, tc.wantFinalizable, finalizable,
@@ -1358,7 +1543,7 @@ func TestCleanStalePartialReindexStateRemovesAReplacedBucketDir(t *testing.T) {
 			}
 
 			logger, _ := test.NewNullLogger()
-			stale, _ := hasStalePartialReindexState(lsm, propName, tc.indexType, nil, nil, logger)
+			stale, _, _ := hasStalePartialReindexState(lsm, propName, tc.indexType, nil, nil, logger)
 			require.True(t, stale,
 				"a shard holding the leftover has state to sweep, so the gate must hydrate it")
 
@@ -1407,7 +1592,7 @@ func TestIndexCleanStalePartialReindexStateSweepsALoadedShardUnconditionally(t *
 	require.True(t, err == nil || os.IsNotExist(err))
 	mkTrackerDir(t, lsm, tracker)
 	logger, _ := test.NewNullLogger()
-	staleAfterArrival, finalizableAfterArrival := hasStalePartialReindexState(
+	staleAfterArrival, finalizableAfterArrival, _ := hasStalePartialReindexState(
 		lsm, propName, indexType, dirs, dirs.trackerProps(), logger)
 	require.False(t, staleAfterArrival,
 		"the stale listing is the point: the gate cannot see what arrived after it")
@@ -1558,7 +1743,7 @@ func TestLazyLoadShardCanSkipUnloadedSweep(t *testing.T) {
 				require.NoError(t, lazy.Load(ctx))
 			}
 
-			gotSkip, _ := lazy.canSkipUnloadedSweep(propName, indexType, nil, nil)
+			gotSkip, _, _ := lazy.canSkipUnloadedSweep(propName, indexType, nil, nil)
 			assert.Equal(t, tc.wantSkip, gotSkip)
 
 			require.True(t, lazy.mutex.TryLock(),
@@ -1967,4 +2152,110 @@ func TestIndexCleanStalePartialReindexStateLogsGateSkippedShards(t *testing.T) {
 	require.Equal(t, []int{1}, counts,
 		"one line per sweep, counting exactly the unloaded, clean shard as skipped")
 	require.False(t, lazy.isLoaded(), "the skipped shard must not have been hydrated")
+}
+
+// The population the gate deliberately leaves cold is the one the sweep's
+// summary warning exists for, so a withheld skip has to reach the counter the
+// warning reads — otherwise it lands in skipped_shards, indistinguishable
+// from a healthy cold tenant.
+func TestSweepCountsShardsItLeavesColdAsWithheld(t *testing.T) {
+	const (
+		propName      = "category"
+		indexType     = "filterable"
+		unloadedShard = "cold-tenant"
+	)
+	ctx := testCtx()
+	className := "WithheldCount_" + uuid.NewString()[:8]
+	class := newTestClassWithProps(className, []string{propName})
+	shd, idx := testShardWithSettings(t, ctx, class, enthnsw.UserConfig{Skip: true},
+		false, false, false)
+	hot := shd.(*Shard)
+	defer hot.Shutdown(context.Background())
+
+	hookLogger, hook := test.NewNullLogger()
+	idx.logger = hookLogger
+
+	// A completed tracker whose property list cannot be learned and whose
+	// sentinels finalize cannot promote: the gate leaves the shard cold.
+	unloadedLSM := shardPathLSM(idx.path(), unloadedShard)
+	mkTrackerDir(t, unloadedLSM, "enable_filterable_category_1", "started.mig", "tidied.mig")
+	unloaded := NewLazyLoadShard(ctx, nil, unloadedShard, idx, class, idx.centralJobQueue,
+		idx.indexCheckpoints, idx.allocChecker, idx.shardLoadLimiter, idx.shardReindexer,
+		false, idx.bitmapBufPool)
+	idx.shards.Store(unloadedShard, unloaded)
+	defer func() {
+		if unloaded.isLoaded() {
+			require.NoError(t, unloaded.Shutdown(context.Background()))
+		}
+	}()
+
+	require.NoError(t, idx.cleanStalePartialReindexState(context.Background(), propName, indexType, nil))
+	require.False(t, unloaded.isLoaded(),
+		"hydrating would let finalize remove the stuck tracker having promoted nothing")
+
+	var summary *logrus.Entry
+	for _, e := range hook.AllEntries() {
+		if _, ok := e.Data["withheld_shards"]; ok {
+			summary = e
+			break
+		}
+	}
+	require.NotNil(t, summary, "the sweep must summarize what it did")
+	require.Equal(t, 1, summary.Data["withheld_shards"],
+		"a shard left cold because its removals are withheld is a withheld shard, not a skipped one")
+	require.LessOrEqual(t, summary.Level, logrus.WarnLevel,
+		"a sweep that removed nothing on a shard must escalate its summary")
+}
+
+// Finalize removes every completed tracker it processes, promoted or not, so
+// the warning about the ones it could not promote has to read the tracker
+// list captured before finalize ran — afterwards there is nothing left to
+// name and the property serves empty in silence.
+func TestLoadWarnsAboutACompletedTrackerFinalizeRemovedUnpromoted(t *testing.T) {
+	const (
+		propName      = "category"
+		unloadedShard = "stuck-tenant"
+	)
+	ctx := testCtx()
+	className := "StuckLoadWarn_" + uuid.NewString()[:8]
+	class := newTestClassWithProps(className, []string{propName})
+	shd, idx := testShardWithSettings(t, ctx, class, enthnsw.UserConfig{Skip: true},
+		false, false, false)
+	hot := shd.(*Shard)
+	defer hot.Shutdown(context.Background())
+
+	hookLogger, hook := test.NewNullLogger()
+	idx.logger = hookLogger
+
+	// Completed (tidied) with no property list anywhere: finalize removes the
+	// tracker and promotes nothing.
+	unloadedLSM := shardPathLSM(idx.path(), unloadedShard)
+	mkTrackerDir(t, unloadedLSM, "enable_filterable_category_1",
+		"started.mig", "merged.mig", "swapped.mig", "tidied.mig")
+	mkSidecarDir(t, unloadedLSM, "property_category__enable_filterable_ingest_1")
+	// Rides inside the ingest dir so a canonical bucket the load creates
+	// fresh can be told from one the rename produced.
+	require.NoError(t, os.WriteFile(filepath.Join(unloadedLSM,
+		"property_category__enable_filterable_ingest_1", "staged.marker"), nil, 0o600))
+	unloaded := NewLazyLoadShard(ctx, nil, unloadedShard, idx, class, idx.centralJobQueue,
+		idx.indexCheckpoints, idx.allocChecker, idx.shardLoadLimiter, idx.shardReindexer,
+		false, idx.bitmapBufPool)
+	idx.shards.Store(unloadedShard, unloaded)
+
+	require.NoError(t, unloaded.Load(ctx))
+	defer unloaded.Shutdown(context.Background())
+	require.False(t, dirExistsAt(t, unloadedLSM, ".migrations/enable_filterable_category_1"),
+		"finalize removes a completed tracker whether or not it promoted")
+	require.NoFileExists(t, filepath.Join(unloadedLSM, "property_category", "staged.marker"),
+		"finalize promoted a tracker with no property list to promote from")
+
+	var warned bool
+	for _, e := range hook.AllEntries() {
+		if e.Level == logrus.WarnLevel && e.Data["tracker"] == "enable_filterable_category_1" {
+			warned = true
+		}
+	}
+	require.True(t, warned,
+		"the one report about a completed migration finalize removed without promoting "+
+			"must fire from the pre-finalize snapshot; after finalize there is nothing left to name")
 }

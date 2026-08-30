@@ -218,7 +218,7 @@ func TestSweepPayloadReadCount(t *testing.T) {
 
 			if tc.gateFailsOpenOn != "" {
 				gateLogger, _ := test.NewNullLogger()
-				gateStale, _ := hasStalePartialReindexState(
+				gateStale, _, _ := hasStalePartialReindexState(
 					lsm, tc.propName, tc.indexTypes[0], nil, nil, gateLogger)
 				require.True(t, gateStale,
 					"unloaded-shard gate must hydrate rather than report a shard with an "+
@@ -542,7 +542,7 @@ func TestGatePayloadReadCount(t *testing.T) {
 			logger, _ := test.NewNullLogger()
 
 			props := &taskPropsCache{}
-			stale, finalizable := hasStalePartialReindexState(lsm, tc.propName, "filterable", nil, props, logger)
+			stale, finalizable, _ := hasStalePartialReindexState(lsm, tc.propName, "filterable", nil, props, logger)
 			require.Equal(t, tc.wantStale, stale)
 			require.Equal(t, tc.wantFinalizable, finalizable,
 				"the skip is !stale && !finalizable, so a row pinning wantStale alone has not pinned the skip")

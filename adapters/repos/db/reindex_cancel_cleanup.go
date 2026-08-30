@@ -182,8 +182,9 @@ func (i *Index) cleanStalePartialReindexState(
 	shardErrs := errorcompounder.New()
 	skippedShards, payloadReads := 0, 0
 	// hydratedShards is the number this sweep's duration is made of, and
-	// withheldShards the number of shards it left exactly as it found them
-	// because their state could not be read.
+	// withheldShards the number of shards it left exactly as it found them —
+	// state that could not be read, or a completed migration no load can
+	// promote — hydrated or deliberately left cold.
 	hydratedShards, withheldShards := 0, 0
 	// One cache serves every sweep of a request, so only the delta belongs to
 	// this one; its running total would re-report the first sweep's refusals.
@@ -206,12 +207,16 @@ func (i *Index) cleanStalePartialReindexState(
 			// Charged whichever way the gate answers: the reads are paid before
 			// it decides, so billing only the hydrating half reports zero exactly
 			// where a node full of cold tenants pays the most.
-			skip, gateReads := lazy.canSkipUnloadedSweep(propName, indexType, dirs, dirs.trackerProps())
+			skip, gateWithheld, gateReads := lazy.canSkipUnloadedSweep(propName, indexType, dirs, dirs.trackerProps())
 			payloadReads += gateReads
 			// Unloaded and nothing on disk to sweep or reclaim: skip rather
-			// than hydrate.
+			// than hydrate. A withheld skip is counted apart, or the one
+			// population the summary warns about would never reach it.
 			if skip {
 				skippedShards++
+				if gateWithheld {
+					withheldShards++
+				}
 				return nil
 			}
 			unwrapped, unwrapErr := lazy.Unwrap(ctx)
@@ -260,8 +265,9 @@ func (i *Index) cleanStalePartialReindexState(
 	if withheldShards > 0 {
 		// The outcome says the walk finished. It does not say the walk removed
 		// nothing, which is what a withheld shard means, so say it here.
-		msg += "; on some shards the state could not be read, so every removal " +
-			"there was withheld and nothing was cleaned"
+		msg += "; on some shards every removal was withheld and nothing was " +
+			"cleaned — the state could not be read, or a completed migration " +
+			"there cannot be promoted"
 		level = min(level, logrus.WarnLevel)
 	}
 	i.logger.WithFields(map[string]any{
@@ -323,19 +329,23 @@ func (i *Index) cleanStalePartialReindexState(
 func hasStalePartialReindexState(
 	lsmPath, propName, indexType string, dirs *dirNamesCache, props *taskPropsCache,
 	logger logrus.FieldLogger,
-) (stale, finalizable bool) {
+) (stale, finalizable, withheld bool) {
 	if props == nil {
 		// No run-wide memo: keep the passes below sharing one of their own.
 		props = &taskPropsCache{}
 	}
 	mainBucketName, ok := mainBucketForPropertyIndex(propName, indexType)
 	if !ok {
-		return true, false
+		return true, false, false
 	}
 
 	names, err := dirs.listSidecarCandidates(lsmPath)
 	if err != nil {
-		return !os.IsNotExist(err), false
+		return !os.IsNotExist(err), false, false
+	}
+	trackerNames, err := dirs.list(filepath.Join(lsmPath, ".migrations"))
+	if err != nil && !os.IsNotExist(err) {
+		return true, false, false
 	}
 	committed := dirs.committedMigrations(lsmPath, props, logger)
 	switch {
@@ -343,35 +353,43 @@ func hasStalePartialReindexState(
 		// Nothing about this shard could be read, so reporting it clean would
 		// be a guess. A load re-reads it, and an unlistable .migrations then
 		// fails the sweep instead of finishing silently.
-		return true, false
+		return true, false, false
 	case committed.withholdEverything:
 		// Every removal here is withheld, so the sweep finds nothing whatever
 		// this answers; what differs is what a load would then do. Ordered by
 		// what a wrong answer costs, worst first.
 		switch {
+		case committed.withheld.completedActionable:
+			// It completed, and finalize reads properties.mig rather than the
+			// payload this build could not learn from, so a load promotes the
+			// staged data onto the canonical name and reclaims the tracker.
+			return false, true, false
 		case committed.withheld.completedStuck, committed.withheld.unreadableRecord:
 			// A completed migration finalize cannot promote, or a record this
-			// build cannot read. Hydrating reclaims nothing, and on the stuck
-			// one finalize removes the tracker having promoted nothing, after
-			// which the next sweep frees the property's only copy. Leave the
-			// shard cold; the load that happens for its own reasons surfaces it.
-			return false, false
+			// build cannot read. On its own account hydrating reclaims
+			// nothing, and on the stuck one finalize removes the tracker
+			// having promoted nothing, after which the next sweep frees the
+			// property's only copy. The shard hydrates only for a promotable
+			// migration beside it — never for one a load would also merely
+			// remove; otherwise it stays cold, and the third return is what
+			// stops that from reading as a shard with nothing on it.
+			acts := committed.loadStillPromotes(names, trackerNames)
+			return false, acts, !acts
 		case committed.withheld.undecided:
 			// Whether a migration completed could not be read, so "clean" would
 			// be a guess. The load withholds every removal and raises the
 			// sweep's summary to a warning, and finalize skips a marker it
 			// cannot stat, so the trip destroys nothing.
-			return true, false
-		case committed.withheld.completedActionable:
-			// It completed, and finalize reads properties.mig rather than the
-			// payload this build could not learn from, so a load promotes the
-			// staged data onto the canonical name and reclaims the tracker.
-			return false, true
+			return true, false, false
 		}
-		// Unreachable: every producer of withholdEverything records a
-		// population above. One that forgets to lands here and fails open,
-		// which costs a hydration instead of a silent "nothing to do".
-		return true, false
+		// Reached by one measured population: a superseded unreadable
+		// tracker, which withholds removals but records no reason because
+		// its namespace's effective generation answers for the group. Any
+		// future producer that forgets to record one lands here too. Both
+		// fail open, which costs a hydration instead of a silent "nothing
+		// to do", and the load's finalize settles the group as a restart
+		// would.
+		return true, false, false
 	}
 	scope := migrationDirsOf(lsmPath, dirs, propName, indexType).cachingProps(props).knownFrom(committed)
 	// Sidecar bucket dirs, minus the ones backing a completed-but-deferred
@@ -381,7 +399,7 @@ func hasStalePartialReindexState(
 			continue
 		}
 		if !committed.preservesBucket(name) {
-			return true, false
+			return true, false, false
 		}
 		// This one backs a completed migration, so nothing but a load
 		// reclaims it — unless the record owning it can no longer reach a
@@ -390,11 +408,7 @@ func hasStalePartialReindexState(
 	}
 
 	// Migration tracker dirs, minus the deferred-finalize generations.
-	names, err = dirs.list(filepath.Join(lsmPath, ".migrations"))
-	if err != nil {
-		return !os.IsNotExist(err), false
-	}
-	for _, name := range names {
+	for _, name := range trackerNames {
 		matched, unreadablePayload := scope.inScopeFailingOpen(name)
 		if unreadablePayload {
 			// A payload this gate can't read could name this property; only
@@ -403,7 +417,7 @@ func hasStalePartialReindexState(
 			// there the state is already preserved, so a load is worth asking
 			// for only where finalize would go on to promote it, or where the
 			// fault is one a load surfaces without destroying anything.
-			return true, false
+			return true, false, false
 		}
 		if !matched {
 			continue
@@ -412,9 +426,9 @@ func hasStalePartialReindexState(
 			finalizable = finalizable || committed.trackerNeedsLoad(name)
 			continue
 		}
-		return true, false
+		return true, false, false
 	}
-	return false, finalizable
+	return false, finalizable, false
 }
 
 // maxCachedDirNames bounds what one [dirNamesCache] holds, so a node with tens
@@ -457,6 +471,14 @@ type dirNamesCache struct {
 // memoized too, so one unlistable .migrations withholds this shard for the
 // rest of the run.
 //
+// Deliberately wider than the sweep's per-property scope: hydration is
+// shard-atomic — a load's finalize acts on every namespace at once — so the
+// gate has to weigh a stuck tracker of any property before waking the shard,
+// where the sweep may ignore it by name because removals are per directory.
+//
+// Entries are charged against [maxCachedDirNames] like the listings; a
+// refused entry just re-reads.
+//
 // props is the caller's payload memo. This reads every tracker on the shard,
 // so without it the payloads it parses are invisible to the caller counting
 // how much this sweep had to read.
@@ -470,10 +492,16 @@ func (c *dirNamesCache) committedMigrations(lsmPath string, props *taskPropsCach
 		return state
 	}
 	state := migrationPreservedStateFor(lsmPath, "", props, logger)
+	cost := len(state.records) + len(state.buckets) + len(state.trackers) + 1
+	if c.cost+cost > maxCachedDirNames {
+		c.refused++
+		return state
+	}
 	if c.committed == nil {
 		c.committed = map[string]migrationPreservedState{}
 	}
 	c.committed[lsmPath] = state
+	c.cost += cost
 	return state
 }
 

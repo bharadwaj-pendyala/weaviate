@@ -13,8 +13,12 @@ package db
 
 import (
 	"context"
+	"path/filepath"
+
+	"github.com/sirupsen/logrus"
 
 	"github.com/weaviate/weaviate/cluster/distributedtask"
+
 	"github.com/weaviate/weaviate/entities/models"
 	"github.com/weaviate/weaviate/usecases/monitoring"
 )
@@ -38,20 +42,34 @@ func (s *Shard) reconcileMigrationRecords(ctx context.Context, class *models.Cla
 	// label carrying a class or tenant name is one series per tenant.
 	monitoring.GetMetrics().AddMigrationRecordsWedged(
 		reconciler.WedgedCount(), len(s.migrationRecords.Unreadable()))
-	s.warnAboutLegacyMarkerMigrations()
+}
+
+// snapshotLegacyMarkerTrackers lists the completed marker trackers before
+// [FinalizeCompletedMigrations] consumes them: finalize removes every
+// completed tracker it processes, promoted or not, so a report that reads
+// the directory afterwards has nothing left to name.
+func snapshotLegacyMarkerTrackers(lsmPath string, logger logrus.FieldLogger,
+) (trackers []migrationLegacyMarkerTracker, listed bool, listErr error) {
+	records, _, _ := migrationRecordsAt(lsmPath, logger)
+	return migrationLegacyMarkerTrackersAt(lsmPath, records, "", nil)
 }
 
 // warnAboutLegacyMarkerMigrations reports migrations completed on a
 // build that writes no record — this one, and every release before records
 // existed — whose staged data the load-time finalize did not promote. Those
-// properties serve empty until a finalize picks the tracker up.
-func (s *Shard) warnAboutLegacyMarkerMigrations() {
+// properties serve empty until something promotes them by hand.
+//
+// trackers is the pre-finalize snapshot; whether a property still serves
+// empty is read off the disk finalize has since rewritten, so a promoted
+// tracker warns about nothing.
+func (s *Shard) warnAboutLegacyMarkerMigrations(trackers []migrationLegacyMarkerTracker,
+	listed bool, listErr error,
+) {
 	if s.migrationRecords == nil || len(s.migrationRecords.Unreadable()) > 0 {
 		// A record this build cannot read may be the one naming that tracker,
 		// which would make the marker a leftover rather than the live claim.
 		return
 	}
-	trackers, listed, listErr := migrationLegacyMarkerTrackersAt(s.pathLSM(), s.migrationRecords.Records(), "", nil)
 	if !listed {
 		// This is the one line an operator sees at load; every removal on this
 		// shard stays withheld until the directory can be listed, so it has to
@@ -64,13 +82,26 @@ func (s *Shard) warnAboutLegacyMarkerMigrations() {
 	}
 	for _, legacy := range trackers {
 		if legacy.unreadable {
-			// Nothing accounts for the directories this marker names, so every
-			// sweep on the shard withholds — a whole shard reclaimers stop on.
+			if fileExists(filepath.Join(s.pathLSM(), migrationsDir, legacy.dirName)) {
+				// Nothing accounts for the directories this marker names, so
+				// every sweep on the shard withholds — a whole shard
+				// reclaimers stop on.
+				s.index.logger.WithField("shard", s.ID()).
+					WithField("tracker", legacy.dirName).
+					WithField("marker", legacy.marker).
+					Warn("a completed migration that no record names lists properties this build cannot read; " +
+						"every removal on this shard is withheld until the tracker is repaired or removed by hand")
+				continue
+			}
+			// Finalize just removed it, having promoted nothing: with the
+			// tracker gone, its staged directories are unattributed and the
+			// next sidecar sweep frees them.
 			s.index.logger.WithField("shard", s.ID()).
 				WithField("tracker", legacy.dirName).
 				WithField("marker", legacy.marker).
-				Warn("a completed migration that no record names lists properties this build cannot read; " +
-					"every removal on this shard is withheld until the tracker is repaired or removed by hand")
+				Warn("the load-time finalize removed a completed migration whose property list this build " +
+					"could not read, and promoted nothing; the data it staged is no longer attributed and " +
+					"will be removed by the next sweep")
 			continue
 		}
 		props := legacy.servesEmpty(s.pathLSM())
@@ -81,10 +112,10 @@ func (s *Shard) warnAboutLegacyMarkerMigrations() {
 			WithField("tracker", legacy.dirName).
 			WithField("marker", legacy.marker).
 			WithField("properties", props).
-			Warn("a completed migration that no record names holds these properties' only copy under its " +
-				"staged directory; the load-time finalize did not promote it, so they serve empty until it does. " +
-				"Check the finalize log for this tracker: a failed sentinel write or a failed tracker removal " +
-				"is what leaves it behind")
+			Warn("a completed migration that no record names was not promoted by the load-time finalize, " +
+				"which removed its tracker anyway; these properties now serve from a fresh empty bucket while " +
+				"their data sits under the staged directory names, and the next sidecar sweep may remove it. " +
+				"Back up or restore the staged directories by hand")
 	}
 }
 

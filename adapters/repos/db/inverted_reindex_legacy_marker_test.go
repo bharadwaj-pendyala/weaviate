@@ -155,7 +155,11 @@ func TestLegacyMarkerMigrationSurvivesTheSweep(t *testing.T) {
 
 			// The load path is what has to surface this: reconciliation is
 			// record-driven and says nothing about a directory no record names.
+			// The snapshot precedes finalize on the real path so the warning
+			// still has the tracker list finalize consumes.
+			pre, preListed, preListErr := snapshotLegacyMarkerTrackers(lsm, shard.index.logger)
 			shard.reconcileMigrationRecords(ctx, class)
+			shard.warnAboutLegacyMarkerMigrations(pre, preListed, preListErr)
 			require.Equal(t, tc.wantWarn, legacyMarkerWarned(hook, tc.propName),
 				"a warning naming %q on the shard load path", tc.propName)
 			require.Equal(t, tc.wantUnreadableWarn, warnedContaining(hook, "cannot read"),
@@ -193,7 +197,8 @@ func warnedContaining(hook *test.Hook, want string) bool {
 
 func legacyMarkerWarned(hook *test.Hook, propName string) bool {
 	for _, entry := range hook.AllEntries() {
-		if entry.Level != logrus.WarnLevel || !strings.Contains(entry.Message, "serve empty") {
+		if entry.Level != logrus.WarnLevel ||
+			!strings.Contains(entry.Message, "was not promoted by the load-time finalize") {
 			continue
 		}
 		props, ok := entry.Data["properties"].([]string)

@@ -94,7 +94,9 @@ type migrationWithholdReasons struct {
 	// properties.mig, tidied.mig without the swapped.mig that precedes it, or
 	// a dir name no strategy claims. Finalize removes the tracker all the
 	// same, and the sweep that follows then finds nothing preserving the
-	// staged directory and frees the property's only copy.
+	// staged directory and frees the property's only copy. It keeps the shard
+	// cold only while nothing else there asks for the load: one stuck tracker
+	// must not freeze another migration's promotion.
 	completedStuck bool
 	// unreadableRecord: a migration record this build cannot read. It may name
 	// any directory here, so nothing is removable until it can be read, and a
@@ -159,6 +161,11 @@ func migrationPreservedStateFor(lsmPath, propName string, props *taskPropsCache,
 			switch {
 			case legacy.marker == "":
 				state.withheld.undecided = true
+			case legacy.superseded:
+				// A load removes this generation's directories as stale
+				// whatever its own sentinels say, so it decides nothing about
+				// whether the load promotes; its namespace's effective
+				// generation does.
 			case legacy.finalizable:
 				state.withheld.completedActionable = true
 			default:
@@ -166,16 +173,18 @@ func migrationPreservedStateFor(lsmPath, propName string, props *taskPropsCache,
 			}
 			continue
 		}
-		// True: a load's finalize reclaims the tracker directory whether or
-		// not its sidecars survive, so the tracker asks for the load on its
-		// own account. Its sidecars ask through state.buckets below, but a
-		// property-index DELETE can remove them first, and a tracker that
-		// only asked through them would then be skipped forever.
-		state.trackers[legacy.dirName] = true
+		// The value is "a load's finalize would promote this", never merely
+		// "a load would remove this": finalize removes a completed tracker
+		// either way, but hydrating for one it cannot promote strands the
+		// staged data the removal leaves unattributed. A promotable tracker
+		// asks on its own account — a property-index DELETE can take its
+		// sidecars first, and finalize settles the tracker regardless — and
+		// its sidecars ask alongside it. A superseded generation never asks:
+		// its namespace's effective generation answers for the group.
+		promotable := legacy.finalizable && !legacy.superseded
+		state.trackers[legacy.dirName] = promotable
 		for _, dir := range legacy.sidecars {
-			// A marker-era tracker has no record to have written a promotion
-			// off, so the load's finalize really does act on these.
-			state.buckets[dir] = true
+			state.buckets[dir] = promotable
 		}
 	}
 	return state
@@ -255,15 +264,38 @@ func (s migrationPreservedState) preservesTracker(dir string) bool {
 	return ok
 }
 
-// trackerNeedsLoad reports whether hydrating this shard would reclaim dir.
+// trackerNeedsLoad reports whether hydrating this shard would promote what
+// dir accounts for. A load also settles a promotable tracker whose staged
+// data a DELETE already removed; what never answers true is a tracker
+// finalize would remove having promoted nothing.
 func (s migrationPreservedState) trackerNeedsLoad(dir string) bool {
 	return s.trackers[dir] && !s.settled[dir]
 }
 
 // bucketNeedsLoad is [migrationPreservedState.trackerNeedsLoad] for a bucket
-// directory: preserved, and a load would still act on it.
+// directory: preserved, and a load would still promote it.
 func (s migrationPreservedState) bucketNeedsLoad(dir string) bool {
 	return s.buckets[dir] && !s.settled[dir]
+}
+
+// loadStillPromotes reports whether a load would promote anything this state
+// accounts for among the named on-disk directories. Asked by the
+// unloaded-shard gate where a withheld shard's own faults justify no
+// hydration, so a promotable migration beside them still gets its load — and
+// only a promotable one: waking the shard for a tracker finalize merely
+// removes would strand the staged data that removal leaves unattributed.
+func (s migrationPreservedState) loadStillPromotes(sidecarNames, trackerNames []string) bool {
+	for _, name := range sidecarNames {
+		if s.bucketNeedsLoad(name) {
+			return true
+		}
+	}
+	for _, name := range trackerNames {
+		if s.trackerNeedsLoad(name) {
+			return true
+		}
+	}
+	return false
 }
 
 // migrationPropertyLoadCanStillAct reports whether a shard load could change
@@ -326,15 +358,27 @@ type migrationLegacyMarkerTracker struct {
 	props      []string
 	sidecars   []string
 	// finalizable is whether a shard load would promote this tracker's staged
-	// data rather than remove the tracker having promoted nothing. It restates
-	// [finalizeMigrationDir]'s own precondition: swapped.mig beside tidied.mig
-	// — or merged.mig alone, whose missing sentinels finalize's recovery path
-	// writes itself — plus a non-empty properties.mig to promote from and a
-	// dir name [migrationSuffixes] claims. Missing any of those, finalize
-	// returns, its caller removes the tracker anyway, and nothing on disk then
-	// records that the staged directory holds the property's only copy. Asked
-	// only of a tracker nothing could be learned about (unreadable).
+	// data rather than remove the tracker having promoted nothing. It asks
+	// what [finalizeMigrationDir] asks of the sentinel files it can see:
+	// swapped.mig beside tidied.mig — or merged.mig alone, whose missing
+	// sentinels finalize's recovery path writes itself — plus a non-empty
+	// properties.mig to promote from and a dir name [migrationSuffixes]
+	// claims. Missing any of those, finalize returns, its caller removes the
+	// tracker anyway, and nothing on disk then records that the staged
+	// directory holds the property's only copy. Computed for every completed
+	// tracker: the withhold classification reads it for an unreadable one,
+	// and the preserve maps' values carry it for a readable one, so the
+	// gate's "a load would promote" answer never comes from a tracker a load
+	// only removes. Read together with superseded — for a generation below
+	// its group's effective one this field means nothing either way, since
+	// finalize deletes that generation without asking it to promote.
 	finalizable bool
+	// superseded is a completed tracker a higher generation of its own
+	// namespace supersedes. [FinalizeCompletedMigrations] promotes only
+	// effective = max(highestTidied, highestMerged) per namespace and removes
+	// every lower generation's directories as stale, so a lower generation's
+	// own state decides nothing about what a load does.
+	superseded bool
 }
 
 // migrationLegacyMarkerTrackersAt finds the completed trackers no record
@@ -389,10 +433,7 @@ func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord,
 		}
 		migDir := filepath.Join(migsDir, dirName)
 		answer := props.lookup(migDir)
-		// The list finalize itself promotes from; unverified, and an
-		// unreadable one reads as empty, exactly as finalize treats it.
-		finalizeProps, _ := readMigrationProps(migDir)
-		out = append(out, migrationLegacyMarkerTracker{
+		tracker := migrationLegacyMarkerTracker{
 			dirName: dirName,
 			marker:  marker,
 			prefix:  prefix,
@@ -407,17 +448,52 @@ func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord,
 			unreadable: answer.unreadable || len(answer.props) == 0,
 			props:      append([]string(nil), answer.props...),
 			sidecars:   migrationPreservedSidecarDirsFor(dirName, prefix, gen, answer.props),
-			// [finalizeMigrationDir]'s own precondition, asked here so a
-			// caller can tell a load that would promote this tracker's data
-			// from one that would remove the tracker and strand it. The
-			// marker is merged.mig only while tidied.mig is absent — the
-			// population finalize's recovery path completes and promotes.
-			finalizable: (marker == "merged.mig" ||
-				(marker == "tidied.mig" && fileExists(filepath.Join(migDir, "swapped.mig")))) &&
-				len(finalizeProps) > 0 && migrationSuffixes(dirName) != nil,
-		})
+		}
+		markerOK := marker == "merged.mig" ||
+			(marker == "tidied.mig" && fileExists(filepath.Join(migDir, "swapped.mig")))
+		if markerOK && migrationSuffixes(dirName) != nil {
+			if answer.viaSidecar {
+				// properties.mig was already read, non-empty and matching the
+				// dir's own name, so finalize's promotion source is known good.
+				tracker.finalizable = true
+			} else {
+				// The list finalize itself promotes from; unverified, and an
+				// unreadable one reads as empty, exactly as finalize treats it.
+				finalizeProps, _ := readMigrationProps(migDir)
+				tracker.finalizable = len(finalizeProps) > 0
+			}
+		}
+		out = append(out, tracker)
 	}
+	markLegacySupersededGens(out)
 	return out, true, nil
+}
+
+// markLegacySupersededGens flags every completed tracker a higher generation
+// of the same namespace supersedes, so only the generation
+// [FinalizeCompletedMigrations] actually finalizes decides whether a load
+// would promote anything.
+//
+// Computed over the record-filtered tracker slice, which equals finalize's
+// own view while nothing writes a record. Once records exist, a record-named
+// tracker leaves this slice but not finalize's raw listing, so the cutover
+// has to source the generation scan from the listing instead.
+func markLegacySupersededGens(trackers []migrationLegacyMarkerTracker) {
+	effective := map[string]int{}
+	for _, t := range trackers {
+		if t.marker == "" {
+			continue
+		}
+		if gen, ok := effective[t.prefix]; !ok || t.gen > gen {
+			effective[t.prefix] = t.gen
+		}
+	}
+	for i := range trackers {
+		if trackers[i].marker == "" {
+			continue
+		}
+		trackers[i].superseded = trackers[i].gen < effective[trackers[i].prefix]
+	}
 }
 
 // servesEmpty reports properties whose data is still under this tracker's

@@ -90,7 +90,7 @@ func TestALostPromotionStopsWakingItsTenant(t *testing.T) {
 				}
 			}()
 
-			skip, _ := lazy.canSkipUnloadedSweep("title", "searchable", nil, nil)
+			skip, _, _ := lazy.canSkipUnloadedSweep("title", "searchable", nil, nil)
 			require.Equal(t, tc.wantSkip, skip)
 
 			// Preservation itself must not move: both rows keep the record's
@@ -209,7 +209,7 @@ func TestAPassThatChangedNothingSaysSo(t *testing.T) {
 
 			note := migrationReadSettledNote(f.lsmPath)
 			committed := migrationPreservedStateAt(f.lsmPath, f.logger)
-			_, finalizable := hasStalePartialReindexState(f.lsmPath, "title", "searchable", nil, nil, f.logger)
+			_, finalizable, _ := hasStalePartialReindexState(f.lsmPath, "title", "searchable", nil, nil, f.logger)
 
 			if !tt.wantNoted {
 				require.Empty(t, note,

@@ -1122,17 +1122,22 @@ func (l *LazyLoadShard) blockLoading() func() {
 // sweep racing an index shutdown then comes back truncated from
 // [Index.forEachShardStrict] rather than as a walk that reached every shard.
 //
-// The second return is how many tracker payloads this call had to read, for
+// withheld marks a skip that leaves withheld state cold — a stuck completed
+// migration or an unreadable record — so the sweep's summary can count the
+// shards it deliberately did not wake, which otherwise read as shards with
+// nothing on them.
+//
+// payloadReads is how many tracker payloads this call had to read, for
 // the caller's log; a loaded shard reads none, and so does a shard a previous
 // tuple of the same run already answered from props.
 func (l *LazyLoadShard) canSkipUnloadedSweep(
 	propName, indexType string, dirs *dirNamesCache, props *taskPropsCache,
-) (bool, int) {
+) (skip, withheld bool, payloadReads int) {
 	release := l.blockLoading()
 	defer release()
 
 	if l.loaded {
-		return false, 0
+		return false, false, 0
 	}
 	if props == nil {
 		// No run-wide memo. Substituted here rather than left to the probe, so
@@ -1141,7 +1146,7 @@ func (l *LazyLoadShard) canSkipUnloadedSweep(
 	}
 	// props is a running total over the whole run, so the caller gets the delta.
 	before := props.count()
-	stale, finalizable := hasStalePartialReindexState(
+	stale, finalizable, gateWithheld := hasStalePartialReindexState(
 		l.pathLSM(), propName, indexType, dirs, props, l.Index().logger)
-	return !stale && !finalizable, props.count() - before
+	return !stale && !finalizable, gateWithheld, props.count() - before
 }
