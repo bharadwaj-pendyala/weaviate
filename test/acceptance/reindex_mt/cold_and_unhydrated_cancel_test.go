@@ -214,7 +214,14 @@ func testColdAndUnhydratedTenantCancel(t *testing.T) {
 	// get a task unit and fail on a shard the index map no longer has. The
 	// sweep itself is collection-wide regardless: it walks the shard map, not
 	// the tenant filter.
-	hotNames := tenantNames(tenants, func(tn sweepTenant) bool { return !tn.cold })
+	//
+	// The completed-migration tenants are left unnamed: a task loads every
+	// tenant it names, and that load runs the deferred finalize whatever the
+	// gate answered. The sweep reaches them anyway, so their rows read the
+	// gate's decision rather than the task's.
+	hotNames := tenantNames(tenants, func(tn sweepTenant) bool {
+		return !tn.cold && !tn.donePromotable && !tn.doneStuck
+	})
 	logMark := len(containerLogs(ctx, t, container))
 
 	// The sweep runs inside the submit request, before the task is dispatched,
@@ -254,7 +261,18 @@ func testColdAndUnhydratedTenantCancel(t *testing.T) {
 			"observe what the sweep skipped; background hydration outran the test",
 		stillUnloaded, len(hotNames))
 
-	hydrated := newlyLoadedShards(loadedBefore, loadedAfter)
+	// Over the named set only, the population stillUnloaded counts. The gate
+	// hydrates the completed-migration tenants, not the submit.
+	named := map[string]bool{}
+	for _, name := range hotNames {
+		named[name] = true
+	}
+	var hydrated []string
+	for _, name := range newlyLoadedShards(loadedBefore, loadedAfter) {
+		if named[name] {
+			hydrated = append(hydrated, name)
+		}
+	}
 	stayedUnloaded := stillUnloaded - len(hydrated)
 	t.Logf("sweep skipped %d of %d unloaded tenants; %d still unloaded after the %s submit window (loaded: %v)",
 		skipped, stillUnloaded, stayedUnloaded, probeWindow.Round(time.Millisecond), hydrated)
@@ -555,21 +573,22 @@ func plantCompletedTracker(ctx context.Context, t *testing.T, c testcontainers.C
 // ".migrations/", and the canonical dir's own entries prefixed with its name.
 // One exec, because a shard load changes every one of those answers and
 // background hydration keeps loading a tenant per second while this reads.
+// The three listings leave in one delimited write: docker frames each write
+// with header bytes that survive cleanExecLine and would land inside an entry.
 func completedPlantState(ctx context.Context, t *testing.T, c testcontainers.Container,
 	tenant string,
 ) []string {
 	t.Helper()
 	lsm := tenantLSMPath(tenant)
 	out := execInContainer(ctx, t, c, fmt.Sprintf(
-		"ls -1 %s 2>/dev/null; "+
+		"entries=$( { ls -1 %s 2>/dev/null; "+
 			"ls -1 %s/.migrations 2>/dev/null | sed 's|^|.migrations/|'; "+
-			"ls -1 %s/%s 2>/dev/null | sed 's|^|%s/|'; true",
+			"ls -1 %s/%s 2>/dev/null | sed 's|^|%s/|'; } "+
+			"| sed 's|^|<|; s|$|>|' | tr -d '\\n'); printf '%%s' \"$entries\"",
 		lsm, lsm, lsm, coldCancelDoneCanonical, coldCancelDoneCanonical))
 	var entries []string
-	for _, line := range strings.Split(out, "\n") {
-		if cleaned := cleanExecLine(line); cleaned != "" {
-			entries = append(entries, cleaned)
-		}
+	for _, match := range delimitedExecEntry.FindAllStringSubmatch(out, -1) {
+		entries = append(entries, match[1])
 	}
 	return entries
 }
@@ -649,12 +668,13 @@ func containerLogs(ctx context.Context, t *testing.T, c testcontainers.Container
 // The metrics probe reports how many lines the metrics page had, so an
 // unreachable endpoint fails loudly instead of reading as "no shard is
 // loaded", and how many shards it found, so a truncated read cannot pass for
-// a small one. Shard names are delimited because docker's exec stream framing
-// prefixes each write with bytes that survive into the text.
+// a small one. Every listing read over an exec wraps each name in <>, because
+// docker's exec stream framing prefixes each write with bytes that survive
+// into the text.
 var (
 	metricsLineCountField  = regexp.MustCompile(`LINES=\s*(\d+)`)
 	metricsShardCountField = regexp.MustCompile(`COUNT=\s*(\d+)`)
-	metricsShardName       = regexp.MustCompile(`<([A-Za-z0-9_./\-]+)>`)
+	delimitedExecEntry     = regexp.MustCompile(`<([A-Za-z0-9_./\-]+)>`)
 )
 
 // loadedShardsOfClass reports which tenants of className have shard-scoped
@@ -693,7 +713,7 @@ func loadedShardsOfClass(ctx context.Context, t *testing.T, c testcontainers.Con
 	require.NoError(t, err)
 
 	loaded := map[string]bool{}
-	names := metricsShardName.FindAllStringSubmatch(out, -1)
+	names := delimitedExecEntry.FindAllStringSubmatch(out, -1)
 	require.Len(t, names, wantShards,
 		"the metrics probe reported %d shards but only %d survived the exec stream, so this reading "+
 			"undercounts loaded shards: %q", wantShards, len(names), out)
