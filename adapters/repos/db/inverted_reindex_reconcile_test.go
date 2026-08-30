@@ -1556,11 +1556,9 @@ func TestMigrationDirExists(t *testing.T) {
 }
 
 // TestEveryTeardownArmSealsTheUnit pins that the per-unit interlock covers
-// every directory-removing arm, not just discard: a cancel signals the worker
-// without waiting for it, so any arm can race a live worker's pointers. Each
-// row runs twice — once with a live worker (nothing may be touched), once
-// without (the arm must actually run) — so a row that withholds for an
-// unrelated reason can't pass by accident.
+// every directory-removing arm, not just discard, since a cancel signals the
+// worker without waiting for it. Each row runs with and without a live
+// worker, so withholding for the wrong reason can't pass by accident.
 func TestEveryTeardownArmSealsTheUnit(t *testing.T) {
 	const taskID = "Books:change-tokenization:title:ab12"
 	subjectOf := func(version uint64) MigrationSubject {
@@ -1746,13 +1744,10 @@ func writeRawMigrationRecord(t *testing.T, store *MigrationRecordStore, env migr
 	require.NoError(t, os.WriteFile(filepath.Join(store.Dir(), env.Subject.Key.fileName()), data, 0o600))
 }
 
-// TestReconcilePromotedRepairsEveryPropertyItCan pins what one undecidable
-// property costs the rest of the record. A property holding a directory under
-// both its names stops the closure sweep, because the sweep reclaims staged
-// directories and nothing here can tell which of the two holds the promoted
-// data. It must not also stop the repair of the properties after it: those
-// serve an empty canonical bucket while their only copy sits at the staged
-// name, and no load resolves the sibling that blocks them.
+// TestReconcilePromotedRepairsEveryPropertyItCan pins that one property stuck
+// under both its names (which stops that property's own closure sweep) must
+// not also stop the repair of the properties after it — those serve empty
+// canonical buckets until repaired, and no load resolves a blocked sibling.
 func TestReconcilePromotedRepairsEveryPropertyItCan(t *testing.T) {
 	tests := []struct {
 		name string

@@ -105,16 +105,11 @@ type migrationPassRecords struct {
 }
 
 // migrationWedgeRemedy is the one thing an operator can do about a record no
-// further shard load can advance, and it is measured rather than guessed:
-// submitting a new migration for the property makes the new record supersede
-// this one, and the next load retires this record and reclaims its
-// directories. The same predicate that gates the index change creating the
-// wedge gates the resubmit, so there is no state in which the wedge exists and
-// the resubmit is refused.
-//
-// It is per property, not per record: retirement removes a record only once
-// every one of its properties is superseded, so a wedge over two properties
-// takes one resubmit each, in sequence.
+// further shard load can advance: submit a new migration for the property so
+// it supersedes this record, which the next load then retires. The predicate
+// gating the resubmit is the same one gating the wedge, so the resubmit is
+// never refused. It's per property: a wedge over two properties needs one
+// resubmit each.
 const migrationWedgeRemedy = "Submit a new migration for this property; " +
 	"once its flip is durable it supersedes this record, and the next shard load " +
 	"reclaims the record and its directories."
@@ -343,19 +338,12 @@ func (r *migrationReconciler) reconcileMerged(ctx context.Context, rec Migration
 // so a crash between the two resumes from Swapped and re-runs idempotent
 // directory work instead of re-deciding on inputs that may have changed.
 func (r *migrationReconciler) commitMerged(subject MigrationSubject, why string) (MigrationRecordSwapped, error) {
-	// A Swapped record's own precondition is that every property names both a
-	// staged and a canonical directory: promotion renames the one onto the
-	// other. Checking it here, in the sealed section that writes the record, is
-	// what stops this writer from producing a record wedged the instant it
-	// lands — unpromotable on every pass, forever.
-	//
-	// The canonical directory's presence on disk is deliberately not required.
-	// Reconciliation runs before any bucket on the shard opens, so an absent
-	// canonical directory is the ordinary shape, not a fault.
-	//
-	// No flip has happened yet, so every staged directory this promotes must
-	// still exist, or promotion would mistake an absent one for an
-	// already-run rename.
+	// A Swapped record's precondition is that every property names a staged
+	// and canonical directory (promotion renames one onto the other);
+	// checking it here stops this write from producing a record unpromotable
+	// forever. The canonical directory need not exist yet (reconciliation
+	// runs before any bucket opens), but staged must, since no flip has
+	// happened yet.
 	for _, prop := range subject.Properties {
 		staged, canonical := subject.StagedDirs[prop], subject.CanonicalDirs[prop]
 		if staged == "" || canonical == "" {
@@ -483,21 +471,17 @@ func (r *migrationReconciler) promoteSealed(rec MigrationRecordSwapped,
 // promoteProperty renames one property's staged directory onto its canonical
 // name, and is idempotent across a crash in the middle of that rename.
 //
-// Which of the two it is doing is not readable from the directories. A shard
-// load re-creates the canonical directory, empty, for every property in the
-// schema, and a strategy pre-creates it when arming, so its presence is no
-// evidence of anything — least of all that a rename put the migration's data
-// there. Nor are the files inside it: the store renames, compacts and rewrites
-// its own segments, so a name that was there when the rename ran is not there
-// a restart later.
+// Which of the two it's doing isn't readable from the directories: a shard
+// load re-creates the canonical directory empty for every property, and a
+// strategy pre-creates it when arming, so neither its presence nor its
+// contents (which the store rewrites via compaction) prove anything about a
+// rename.
 //
-// So the record carries the answer instead. The rename is bracketed by two
-// writes, a start and a finish, with nothing between them, and every later
-// pass reads the finish rather than the disk. Only a process that stopped
-// between those two statements leaves a start standing, and
-// [migrationReconciler.settleInterruptedPromotion] resolves that in the very
-// next pass — before any bucket on the shard opens — so it is never carried
-// forward.
+// So the record carries the answer. The rename is bracketed by a start and a
+// finish write with nothing between them; only a crash between those two
+// leaves a start standing, which
+// [migrationReconciler.settleInterruptedPromotion] resolves the very next
+// pass, before any bucket opens.
 func (r *migrationReconciler) promoteProperty(rec MigrationRecordSwapped, all []MigrationRecord,
 	prop string, dirs promotionDirs,
 ) (MigrationRecordSwapped, bool, error) {
@@ -605,16 +589,13 @@ func (r *migrationReconciler) confirmPromotionSurvives(rec MigrationRecordSwappe
 	return lost, false, nil
 }
 
-// settleInterruptedPromotion decides a promotion that recorded its start and
-// never recorded its finish, which is the one state no completed shard load
-// can produce: the two writes bracket the rename with nothing between them.
+// settleInterruptedPromotion decides a promotion that recorded its start but
+// never its finish — the one state no completed shard load can produce, since
+// the two writes bracket the rename with nothing between them.
 //
-// Reconciliation runs before any bucket on the shard opens, so the directory
-// under the canonical name is still exactly what the rename left it — or the
-// rename never ran, and the canonical directory the promotion removed before
-// recording its start is still absent. Both answers are written down here, so
-// no later pass asks the disk again and no load's empty re-creation can be
-// read as this rename's output.
+// Reconciliation runs before any bucket opens, so the canonical directory
+// still reflects exactly what the rename did or didn't do. Both answers are
+// written down here so no later pass has to ask the disk again.
 func (r *migrationReconciler) settleInterruptedPromotion(rec MigrationRecordSwapped,
 	prop, staged, canonical string,
 ) (MigrationRecordSwapped, bool, error) {
@@ -648,17 +629,14 @@ func (r *migrationReconciler) settleInterruptedPromotion(rec MigrationRecordSwap
 	return finished, true, nil
 }
 
-// abandonPromotion takes back the start a rename that returned instead of
-// running recorded — but only while the staged directory it was to move is
-// still there. [diskio.RenameAndSync] moves the directory first and syncs
-// after, so an error can come from the sync of a rename that already ran;
-// taking the start back there would leave every later pass reading a promoted
-// canonical directory as one no rename of this property produced.
+// abandonPromotion takes back a started promotion's mark, but only while the
+// staged directory it was to move is still there: [diskio.RenameAndSync]
+// moves before it syncs, so a sync error can follow a rename that already
+// ran, and taking the mark back then would make every later pass see the
+// promoted canonical directory as unpromoted.
 //
-// A write that fails here is logged and left: the record is then merely less
-// precise than it should be, which is not worth failing a shard load over,
-// and the next pass re-runs the rename anyway because the staged directory is
-// still there.
+// A write failure here is logged and left — merely less precise, and the next
+// pass re-runs the rename anyway since the staged directory persists.
 func (r *migrationReconciler) abandonPromotion(rec MigrationRecordSwapped, prop, staged string) MigrationRecordSwapped {
 	stagedThere, err := r.dirExists(staged)
 	if err != nil || !stagedThere {
@@ -736,19 +714,13 @@ func (r *migrationReconciler) reconcilePromotedSealed(rec MigrationRecordPromote
 }
 
 // repromoteWhatTheRecordOutran re-runs a promotion the record already claims.
-// If a surviving successor claims staged as displaced, the property was
+// A surviving successor claiming staged as displaced means the property was
 // superseded, not promoted, and staged is that successor's only copy.
 //
-// A property holding a directory under both names stops the sweep. Which of
-// the two holds the promoted data is not readable from here — a shard load
-// re-creates the canonical one, empty, for every property in the schema — and
-// the sweep this returns to reclaims staged directories, so reading the
-// canonical name as the answer would delete the only copy.
-//
-// Stopping the sweep is not stopping the loop: every later property still gets
-// its repair, because a property whose data is still at its staged name serves
-// an empty canonical bucket until that rename runs, and it would otherwise wait
-// on a sibling no load can resolve.
+// A directory under both names stops repair for that property only, not the
+// loop: a shard load re-creates the canonical one empty for every property,
+// so which name holds the promoted data isn't readable here, and reading the
+// canonical name as the answer would delete the sweep's only copy.
 func (r *migrationReconciler) repromoteWhatTheRecordOutran(all []MigrationRecord, subject MigrationSubject) error {
 	var ambiguous []string
 	for _, prop := range subject.Properties {

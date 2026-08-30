@@ -221,25 +221,20 @@ func (r *migrationReconciler) retireSuperseded(ctx context.Context, all []Migrat
 	}
 }
 
-// migrationRetirable reports whether retirement may act on this record at all.
+// migrationRetirable reports whether retirement may act on this record.
 //
-// A record with complete staged data holds a copy of its own, and a successor
-// taking one of its properties over is what makes reclaiming that property's
-// copy safe.
+// Complete staged data is its own copy, so a successor taking a property over
+// makes reclaiming that copy safe. A record that hasn't flipped holds no copy
+// of its own (the canonical bucket is still primary — the same precondition
+// [migrationReconciler.reconcileMerged] relies on for discard), so it may
+// retire too, but only once every property is superseded: a partly
+// superseded record still owns the rest, and its staged directories are
+// still that rebuild's only output.
 //
-// A record that has not flipped holds no copy anything reads from: the
-// canonical bucket is still the complete primary copy, which is the same
-// precondition the cancel edge relies on and states at
-// [migrationReconciler.reconcileMerged]. So it may retire too — but only once
-// EVERY one of its properties is superseded, since a partly superseded record
-// still owns the rest and its staged directories are still the rebuild's only
-// output.
-//
-// Without this a record the supersession predicate says IS superseded is never
-// offered to retirement, purely because it has not flipped. That is the one
-// wedge with no exit anywhere: the record stands forever, its tracker keeps
-// dragging cold tenants into hydration, and the submit-time sweep rewrites it
-// to Iterating with a full horizon on every load with no task left to resume it.
+// Without the second branch, a record the supersession predicate calls
+// superseded but that never flipped would wedge forever with no exit: its
+// tracker keeps dragging cold tenants into hydration, and the submit-time
+// sweep resets it to Iterating on every load with no task left to resume it.
 func migrationRetirable(rec MigrationRecord, superseded []string) bool {
 	if rec.StagedDataComplete() {
 		return true

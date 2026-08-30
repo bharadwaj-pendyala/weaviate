@@ -1062,21 +1062,18 @@ func (m *PrometheusMetrics) initObjectsTtl() error {
 
 // AddMigrationRecordsWedged counts what one shard load left standing.
 //
-// Node-wide and unlabelled on purpose. Class and shard names are user-chosen
-// strings, and one series per shard is one series per tenant — the cardinality
-// TestMetricsCount exists to forbid. The identity of a wedged record belongs in
-// the log line, which names the record, its shard, and what clears it; the
-// metric's job is only to say that there is something to go and read.
+// Node-wide and unlabelled: class/shard names are user-chosen, so a
+// per-shard series would be one series per tenant. A wedged record's
+// identity belongs in the log line; the metric only signals that one exists
+// to go read.
 //
-// Counters rather than gauges for the same reason: a per-shard gauge would have
-// to be re-set by every shard on every load to stop a healed one reporting its
-// last non-zero value forever, and an unlabelled gauge cannot be. An increase
-// over a window is the actionable signal, and a healed cluster stops producing
-// one.
+// Counters, not gauges: an unlabelled gauge can't be reset by the shard that
+// healed, so it would report its last non-zero value forever. An increase
+// over a window is the actionable signal.
 //
-// The two are separate series on purpose. A record this build cannot decode is
-// a downgrade artifact and clears by running the newer build again; a wedged
-// record is a migration outcome and clears by resubmitting the migration.
+// The two series are separate because they clear differently: not-understood
+// is a downgrade artifact that clears by running the newer build again;
+// wedged is a migration outcome that clears by resubmitting the migration.
 func (m *PrometheusMetrics) AddMigrationRecordsWedged(wedged, notUnderstood int) {
 	if m == nil {
 		return

@@ -156,16 +156,12 @@ func TestASupersededUnflippedRecordRetires(t *testing.T) {
 	}
 }
 
-// TestAPassThatChangedNothingSaysSo pins the settled note: a pass writes down
-// a directory only when it reached an answer for that directory's record which
-// no later load revisits, so a sweep over the cold shard can answer "would
-// hydrating reclaim anything" without hydrating.
-//
-// An unchanged record is not that answer. The commonest reason a pass leaves a
-// record alone is a verdict it could not take, which turns on this node's
-// applied task map — an input that changes with no record write at all. Both
-// rows plant identical directories and differ only in whether the pass reached
-// a terminal answer.
+// TestAPassThatChangedNothingSaysSo pins the settled note: a pass names a
+// directory only when it reached a terminal answer, not merely when the
+// record went unchanged (the commonest reason for that is a withheld verdict,
+// which turns on this node's applied task map rather than a record write).
+// Both rows plant identical directories and differ only in whether the pass
+// reached that terminal answer.
 func TestAPassThatChangedNothingSaysSo(t *testing.T) {
 	tests := []struct {
 		name string

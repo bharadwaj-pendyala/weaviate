@@ -21,31 +21,21 @@ import (
 )
 
 // migrationSettledNoteFile holds the directories the last reconciliation pass
-// on this shard left exactly as it found them. It sits beside the tracker
-// directories rather than inside the record store, so nothing that enumerates
-// records has to know about it, and every reader of .migrations already skips
-// non-directories.
+// left exactly as it found them. It sits beside the tracker directories, not
+// inside the record store, so nothing that enumerates records needs to know
+// about it, and every reader of .migrations already skips non-directories.
 const migrationSettledNoteFile = lsmkv.MigrationSettledNoteFile
 
-// The note is a cache, not a state, and that difference is what makes it
-// admissible where a sixth record state is not.
+// The note is a cache, not a state: losing it costs one hydration, never
+// correctness, and a stale one leaves a directory on disk until the tenant
+// loads for some other reason. A sweep reads it as "this load would not
+// change anything either" to skip hydrating a cold tenant.
 //
-// It says one thing: "the last load reconciled these directories and changed
-// nothing". A sweep deciding whether to wake a cold tenant reads that as "and
-// this load would not change anything either", which is exactly the question
-// the sweep asks and cannot otherwise answer without hydrating.
-//
-// Losing it costs one hydration and never correctness — the sweep falls back
-// to hydrating, which is what it does today. A stale one costs a directory
-// left on disk until the tenant loads for some other reason.
-//
-// Record writes and removals are not the only events that change what a load
-// would do: this node's applied task map is a third, and it changes with no
-// record write at all. So a pass names a directory here only when it reached
-// an answer for its record that no later load revisits, which is the same
-// signal it must set to report the record as wedged
-// ([migrationReconciler.wedged]). A pass that merely could not decide names
-// nothing, and the tenant is woken as it was before the note existed.
+// This node's applied task map can change what a load would do with no
+// record write, so a pass names a directory here only when it reaches an
+// answer nothing else can later revisit — the same bar as reporting the
+// record wedged ([migrationReconciler.wedged]). A pass that merely could not
+// decide names nothing.
 func migrationSettledNotePath(lsmPath string) string {
 	return filepath.Join(lsmPath, migrationsDir, migrationSettledNoteFile)
 }

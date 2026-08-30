@@ -79,21 +79,19 @@ func migrationPreservedStateAt(lsmPath string, logger logrus.FieldLogger) migrat
 // migrationPreservedState, so no sweep can learn about records but not about
 // the trackers no record names. The zero value preserves nothing.
 //
-// An empty propName reads every tracker's payload. A propName narrows the
-// parse — never the listing — to the trackers that could hold something of
-// that property's ([migrationTrackerMayOwnProperty]): the rest are settled by
-// their own directory name, and parsing them costs megabytes each inside the
-// RAFT apply that a property DELETE holds cluster-wide.
+// An empty propName reads every tracker's payload; a non-empty one narrows
+// the parse (never the listing) to trackers that could hold something of
+// that property's ([migrationTrackerMayOwnProperty]) — parsing the rest costs
+// megabytes each inside the RAFT apply a property DELETE holds cluster-wide.
 //
-// The record set is unaffected, since it comes from the listing. The shard-wide
-// withhold is: a skipped tracker's marker is never stat'd and its payload never
-// parsed, so an unreadable one no longer withholds. That is sound because the
-// withhold exists to stop a sweep removing something a tracker owns, and a
-// tracker whose own name proves it stages nothing of this property's owns
-// nothing this sweep can name.
+// A skipped tracker's payload is never parsed, so it no longer withholds:
+// sound because withholding exists only to stop a sweep removing something a
+// tracker owns, and a name proving the tracker stages nothing of this
+// property owns nothing this sweep can name. The record set itself is
+// unaffected, since it comes from the listing.
 //
-// props memoizes the payloads across the index types of one property's sweep;
-// a nil memo reads every payload again and counts nothing.
+// props memoizes the payloads across the index types of one property's
+// sweep; a nil memo reads every payload again and counts nothing.
 func migrationPreservedStateFor(lsmPath, propName string, props *taskPropsCache,
 	logger logrus.FieldLogger,
 ) migrationPreservedState {
@@ -221,22 +219,17 @@ func (s migrationPreservedState) bucketNeedsLoad(dir string) bool {
 }
 
 // migrationPropertyLoadCanStillAct reports whether a shard load could change
-// what this record holds for one property. A lost promotion has no exit
-// anywhere in the system: the mark is written when a promoted directory is
-// found gone and nothing clears it, so that property can never be promoted and
-// a load reclaims nothing on its account.
+// what this record holds for one property. A lost promotion has no exit: the
+// mark is written once a promoted directory is found gone and nothing clears
+// it, so that property can never be promoted and a load reclaims nothing on
+// its account — asked per property because promoteSealed skips a lost one and
+// promotes the rest.
 //
-// It is asked per property because promotion is per property: promoteSealed
-// skips a lost one and promotes the rest, so a record can hold one property
-// nothing will ever move next to one the very next load renames.
-//
-// Preservation is unaffected — the record and its directories are kept either
-// way. Only the claim that hydrating the shard would reclaim them changes, and
-// that claim is what drags a cold tenant into a load on every schema operation
-// against its collection, forever.
-//
-// The record is still the exit's own witness: a resubmit supersedes it, and
-// retirement removes it from the record set entirely before this is asked.
+// Preservation is unaffected either way; only the claim that hydrating would
+// reclaim something changes, which is what would otherwise drag a cold tenant
+// into a load on every schema operation against its collection, forever. The
+// record remains the exit's own witness: a resubmit supersedes it, and
+// retirement removes it from the record set before this is ever asked.
 func migrationPropertyLoadCanStillAct(rec MigrationRecord, prop string) bool {
 	sw, ok := rec.(MigrationRecordSwapped)
 	if !ok {

@@ -172,22 +172,11 @@ func soleMigrationRecordState(t *testing.T, lsmPath string) MigrationState {
 // and zero is no DELETE at all.
 const deleteBeforeAnyLoad = -1
 
-// TestPromoteDecidesFromTheRecordNotFromTheDirectory covers the two defects a
-// canonical directory invites, and the two ways the evidence for the second
-// one used to rot.
-//
-// An index DELETE removes a flipped migration's directories. The next load
-// re-creates the canonical bucket empty because the property is still in the
-// schema, and the load after that must not read that empty directory as proof
-// the promotion already ran — which would write Promoted over a bucket holding
-// none of the migration's data, the state every later reader trusts.
-//
-// The other direction is just as bad: a promotion whose rename really ran, on
-// a record a sibling property keeps at Swapped, must still complete. Evidence
-// that lives in the promoted bucket's own file names does not survive a WAL
-// flushed at shutdown or an ordinary write, and a record stuck at Swapped
-// leaks its tracker directory and hydrates its shard on every cleanup walk
-// forever.
+// TestPromoteDecidesFromTheRecordNotFromTheDirectory pins two defects: a
+// canonical directory an index DELETE emptied and a later load re-created
+// must never read as an already-run promotion, and a rename that really ran
+// must still count even once its only on-disk evidence (the bucket's file
+// names) is gone to a WAL flush or an ordinary write.
 func TestPromoteDecidesFromTheRecordNotFromTheDirectory(t *testing.T) {
 	tests := []struct {
 		name string
