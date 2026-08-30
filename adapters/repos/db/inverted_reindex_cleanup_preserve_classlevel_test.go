@@ -142,6 +142,16 @@ func mkRecoveryPayload(t *testing.T, lsmPath, trackerName string, props ...strin
 		payload, 0o644))
 }
 
+// mkPropsSidecar writes properties.mig, the small list a task records beside
+// payload.mig as soon as it starts. It is the only file [finalizeMigrationDir]
+// takes the properties it promotes from.
+func mkPropsSidecar(t *testing.T, lsmPath, trackerName string, props ...string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(lsmPath, ".migrations", trackerName, "properties.mig"),
+		[]byte(strings.Join(props, ",")), 0o644))
+}
+
 func mkSidecarDir(t *testing.T, lsmPath, name string) {
 	t.Helper()
 	dir := filepath.Join(lsmPath, name)
@@ -153,9 +163,9 @@ func mkSidecarDir(t *testing.T, lsmPath, name string) {
 // and hands back the tracker payloads it read.
 func cleanSweep(t *testing.T, ctx context.Context, shard *Shard, propName, indexType string) int {
 	t.Helper()
-	reads, err := shard.CleanStalePartialReindexState(ctx, propName, indexType)
+	report, err := shard.CleanStalePartialReindexState(ctx, propName, indexType)
 	require.NoError(t, err)
-	return reads
+	return report.payloadReads
 }
 
 // fixtureSidecarFor pairs a staged (ingest) directory with the reindex sidecar

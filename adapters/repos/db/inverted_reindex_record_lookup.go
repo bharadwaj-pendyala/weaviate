@@ -66,6 +66,39 @@ type migrationPreservedState struct {
 	// too, and is carried separately because a shard that was never read has
 	// to report differently from one that was read and withheld.
 	migrationsDirUnlistable bool
+	// withheld names why withholdEverything is set. Meaningless while it is
+	// not.
+	withheld migrationWithholdReasons
+}
+
+// migrationWithholdReasons names the populations that withhold every removal
+// on one shard. They are kept apart because a caller deciding whether to
+// hydrate has to tell them apart: hydrating runs
+// [FinalizeCompletedMigrations], which removes a completed tracker whether or
+// not it managed to promote the staged data behind it, so for one population
+// the load is the repair and for another it is the loss.
+//
+// Every producer of migrationPreservedState.withholdEverything sets one, so a
+// caller can be exhaustive over them.
+type migrationWithholdReasons struct {
+	// undecided: whether a completed migration is here could not be read at
+	// all — an unstattable completion marker, or a .migrations that could not
+	// be listed. A caller that would report the shard clean guesses instead.
+	undecided bool
+	// completedActionable: a completed per-property tracker a load's finalize
+	// promotes — properties.mig names the tracker dir's own name and
+	// swapped.mig sits beside the completion marker.
+	completedActionable bool
+	// completedStuck: a completed tracker finalize cannot promote — no
+	// properties.mig it accepts, no swapped.mig beside the marker, or
+	// class-level, whose name no property list reconstructs. Finalize removes
+	// the tracker all the same, and the sweep that follows then finds nothing
+	// preserving the staged directory and frees the property's only copy.
+	completedStuck bool
+	// unreadableRecord: a migration record this build cannot read. It may name
+	// any directory here, so nothing is removable until it can be read, and a
+	// load reclaims nothing on its account.
+	unreadableRecord bool
 }
 
 // migrationPreservedStateAt is the shard-wide preserve state: every tracker on
@@ -114,6 +147,7 @@ func migrationPreservedStateFor(lsmPath, propName string, props *taskPropsCache,
 			Debugf("the migration directory could not be listed; withholding every removal on this shard: %v", listErr)
 		state.withholdEverything = true
 		state.migrationsDirUnlistable = true
+		state.withheld.undecided = true
 		return state
 	}
 	for _, legacy := range legacyTrackers {
@@ -121,6 +155,14 @@ func migrationPreservedStateFor(lsmPath, propName string, props *taskPropsCache,
 			// Its payload names the directories holding this marker's data;
 			// preserving only the tracker would strand them from the reclaimers.
 			state.withholdEverything = true
+			switch {
+			case legacy.marker == "":
+				state.withheld.undecided = true
+			case legacy.finalizable:
+				state.withheld.completedActionable = true
+			default:
+				state.withheld.completedStuck = true
+			}
 			continue
 		}
 		// false: the tracker's own sidecars go into state.buckets below, and
@@ -143,6 +185,7 @@ func migrationPreservedStateFromRecords(records []MigrationRecord, someRecordsUn
 		trackers:            map[string]bool{},
 		withholdEverything:  someRecordsUnreadable,
 		recordSetUnreadable: recordSetUnreadable,
+		withheld:            migrationWithholdReasons{unreadableRecord: someRecordsUnreadable},
 	}
 	for _, rec := range records {
 		if !rec.StagedDataComplete() {
@@ -263,6 +306,16 @@ type migrationLegacyMarkerTracker struct {
 	unreadable bool
 	props      []string
 	sidecars   []string
+	// finalizable is whether a shard load would promote this tracker's staged
+	// data rather than remove the tracker having promoted nothing.
+	// [finalizeMigrationDir] acts only on swapped.mig plus tidied.mig and
+	// takes its property list from properties.mig; missing any of those it
+	// returns, and its caller removes the tracker anyway — after which nothing
+	// on disk records that the staged directory holds the property's only copy.
+	//
+	// Asked only of a tracker nothing could be learned about (unreadable), the
+	// one population whose property list comes from properties.mig alone.
+	finalizable bool
 }
 
 // migrationLegacyMarkerTrackersAt finds the completed trackers no record
@@ -332,6 +385,12 @@ func migrationLegacyMarkerTrackersAt(lsmPath string, records []MigrationRecord,
 			unreadable: answer.unreadable || len(answer.props) == 0,
 			props:      append([]string(nil), answer.props...),
 			sidecars:   migrationPreservedSidecarDirsFor(dirName, prefix, gen, answer.props),
+			// The same three files [finalizeMigrationDir] tests, asked here so
+			// a caller can tell a load that would promote this tracker's data
+			// from one that would remove the tracker and strand it.
+			finalizable: marker == "tidied.mig" &&
+				fileExists(filepath.Join(migDir, "swapped.mig")) &&
+				answer.sidecarNamesDir,
 		})
 	}
 	return out, true, nil

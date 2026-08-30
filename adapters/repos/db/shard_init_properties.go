@@ -232,6 +232,24 @@ func migrationSweepStateFor(lsmPath, propName string, logger logrus.FieldLogger)
 	}
 }
 
+// shardSweepReport is what one shard's sweep tells its caller's summary line:
+// how many tracker payloads it had to read, and whether it withheld every
+// removal. A sweep that withheld removed nothing, so a caller summarizing it
+// as a finished cleanup reports one that did not happen.
+type shardSweepReport struct {
+	payloadReads int
+	withheld     bool
+}
+
+// report is this sweep's [shardSweepReport], including from an error path: the
+// reads and the withholding are both settled before the removals start.
+func (s *migrationSweepState) report() shardSweepReport {
+	return shardSweepReport{
+		payloadReads: s.reads(),
+		withheld:     s != nil && s.committed.withholdEverything,
+	}
+}
+
 // reads is how many tracker payloads this sweep had to parse, for the caller's
 // summary line. It counts the preserve pass too, which is where a sweep that
 // touches no tracker of its own can still parse every completed tracker on the
@@ -399,16 +417,17 @@ func cleanStaleMigrationDirsIn(ctx context.Context, scope migrationDirScope,
 // directory, so step 2 has by then removed sidecars it could not tell were
 // live, and the caller's summary would otherwise report a finished sweep.
 //
-// The first return is how many tracker payloads this sweep read, for the
-// caller's summary line. A refused input reads none.
-func (s *Shard) CleanStalePartialReindexState(ctx context.Context, propName, indexType string) (int, error) {
+// The first return is what this sweep contributes to the caller's summary
+// line. A refused input reads nothing and withholds nothing.
+func (s *Shard) CleanStalePartialReindexState(ctx context.Context, propName, indexType string) (shardSweepReport, error) {
 	// Step 1: shut down the per-prop sidecar buckets for this index type.
 	// Only the buckets that share the relevant main bucket's prefix are
 	// touched, so other in-flight reindex tasks on the same shard are not
 	// disturbed.
 	mainBucketName, ok := mainBucketForPropertyIndex(propName, indexType)
 	if !ok {
-		return 0, fmt.Errorf("clean stale partial reindex state: unknown indexType %q", indexType)
+		return shardSweepReport{}, fmt.Errorf(
+			"clean stale partial reindex state: unknown indexType %q", indexType)
 	}
 
 	logger := s.index.logger.WithFields(map[string]any{
@@ -446,7 +465,7 @@ func (s *Shard) CleanStalePartialReindexState(ctx context.Context, propName, ind
 				// — bucket gone — is satisfied; keep going.
 				continue
 			}
-			return sweep.reads(), fmt.Errorf(
+			return sweep.report(), fmt.Errorf(
 				"shutting down stale sidecar bucket %q before partial-reindex cleanup: %w",
 				bucketName, err)
 		}
@@ -454,6 +473,7 @@ func (s *Shard) CleanStalePartialReindexState(ctx context.Context, propName, ind
 	}
 	logger.WithField("buckets_shut_down", shutDown).
 		WithField("preserved_sidecars", committed.bucketsOf(mainBucketName)).
+		WithField("withheld", committed.withholdEverything).
 		Info("partial-reindex cleanup: sidecar buckets shut down")
 
 	// Steps 2 + 3: remove sidecar dirs and migration dir. The helpers log
@@ -461,12 +481,21 @@ func (s *Shard) CleanStalePartialReindexState(ctx context.Context, propName, ind
 	// survive.
 	s.cleanStaleSidecarDirsWithPreserved(mainBucketName, committed)
 	if err := cleanStaleMigrationDirsIn(ctx, scope, committed, s.index.logger); err != nil {
-		return sweep.reads(), err
+		return sweep.report(), err
+	}
+	// Info on both arms: one line per shard per tuple, so a node of cold
+	// tenants would flood at any higher level. The caller's one-per-sweep
+	// summary is where a withholding shard raises the severity.
+	outcome := "partial-reindex cleanup: sidecar dirs + migration dir cleaned"
+	if committed.withholdEverything {
+		outcome = "partial-reindex cleanup: state on this shard could not be read, " +
+			"so every removal was withheld and nothing was cleaned"
 	}
 	logger.WithField("payload_reads", sweep.reads()).
-		Info("partial-reindex cleanup: sidecar dirs + migration dir cleaned")
+		WithField("withheld", committed.withholdEverything).
+		Info(outcome)
 
-	return sweep.reads(), nil
+	return sweep.report(), nil
 }
 
 // mainBucketForPropertyIndex returns the canonical main bucket name on
