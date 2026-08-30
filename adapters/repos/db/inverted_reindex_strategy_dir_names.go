@@ -561,9 +561,11 @@ func (c *taskPropsCache) count() int {
 // unloaded-shard gate err toward keeping more.
 //
 // A property name that isn't a single directory entry makes the whole payload
-// unreadable: sweeps and the orphan audit compose bucket/sidecar names from it
+// unreadable: the sweeps reading it here compose bucket/sidecar names from it
 // and remove those, and unlike a record's names these never passed
 // [validateMigrationHandles] (a restored archive can carry anything here).
+// The orphan audit reads the payload through [loadAuditRecord] instead, which
+// this refusal does not reach.
 //
 // readPayload reports whether payload.mig was opened, so the caller's read
 // counter keeps meaning what it says. A refusal opens nothing.
