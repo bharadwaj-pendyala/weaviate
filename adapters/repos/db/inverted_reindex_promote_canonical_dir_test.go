@@ -217,7 +217,8 @@ func TestPromoteDecidesFromTheRecordNotFromTheDirectory(t *testing.T) {
 			props:           []string{promoteRenamedProp},
 			deleteAfterLoad: deleteBeforeAnyLoad,
 			// Load 1 finds neither directory and re-creates the canonical one
-			// empty; load 2 is the one that used to read it as a promotion.
+			// empty; load 2 is the pass that would read the re-created
+			// directory as the rename's output.
 			loads:            2,
 			wantState:        MigrationStateSwapped,
 			wantRenamedTerms: "",

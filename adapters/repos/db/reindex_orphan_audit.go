@@ -755,8 +755,8 @@ func cleanUnloadedShardOrphans(lsmPath string, orphans []orphanReindexTracker, l
 // directories owned by the orphan tracker. Routes through the strategy
 // registry (migrationSuffixes) keyed by the orphan's tracker dirName
 // — the strategy's MigrationDirName() and IngestSuffix/ReindexSuffix
-// methods are the single source of truth for the on-disk dir layout
-// (S3 fix). Falls back to no-op if the tracker dirName does not match
+// methods are the single source of truth for the on-disk dir layout.
+// Falls back to no-op if the tracker dirName does not match
 // any registered strategy: defensive, but it also means a future
 // strategy added to migrationSuffixes will be picked up here
 // automatically.
@@ -774,6 +774,27 @@ func removeUnloadedSidecarsForOrphan(lsmPath string, o *orphanReindexTracker, lo
 			logger.WithField("path", path).
 				Warnf("reindex orphan audit: failed to remove orphan sidecar dir: %v", err)
 		}
+	}
+	logLeftBackupDirsForOrphan(lsmPath, o, logger)
+}
+
+// logLeftBackupDirsForOrphan names the displaced backup copies the audit
+// deliberately leaves: with the tracker gone nothing attributes them, and only
+// a property-index DELETE sweep on an activated tenant reclaims them. Without
+// this line that disk cost is silent on a tenant nobody reactivates.
+func logLeftBackupDirsForOrphan(lsmPath string, o *orphanReindexTracker, logger logrus.FieldLogger) {
+	suffixes := migrationSuffixes(o.dirName)
+	if suffixes == nil {
+		return
+	}
+	genTail := genSuffix(o.generation)
+	for _, propName := range o.properties {
+		path := filepath.Join(lsmPath, suffixes.sourceBucketName(propName)+suffixes.backupSuffix+genTail)
+		if !fileExists(path) {
+			continue
+		}
+		logger.WithField("path", path).
+			Info("reindex orphan audit: leaving the displaced backup copy; the property-index DELETE sweep reclaims it once the tenant is active")
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -790,4 +791,140 @@ func writePayload(t *testing.T, dir, taskID string, taskVersion uint64, unitID, 
 	data, err := json.Marshal(rec)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, reindexRecoveryPayloadFile), data, 0o600))
+}
+
+// TestAuditOrphanReindexTrackers_UnloadedShard_KeepsBackupSidecar pins the
+// asymmetry the audit relies on: for an orphan on a shard that is not loaded,
+// the audit reclaims the ingest and reindex sidecar dirs but leaves the
+// displaced <main><backupSuffix>_<gen> dir on disk.
+//
+// The backup dir holds the pre-swap copy of the main bucket. Nothing the audit
+// can read tells a migration that still needs that copy from one that does not,
+// so reclaiming it here can destroy the property's only data. The later
+// property-DELETE sweep reclaims it instead, once the property is provably
+// gone.
+//
+// One row per distinct backup suffix and main-bucket shape, so a strategy whose
+// naming diverges is covered rather than assumed.
+func TestAuditOrphanReindexTrackers_UnloadedShard_KeepsBackupSidecar(t *testing.T) {
+	cases := []struct {
+		name          string
+		dirName       string
+		properties    []string
+		migrationType ReindexMigrationType
+		wantRemoved   []string
+		wantKept      []string
+	}{
+		{
+			name:          "searchable_retokenize",
+			dirName:       "searchable_retokenize_title_3",
+			properties:    []string{"title"},
+			migrationType: ReindexTypeChangeTokenization,
+			wantRemoved: []string{
+				"property_title_searchable__retokenize_ingest_3",
+				"property_title_searchable__retokenize_reindex_3",
+			},
+			wantKept: []string{"property_title_searchable__retokenize_backup_3"},
+		},
+		{
+			name:          "filterable_retokenize",
+			dirName:       "filterable_retokenize_title_3",
+			properties:    []string{"title"},
+			migrationType: ReindexTypeChangeTokenizationFilterable,
+			wantRemoved: []string{
+				"property_title__filt_retokenize_ingest_3",
+				"property_title__filt_retokenize_reindex_3",
+			},
+			wantKept: []string{"property_title__filt_retokenize_backup_3"},
+		},
+		{
+			name:          "enable_searchable",
+			dirName:       "enable_searchable_beta_4",
+			properties:    []string{"beta"},
+			migrationType: ReindexTypeEnableSearchable,
+			wantRemoved: []string{
+				"property_beta_searchable__enable_searchable_ingest_4",
+				"property_beta_searchable__enable_searchable_reindex_4",
+			},
+			wantKept: []string{"property_beta_searchable__enable_searchable_backup_4"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rootPath := t.TempDir()
+			// No Index is registered for this dir, so the audit takes the
+			// unloaded-shard branch.
+			lsmPath := filepath.Join(rootPath, "unloadedclass", "shard1", "lsm")
+			trackerDir := filepath.Join(lsmPath, ".migrations", c.dirName)
+			require.NoError(t, os.MkdirAll(trackerDir, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(trackerDir, "started.mig"), nil, 0o600))
+			writePayload(t, trackerDir, "task-orphan", 9, "unit-orphan", "UnloadedClass",
+				c.migrationType, c.properties)
+			// Skip straight to the destructive sweep; the quarantine window is
+			// exercised elsewhere.
+			writePreAgedQuarantineSentinel(t, trackerDir)
+
+			for _, dir := range append(append([]string(nil), c.wantRemoved...), c.wantKept...) {
+				require.NoError(t, os.MkdirAll(filepath.Join(lsmPath, dir), 0o755))
+				require.NoError(t, os.WriteFile(
+					filepath.Join(lsmPath, dir, "segment-001.db"), []byte("x"), 0o600))
+			}
+
+			db := &DB{config: Config{RootPath: rootPath}}
+			knownNothing := func(string, uint64) bool { return false }
+
+			outcome, err := db.AuditOrphanReindexTrackers(testCtx(), knownNothing, logrus.New())
+			require.NoError(t, err)
+			assert.Equal(t, AuditStatusOrphansFound, outcome.Status)
+			assert.Equal(t, 1, outcome.OrphansFound)
+			assert.Equal(t, 1, outcome.OrphansClean)
+			assert.Empty(t, outcome.FailedDirs)
+
+			_, err = os.Stat(trackerDir)
+			assert.Truef(t, os.IsNotExist(err),
+				"orphan tracker dir must be removed; stat err=%v", err)
+
+			for _, dir := range c.wantRemoved {
+				_, err := os.Stat(filepath.Join(lsmPath, dir))
+				assert.Truef(t, os.IsNotExist(err),
+					"sidecar %q must be reclaimed by the audit; stat err=%v", dir, err)
+			}
+			for _, dir := range c.wantKept {
+				assert.DirExistsf(t, filepath.Join(lsmPath, dir),
+					"backup sidecar %q holds the pre-swap main bucket and must survive the audit", dir)
+			}
+		})
+	}
+}
+
+// The audit deliberately leaves the displaced backup copy for the DELETE
+// sweep, and with the tracker gone nothing else attributes it — so the one
+// log line naming it is the only signal of that disk cost on a tenant nobody
+// reactivates.
+func TestRemoveUnloadedSidecarsForOrphanNamesTheBackupItLeaves(t *testing.T) {
+	lsm := t.TempDir()
+	const ingest = "property_title_searchable__retokenize_ingest_3"
+	const backup = "property_title_searchable__retokenize_backup_3"
+	for _, dir := range []string{ingest, backup} {
+		require.NoError(t, os.MkdirAll(filepath.Join(lsm, dir), 0o755))
+	}
+	o := &orphanReindexTracker{
+		dirName:    "searchable_retokenize_title_3",
+		prefix:     "searchable_retokenize",
+		generation: 3,
+		properties: []string{"title"},
+	}
+
+	logger, hook := logrustest.NewNullLogger()
+	removeUnloadedSidecarsForOrphan(lsm, o, logger)
+
+	require.NoDirExists(t, filepath.Join(lsm, ingest))
+	require.DirExists(t, filepath.Join(lsm, backup))
+	var named bool
+	for _, entry := range hook.AllEntries() {
+		if entry.Level == logrus.InfoLevel && entry.Data["path"] == filepath.Join(lsm, backup) {
+			named = true
+		}
+	}
+	require.True(t, named, "the left-behind backup dir must be named in an Info log entry")
 }

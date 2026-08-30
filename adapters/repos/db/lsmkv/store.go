@@ -392,8 +392,6 @@ func (s *Store) listMigrationFiles(basePath string) ([]string, error) {
 		}
 		// The settled note is a cache of the last reconciliation pass on THIS
 		// shard, so it describes nothing a restored copy would be right about.
-		// It is also deleted by every record write, so listing it hands the
-		// copy a file that can go away underneath it.
 		if d.Name() == MigrationSettledNoteFile {
 			return nil
 		}
