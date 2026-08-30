@@ -166,10 +166,12 @@ func migrationPreservedStateFor(lsmPath, propName string, props *taskPropsCache,
 			}
 			continue
 		}
-		// False because the tracker's own sidecars go into state.buckets
-		// below, where [migrationPreservedState.bucketNeedsLoad] already
-		// reports them as reclaimable by a load.
-		state.trackers[legacy.dirName] = false
+		// True: a load's finalize reclaims the tracker directory whether or
+		// not its sidecars survive, so the tracker asks for the load on its
+		// own account. Its sidecars ask through state.buckets below, but a
+		// property-index DELETE can remove them first, and a tracker that
+		// only asked through them would then be skipped forever.
+		state.trackers[legacy.dirName] = true
 		for _, dir := range legacy.sidecars {
 			// A marker-era tracker has no record to have written a promotion
 			// off, so the load's finalize really does act on these.

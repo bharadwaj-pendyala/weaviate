@@ -45,6 +45,10 @@ type markerTracker struct {
 	// props is properties.mig's content, the list finalize promotes from.
 	// Empty writes no file, which is a v1.37.x-era tracker.
 	props []string
+	// payload is payload.mig's property list. Empty writes no file; with
+	// both files present and agreeing the tracker's list is readable, which
+	// is what every completed tracker on this build looks like.
+	payload []string
 	// unstattable takes traversal off the tracker dir, so whether the
 	// migration completed cannot be read at all.
 	unstattable bool
@@ -861,6 +865,21 @@ func TestHasStalePartialReindexStateNotStaleMeansTheSweepFindsNothing(t *testing
 			wantFinalizable: true,
 		},
 		{
+			// A property-index DELETE removes a completed tracker's sidecar
+			// dirs without touching the tracker. The tracker still asks for
+			// the load on its own account — a load's finalize reclaims it —
+			// so one DELETE must not leave the shard skipped forever.
+			name:      "a completed tracker whose sidecars a DELETE already removed",
+			indexType: "filterable",
+			markerTrackers: []markerTracker{{
+				dir:       "enable_filterable_category_1",
+				sentinels: []string{"swapped.mig", "tidied.mig"},
+				props:     []string{"category"},
+				payload:   []string{"category"},
+			}},
+			wantFinalizable: true,
+		},
+		{
 			name:      "a tracker whose completion cannot be read at all",
 			indexType: "filterable",
 			markerTrackers: []markerTracker{{
@@ -935,6 +954,9 @@ func TestHasStalePartialReindexStateNotStaleMeansTheSweepFindsNothing(t *testing
 				mkTrackerDir(t, lsm, mt.dir, mt.sentinels...)
 				if len(mt.props) > 0 {
 					mkPropsSidecar(t, lsm, mt.dir, mt.props...)
+				}
+				if len(mt.payload) > 0 {
+					mkRecoveryPayload(t, lsm, mt.dir, mt.payload...)
 				}
 			}
 			for _, c := range tc.committed {
