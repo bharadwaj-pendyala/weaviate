@@ -260,24 +260,27 @@ func TestCleanStalePartialReindexState_PreservesClassLevelDeferredFinalize(t *te
 			defer shard.Shutdown(ctx)
 			lsm := shard.pathLSM()
 
-			// Completed class-level migration awaiting promotion.
-			mkTrackerDir(t, lsm, tc.classTracker)
-			mkMigrationRecord(t, lsm, tc.classTracker, MigrationStateSwapped,
-				map[string]string{tc.propName: tc.liveSidecar})
+			// Completed class-level migration in deferred-finalize state,
+			// planted as the markers a writer on this build leaves — records
+			// are inert until a task writes one.
+			mkTrackerDir(t, lsm, tc.classTracker,
+				"started.mig", "merged.mig", "swapped.mig", "tidied.mig")
+			mkPropsSidecar(t, lsm, tc.classTracker, tc.propName)
+			mkRecoveryPayload(t, lsm, tc.classTracker, tc.propName)
 			mkSidecarDir(t, lsm, tc.liveSidecar)
 			mkSidecarDir(t, lsm, fixtureSidecarFor(tc.liveSidecar))
 
-			// Completed per-prop migration awaiting promotion.
-			mkTrackerDir(t, lsm, tc.propTracker)
-			mkMigrationRecord(t, lsm, tc.propTracker, MigrationStateSwapped,
-				map[string]string{tc.propName: tc.propLiveSidecar})
+			// Completed per-prop migration in deferred-finalize state.
+			mkTrackerDir(t, lsm, tc.propTracker,
+				"started.mig", "merged.mig", "swapped.mig", "tidied.mig")
+			mkPropsSidecar(t, lsm, tc.propTracker, tc.propName)
+			mkRecoveryPayload(t, lsm, tc.propTracker, tc.propName)
 			mkSidecarDir(t, lsm, tc.propLiveSidecar)
 			mkSidecarDir(t, lsm, fixtureSidecarFor(tc.propLiveSidecar))
 
 			// Cancelled (partial) class-level attempt: stale, must be wiped.
-			mkTrackerDir(t, lsm, tc.staleTracker)
-			mkMigrationRecord(t, lsm, tc.staleTracker, MigrationStateIterating,
-				map[string]string{tc.propName: tc.staleSidecar})
+			mkTrackerDir(t, lsm, tc.staleTracker, "started.mig")
+			mkRecoveryPayload(t, lsm, tc.staleTracker, tc.propName)
 			mkSidecarDir(t, lsm, tc.staleSidecar)
 			mkSidecarDir(t, lsm, fixtureSidecarFor(tc.staleSidecar))
 
@@ -371,12 +374,14 @@ func TestCleanStalePartialReindexState_GenCollisionAcrossStrategies(t *testing.T
 			defer shard.Shutdown(ctx)
 			lsm := shard.pathLSM()
 
-			mkTrackerDir(t, lsm, tc.completedTracker)
-			mkMigrationRecord(t, lsm, tc.completedTracker, MigrationStateSwapped,
-				map[string]string{"category": tc.liveSidecar})
-			mkTrackerDir(t, lsm, tc.staleTracker)
-			mkMigrationRecord(t, lsm, tc.staleTracker, MigrationStateIterating,
-				map[string]string{"category": tc.staleSidecar})
+			// Markers, not records: the collision has to stay pinned on the
+			// path a writer on this build produces.
+			mkTrackerDir(t, lsm, tc.completedTracker,
+				"started.mig", "merged.mig", "swapped.mig", "tidied.mig")
+			mkPropsSidecar(t, lsm, tc.completedTracker, "category")
+			mkRecoveryPayload(t, lsm, tc.completedTracker, "category")
+			mkTrackerDir(t, lsm, tc.staleTracker, "started.mig")
+			mkRecoveryPayload(t, lsm, tc.staleTracker, "category")
 			for _, name := range []string{tc.liveSidecar, tc.staleSidecar} {
 				if !tc.loadBuckets {
 					mkSidecarDir(t, lsm, name)
