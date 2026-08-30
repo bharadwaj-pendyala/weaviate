@@ -118,3 +118,32 @@ func TestAClassLevelCompletedTrackerIsAlwaysParsed(t *testing.T) {
 	cleanSweep(t, ctx, shard, "swept", "searchable")
 	require.Equal(t, sidecarDataFor(classStaged), readSidecarData(t, lsm, classStaged))
 }
+
+// TestAMarkerEraTrackerIsPreservedForEveryPropertyItsNameCouldOwn pins that a
+// marker-era tracker whose name could own the swept property enters the
+// preserve set even when the exact-name clause does not match. Dropping the
+// token arm of migrationTrackerMayOwnProperty is silent #10675-shape data loss.
+func TestAMarkerEraTrackerIsPreservedForEveryPropertyItsNameCouldOwn(t *testing.T) {
+	tests := []struct {
+		dir  string
+		prop string
+		want bool
+	}{
+		{dir: "enable_filterable_a_b_1", prop: "a", want: true},
+		{dir: "enable_filterable_cat_x_1", prop: "cat", want: true},
+		{dir: "enable_filterable_b_a_1", prop: "a", want: true},
+		{dir: "enable_filterable_x_a_y_1", prop: "a", want: true},
+		{dir: "enable_filterable_a_b_c_1", prop: "b", want: true},
+		{dir: "filterable_roaringset_refresh_1", prop: "cat", want: true},
+		{dir: "enable_filterable_other_1", prop: "cat", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.dir+"/"+tt.prop, func(t *testing.T) {
+			lsm := t.TempDir()
+			mkTrackerDir(t, lsm, tt.dir, "tidied.mig")
+			logger, _ := test.NewNullLogger()
+			sweep := migrationSweepStateFor(lsm, tt.prop, logger)
+			require.Equal(t, tt.want, sweep.committed.preservesTracker(tt.dir))
+		})
+	}
+}
