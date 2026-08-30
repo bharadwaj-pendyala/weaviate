@@ -832,7 +832,8 @@ func sidecarDirsForOrphan(o *orphanReindexTracker) []string {
 // may remove for one tracker: <main><ingestSuffix>_<gen> and
 // <main><reindexSuffix>_<gen>, composed through [migrationSuffixes] keyed by
 // the tracker's own dir name rather than matched by string prefix. A new
-// strategy is therefore picked up automatically.
+// strategy needs an arm in [migrationSuffixes] and one in
+// [reindexSuffixForFinalize].
 //
 // The displaced <main><backupSuffix>_<gen> is deliberately not among them: it
 // holds the pre-swap main bucket, and no reader here can tell a migration that

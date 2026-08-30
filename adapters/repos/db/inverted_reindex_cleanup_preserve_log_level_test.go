@@ -12,6 +12,7 @@
 package db
 
 import (
+	"io"
 	"strings"
 	"testing"
 
@@ -57,4 +58,20 @@ func TestCleanStaleMigrationDirsAt_PreservedGensLogAtDebug(t *testing.T) {
 	require.Equal(t, 0, infoCount,
 		"preserving a deferred-finalize tracker dir must not log at Info inside the RAFT apply loop")
 	require.Equal(t, preservedGens, preservedCount, "one Debug line per preserved generation")
+}
+
+// The record read runs per shard inside the RAFT apply of a property DELETE,
+// so its healthy-path Debug line must cost nothing when Debug is off: logrus
+// builds the entry and copies the field map before consulting the level.
+// Measured: 14 allocations unguarded, 6 with the guard.
+func TestReadingRecordsBuildsNoLogEntryWhenDebugIsOff(t *testing.T) {
+	lsm := t.TempDir()
+	logger := logrus.New()
+	logger.SetLevel(logrus.InfoLevel)
+	logger.SetOutput(io.Discard)
+	allocs := testing.AllocsPerRun(300, func() {
+		migrationRecordsAt(lsm, logger)
+	})
+	require.LessOrEqual(t, allocs, 8.0,
+		"reading a shard's records at Info level must not pay for a Debug entry")
 }

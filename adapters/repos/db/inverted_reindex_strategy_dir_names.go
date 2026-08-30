@@ -516,9 +516,10 @@ type taskProps struct {
 // because the answer is a pure function of the directory: no strategy prefix
 // is a prefix of another, so at most one can ever satisfy a given dir name.
 //
-// properties.mig is consulted here rather than by the caller so a memo hit
-// skips it too: on a shard with many completed trackers the stat-and-read it
-// costs is paid once per index type of the same sweep otherwise.
+// properties.mig is consulted here so a memo hit skips this read. The caller
+// re-reads it for finalize's own list only where the sidecar witness did not
+// already prove it — that fallback is unverified where this one is
+// name-checked, and the memo does not cover it.
 func (c *taskPropsCache) lookup(migDir string) taskProps {
 	if c == nil {
 		answer, _ := readTaskProps(migDir)
@@ -538,7 +539,9 @@ func (c *taskPropsCache) lookup(migDir string) taskProps {
 	return answer
 }
 
-// count is how many payloads this cache had to read; a refusal opens none.
+// count is how many payloads this cache had to read; a refusal opens none, and
+// neither does a tracker answered from its properties.mig sidecar or the
+// caller's own read of that file.
 func (c *taskPropsCache) count() int {
 	if c == nil {
 		return 0

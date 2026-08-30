@@ -105,10 +105,14 @@ type sweepTenant struct {
 	// properties.mig it reads the property list from.
 	donePromotable bool
 	// doneStuck plants a migration that finished but whose staged data no
-	// finalize can promote — the marker alone, with no property list to
-	// promote from. Finalize removes such a tracker having promoted nothing,
-	// so asking for that load is asking for the staged data to be orphaned.
+	// finalize can promote. Finalize removes such a tracker having promoted
+	// nothing, so asking for that load is asking for the staged data to be
+	// orphaned.
 	doneStuck bool
+	// stuckMissing names the one finalize precondition the plant withholds
+	// ("swapped.mig" or "properties.mig"), one tenant each, so the assertion
+	// can say which reason the gate acted on rather than either of two.
+	stuckMissing string
 }
 
 // planted is whether this tenant carries on-disk state the test put there, and
@@ -127,7 +131,8 @@ func coldCancelTenants() []sweepTenant {
 		// tenants at one per second, and both rows are read from disk state a
 		// load changes, so they want as much of that budget as possible.
 		{name: "hot_zz_done_promotable", donePromotable: true},
-		{name: "hot_zz_done_stuck", doneStuck: true},
+		{name: "hot_zz_done_stuck_noswap", doneStuck: true, stuckMissing: "swapped.mig"},
+		{name: "hot_zz_done_stuck_noprops", doneStuck: true, stuckMissing: "properties.mig"},
 	}
 	for i := 0; i < coldCancelCleanTenants; i++ {
 		tenants = append(tenants, sweepTenant{name: fmt.Sprintf("hot_clean_%02d", i)})
@@ -189,8 +194,10 @@ func testColdAndUnhydratedTenantCancel(t *testing.T) {
 			plantStaleTracker(ctx, t, container, tn.name)
 		case tn.donePromotable:
 			plantCompletedTracker(ctx, t, container, tn.name, true, "swapped.mig", "tidied.mig")
+		case tn.doneStuck && tn.stuckMissing == "swapped.mig":
+			plantCompletedTracker(ctx, t, container, tn.name, true, "tidied.mig")
 		case tn.doneStuck:
-			plantCompletedTracker(ctx, t, container, tn.name, false, "tidied.mig")
+			plantCompletedTracker(ctx, t, container, tn.name, false, "swapped.mig", "tidied.mig")
 		}
 	}
 
@@ -236,7 +243,7 @@ func testColdAndUnhydratedTenantCancel(t *testing.T) {
 	// The two completed-migration populations, read before the task runs: the
 	// migration hydrates every tenant it names, and a load is exactly what
 	// changes both answers below.
-	assertCompletedMigrationPopulations(ctx, t, container, tenants, loadedBefore)
+	assertCompletedMigrationPopulations(ctx, t, container, tenants, loadedBefore, loadedAfter)
 
 	t.Logf("post-restart enable-rangeable task: %s", taskID)
 	reindexhelpers.AwaitReindexFinished(t, restURI, taskID)
@@ -354,7 +361,7 @@ func testColdAndUnhydratedTenantCancel(t *testing.T) {
 //     copy and the next sweep frees it. Leaving that tenant cold is the
 //     answer; the operator repairs or removes the tracker by hand.
 func assertCompletedMigrationPopulations(ctx context.Context, t *testing.T,
-	c testcontainers.Container, tenants []sweepTenant, loadedBefore map[string]bool,
+	c testcontainers.Container, tenants []sweepTenant, loadedBefore, loadedAfter map[string]bool,
 ) {
 	t.Helper()
 	for _, tn := range tenants {
@@ -368,6 +375,12 @@ func assertCompletedMigrationPopulations(ctx context.Context, t *testing.T,
 		state := completedPlantState(ctx, t, c, tn.name)
 		promoted := containsDir(state, coldCancelDoneCanonical+"/"+coldCancelDoneMarker)
 		if tn.donePromotable {
+			// Read right after the submit returned, so a stray background
+			// hydration inside the run's own window cannot masquerade as
+			// the sweep's decision.
+			assert.True(t, loadedAfter[tn.name],
+				"tenant %q holds a promotable completed migration, so the sweep's own "+
+					"submit window is when the load must happen", tn.name)
 			assert.True(t, promoted,
 				"tenant %q holds a finished migration's data under its staged name, and only a "+
 					"shard load renames it onto the canonical one. The sweep skipped the load, so "+

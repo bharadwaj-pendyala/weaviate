@@ -31,9 +31,29 @@ func migrationRecordsAt(lsmPath string, logger logrus.FieldLogger) (records []Mi
 	}
 	// One line per read, even on the healthy path — a per-tuple read
 	// regression would otherwise be invisible until startup latency shows it.
-	logger.WithField("path", store.Dir()).WithField("records", len(store.Records())).
-		Debug("read migration records")
+	// Behind the level check because this runs per shard inside the RAFT
+	// apply of a property DELETE, and logrus builds the entry and copies the
+	// field map before consulting the level.
+	if migrationDebugEnabled(logger) {
+		logger.WithField("path", store.Dir()).WithField("records", len(store.Records())).
+			Debug("read migration records")
+	}
 	return store.Records(), len(store.Unreadable()) > 0, false
+}
+
+// migrationDebugEnabled reports whether logger would emit at Debug, without
+// building an entry. An unrecognized wrapper reads as off: the line it
+// guards is a cost diagnostic, and the wrappers production wires are the
+// two types named here.
+func migrationDebugEnabled(logger logrus.FieldLogger) bool {
+	switch l := logger.(type) {
+	case *logrus.Logger:
+		return l.IsLevelEnabled(logrus.DebugLevel)
+	case *logrus.Entry:
+		return l.Logger.IsLevelEnabled(logrus.DebugLevel)
+	default:
+		return false
+	}
 }
 
 // migrationPreservedState names what a sweep of one shard must leave alone: a
@@ -107,6 +127,7 @@ type migrationWithholdReasons struct {
 // migrationPreservedStateAt is the shard-wide preserve state: every tracker on
 // the shard answers, whatever property a caller goes on to ask about. Callers
 // sweeping one property want [migrationPreservedStateFor], which costs less.
+// No production caller yet; the cutover PR wires one.
 func migrationPreservedStateAt(lsmPath string, logger logrus.FieldLogger) migrationPreservedState {
 	return migrationPreservedStateFor(lsmPath, "", nil, logger)
 }
@@ -144,8 +165,8 @@ func migrationPreservedStateFor(lsmPath, propName string, props *taskPropsCache,
 	if !listed {
 		// Nothing here could be enumerated, so the preserve set is missing
 		// names sweeps could read as permission to delete. Debug here since a
-		// DELETE asks this per (property, index type) per shard inside the
-		// RAFT apply; the shard load warns once.
+		// DELETE asks this per property per shard inside the RAFT apply;
+		// the shard load warns once.
 		logger.WithField("path", filepath.Join(lsmPath, migrationsDir)).
 			Debugf("the migration directory could not be listed; withholding every removal on this shard: %v", listErr)
 		state.withholdEverything = true
