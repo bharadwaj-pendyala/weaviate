@@ -602,11 +602,11 @@ func newPrometheusMetrics() *PrometheusMetrics {
 		}, []string{"class_name", "shard_name", "property"}),
 		MigrationRecordsWedged: promauto.NewCounter(prometheus.CounterOpts{
 			Name: "migration_records_wedged_total",
-			Help: "Reindex migration records a shard load left standing for a reason no later load can change. Counted per shard load, so the total tracks loads that found a wedge rather than distinct wedged records; the log line for each names the record, its properties, the shard, and what clears it.",
+			Help: "Reindex migration records a shard load left standing for a reason no later load can change. Every load re-adds the records it found, so the total is a sum over loads rather than a count of loads or of distinct records; the log line for each names the record, its properties, the shard, and what clears it.",
 		}),
 		MigrationRecordsNotUnderstood: promauto.NewCounter(prometheus.CounterOpts{
 			Name: "migration_records_not_understood_total",
-			Help: "Reindex migration records a shard load could not place: one it could not decode, one whose content names a different file, records of more than one node on one shard, or a records directory it could not read at all. Each withholds every promoting and destructive reindex action on its shard; the log line names the file and the reason.",
+			Help: "Reindex migration records a shard load could not place: one it could not decode, one whose content names a different file, records naming more than one migration unit, or a records directory it could not read at all. Each withholds every promoting and destructive reindex action on its shard; the log line names the file and the reason.",
 		}),
 
 		// Queue metrics
