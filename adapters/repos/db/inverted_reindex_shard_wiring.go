@@ -25,8 +25,8 @@ import (
 // at a name it is about to move would serve the wrong data.
 func (s *Shard) reconcileMigrationRecords(ctx context.Context, class *models.Class) {
 	s.migrationRecords = NewMigrationRecordStore(s.pathLSM(), s.index.logger)
-	// The owning store is the only one that may sweep: the same directory is
-	// read by throwaway stores while this shard writes to it.
+	// A store that does not own this directory must not sweep it: deleting a
+	// scratch file there breaks the owner's rename. No such store exists yet.
 	s.migrationRecords.SweepTempFiles()
 
 	reconciler := s.migrationReconciler(func() *models.Class { return class })
