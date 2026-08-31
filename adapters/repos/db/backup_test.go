@@ -152,16 +152,16 @@ func TestListInactiveLSMFiles(t *testing.T) {
 					require.NoError(t, os.WriteFile(filepath.Join(trackerDir, name), []byte("x"), 0o644))
 				}
 				require.NoError(t, os.WriteFile(
-					filepath.Join(recordsDir, "7_searchable_retokenize.json"), []byte("{}"), 0o644))
+					filepath.Join(recordsDir, "7_searchable_retokenize_shard-1__node-0.json"), []byte("{}"), 0o644))
 
 				// Same call the record store's atomic write makes, so the name
 				// carries the real random infix rather than one the test picked.
-				leftover, err := os.CreateTemp(recordsDir, "7_searchable_retokenize.json.*.tmp")
+				leftover, err := os.CreateTemp(recordsDir, "7_searchable_retokenize_shard-1__node-0.json.*.tmp")
 				require.NoError(t, err)
 				require.NoError(t, leftover.Close())
 			},
 			expected: []string{
-				filepath.Join(migrationsDir, "records", "7_searchable_retokenize.json"),
+				filepath.Join(migrationsDir, "records", "7_searchable_retokenize_shard-1__node-0.json"),
 				filepath.Join(migrationsDir, "searchable_retokenize_text_1", "payload.mig"),
 				filepath.Join(migrationsDir, "searchable_retokenize_text_1", "progress.mig.000000001"),
 				filepath.Join(migrationsDir, "searchable_retokenize_text_1", "properties.mig"),
