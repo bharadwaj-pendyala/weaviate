@@ -1977,9 +1977,9 @@ func (p *ReindexProvider) hasLocalPostMergeState(ctx context.Context, payload *R
 // and props the tracker payloads it attributes; nil for either re-reads per
 // tuple. Both belong to one shard, since no two shards name the same path.
 //
-// The scopes are not handed the shard's migration records. Building a record
-// set here lists two directories and can open payloads of its own, which is
-// more than the lookup would save.
+// The [migrationDirScope] values built here are not handed the shard's
+// migration records: building that set lists one directory and opens one file
+// per record in it, which is more than the lookup would save.
 func hasCompletedMigrationTracker(
 	lsmPath string, migrationType ReindexMigrationType, properties []string,
 	dirs *dirNamesCache, props *taskPropsCache,
