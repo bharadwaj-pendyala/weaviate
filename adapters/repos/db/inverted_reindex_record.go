@@ -42,14 +42,14 @@ const (
 type MigrationStrategyCode string
 
 const (
-	StrategyCodeSearchableMapToBlockmax     MigrationStrategyCode = "searchable_map_to_blockmax"
-	StrategyCodeFilterableRoaringsetRefresh MigrationStrategyCode = "filterable_roaringset_refresh"
-	StrategyCodeFilterableToRangeable       MigrationStrategyCode = "filterable_to_rangeable"
-	StrategyCodeSearchableRetokenize        MigrationStrategyCode = "searchable_retokenize"
-	StrategyCodeFilterableRetokenize        MigrationStrategyCode = "filterable_retokenize"
-	StrategyCodeEnableFilterable            MigrationStrategyCode = "enable_filterable"
-	StrategyCodeEnableSearchable            MigrationStrategyCode = "enable_searchable"
-	StrategyCodeRebuildSearchable           MigrationStrategyCode = "rebuild_searchable"
+	StrategyCodeSearchableMapToBlockmax     MigrationStrategyCode = MigrationDirSearchableMapToBlockmax
+	StrategyCodeFilterableRoaringsetRefresh MigrationStrategyCode = MigrationDirFilterableRoaringsetRefresh
+	StrategyCodeFilterableToRangeable       MigrationStrategyCode = MigrationDirPrefixFilterableToRangeable
+	StrategyCodeSearchableRetokenize        MigrationStrategyCode = MigrationDirPrefixSearchableRetokenize
+	StrategyCodeFilterableRetokenize        MigrationStrategyCode = MigrationDirPrefixFilterableRetokenize
+	StrategyCodeEnableFilterable            MigrationStrategyCode = MigrationDirPrefixEnableFilterable
+	StrategyCodeEnableSearchable            MigrationStrategyCode = MigrationDirPrefixEnableSearchable
+	StrategyCodeRebuildSearchable           MigrationStrategyCode = MigrationDirPrefixRebuildSearchable
 )
 
 func (c MigrationStrategyCode) valid() bool {

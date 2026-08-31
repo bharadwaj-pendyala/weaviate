@@ -30,9 +30,9 @@ const (
 )
 
 // migrationEffectStatus reads a migration's effect out of the locally applied
-// schema, naming properties still waiting on it. Five of six type groups
-// commit their effect only on whole-task success, so a visible flag proves
-// commit; the rangeable row does not (own argument below).
+// schema, naming properties still waiting on it. A visible flag proves the task
+// committed, except for enable-rangeable and repair-rangeable, whose flag
+// [migrationPropertyEffectVisible] explains.
 func migrationEffectStatus(class *models.Class, subject MigrationSubject) (migrationEffect, []string) {
 	switch subject.MigrationType {
 	case ReindexTypeRepairFilterable, ReindexTypeRebuildSearchable:

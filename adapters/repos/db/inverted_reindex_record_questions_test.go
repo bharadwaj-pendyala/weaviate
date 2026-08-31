@@ -31,9 +31,9 @@ func testQuestionRecords() (iterating, iterated, merged, swapped, promoted Migra
 		NewMigrationRecordPromoted(subject, flipped, displaced)
 }
 
-// TestMigrationRecordQuestions is the RFC's first acceptance test at its
-// re-derived target: every one of the 5x4 cells asserted directly on a
-// record, with no reader re-interpreting a state at its call site.
+// TestMigrationRecordQuestions asserts all 5x4 state-and-question cells
+// directly on a record, so no caller's reading of a state stands in for the
+// record's own answer.
 func TestMigrationRecordQuestions(t *testing.T) {
 	iterating, iterated, merged, swapped, promoted := testQuestionRecords()
 
