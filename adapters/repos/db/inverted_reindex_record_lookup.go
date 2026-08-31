@@ -516,26 +516,3 @@ func markLegacySupersededGens(trackers []migrationLegacyMarkerTracker) {
 		trackers[i].superseded = trackers[i].gen < effective[trackers[i].prefix]
 	}
 }
-
-// servesEmpty reports properties whose data is still under this tracker's
-// staged name while the canonical directory is gone: the schema flip already
-// committed cluster-wide, and nothing has renamed the staged directory back.
-func (t migrationLegacyMarkerTracker) servesEmpty(lsmPath string) []string {
-	suffixes := migrationSuffixes(t.dirName)
-	if suffixes == nil {
-		return nil
-	}
-	genTail := genSuffix(t.gen)
-	var out []string
-	for _, prop := range t.props {
-		canonical := suffixes.sourceBucketName(prop)
-		if fileExists(filepath.Join(lsmPath, canonical)) {
-			continue
-		}
-		if !fileExists(filepath.Join(lsmPath, canonical+suffixes.ingestSuffix+genTail)) {
-			continue
-		}
-		out = append(out, prop)
-	}
-	return out
-}

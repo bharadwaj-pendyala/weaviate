@@ -158,11 +158,6 @@ func NewShard(ctx context.Context, promMetrics *monitoring.PrometheusMetrics,
 		return nil, fmt.Errorf("init shard's %q store: %w", s.ID(), err)
 	}
 
-	// Captured before finalize consumes them: finalize removes every
-	// completed tracker it processes, promoted or not, so a report read
-	// afterwards cannot name the ones it removed without promoting.
-	preFinalize, preListed, preListErr := snapshotLegacyMarkerTrackers(s.pathLSM(), s.index.logger)
-
 	// Finalize any completed migrations whose directory renames were deferred
 	// from a runtime swap. This must run before bucket loading (initNonVector)
 	// so that buckets are found at their canonical directory names.
@@ -172,7 +167,6 @@ func NewShard(ctx context.Context, promMetrics *monitoring.PrometheusMetrics,
 	// task writes a migration record yet, so this pass has nothing to act on
 	// and every disposition it could reach is still the marker path's.
 	s.reconcileMigrationRecords(ctx, class)
-	s.warnAboutLegacyMarkerMigrations(preFinalize, preListed, preListErr)
 
 	// Pessimistically mark any in-flight enable-rangeable / repair-rangeable
 	// migration's target property as "not locally ready" on this shard.

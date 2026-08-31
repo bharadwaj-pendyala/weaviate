@@ -181,18 +181,6 @@ func fixtureSidecarFor(staged string) string {
 	return staged + "__reindex"
 }
 
-// makeMigrationsUnlistable makes .migrations unreadable so a test can stage
-// the fault that hides every tracker directory.
-func makeMigrationsUnlistable(t *testing.T, lsmPath string) {
-	t.Helper()
-	migrations := filepath.Join(lsmPath, migrationsDir)
-	require.NoError(t, os.Chmod(migrations, 0o111))
-	t.Cleanup(func() { os.Chmod(migrations, 0o755) })
-	if _, err := os.ReadDir(migrations); err == nil {
-		t.Skip("this user can list an unreadable directory, so the failure cannot be staged")
-	}
-}
-
 // dirIsThere fails the test on a stat it cannot interpret, so an assertion
 // never reads an unreadable directory as an absent one.
 func dirIsThere(t *testing.T, path string) bool {
