@@ -88,9 +88,9 @@ const (
 // name, so a role added there with that rule is guarded here too.
 var migrationLiveDataRoles = migrationRolesWithShape(migrationShapeSidecar)
 
-// migrationOwnedRoles adds the canonical role, which no record may reclaim
+// migrationReclaimBlockingRoles adds the canonical role, which no record may reclaim
 // because it is where the holder's property serves from.
-var migrationOwnedRoles = append(slices.Clone(migrationLiveDataRoles), migrationRoleCanonical)
+var migrationReclaimBlockingRoles = append(slices.Clone(migrationLiveDataRoles), migrationRoleCanonical)
 
 // migrationDirHeldByAnotherRecord reports whether any other record on the
 // shard names dir in one of roles.
@@ -317,13 +317,13 @@ func (r *migrationReconciler) retireOneSealed(ctx context.Context, all []Migrati
 		Info("a newer migration took over every property of this one, so its record and directories are reclaimed")
 }
 
-// retireProperty disarms before it removes: without that order the directory
-// removed is exactly where the superseded record's still-armed mirror sends
-// its next copy, and a failed mirror copy fails the user's write with it.
+// retireProperty closes the property's staged buckets before it removes their
+// directory, so the removal leaves no mmap, no in-flight compaction and no
+// registry entry behind.
 func (r *migrationReconciler) retireProperty(ctx context.Context, all []MigrationRecord,
 	subject MigrationSubject, prop string,
 ) error {
-	if err := r.disarmAndClose(ctx, subject.Key, prop); err != nil {
+	if err := r.closeStagedBuckets(ctx, subject.Key, prop); err != nil {
 		return err
 	}
 
