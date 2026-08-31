@@ -43,8 +43,8 @@ type migrationReconcileDeps struct {
 	LocalTasks func() ([]*distributedtask.Task, bool)
 
 	// SealUnit reserves a (task, unit) for teardown, or refuses because a
-	// worker is running for it — writing through handles taken before its
-	// phase began, even after the cluster status goes terminal.
+	// worker is running for it — writing through worker handles taken before
+	// its phase began, even after the cluster status goes terminal.
 	SealUnit func(distributedtask.TaskDescriptor, string) (func(), bool)
 
 	// Class is the locally applied schema for the migrated collection, or nil
@@ -113,6 +113,7 @@ func (r *migrationReconciler) wedged(subject MigrationSubject, format string, ar
 	}
 	r.wedgedKeys[subject.Key] = true
 	r.logger.WithField("record", subject.Key.String()).
+		WithField("properties", subject.Properties).
 		Error(fmt.Sprintf(format, args...) + " " + migrationWedgeRemedy)
 }
 
@@ -796,7 +797,7 @@ func (r *migrationReconciler) discardSealed(ctx context.Context, all []Migration
 
 	ec := errorcompounder.New()
 	for _, prop := range subject.Properties {
-		ec.Add(r.disarmAndClose(ctx, subject.Key, prop))
+		ec.Add(r.closeStagedBuckets(ctx, subject.Key, prop))
 	}
 	if err := ec.ToError(); err != nil {
 		return err
@@ -808,10 +809,10 @@ func (r *migrationReconciler) discardSealed(ctx context.Context, all []Migration
 	return r.store.Remove(subject.Key)
 }
 
-// disarmAndClose reports shutdown failure rather than logging it away: every
+// closeStagedBuckets reports shutdown failure rather than logging it away: every
 // caller removes the property's directory next, and an open bucket's
 // directory leaves mmaps, in-flight compactions, and a registry entry behind.
-func (r *migrationReconciler) disarmAndClose(ctx context.Context, key MigrationRecordKey, prop string) error {
+func (r *migrationReconciler) closeStagedBuckets(ctx context.Context, key MigrationRecordKey, prop string) error {
 	if r.deps.Buckets == nil {
 		return nil
 	}
@@ -877,7 +878,7 @@ func (r *migrationReconciler) reclaimOwnedDirs(all []MigrationRecord, subject Mi
 // makes. The record that still names it reclaims it in its own teardown, so
 // nothing strands.
 func (r *migrationReconciler) mayReclaim(all []MigrationRecord, subject MigrationSubject, dir string) bool {
-	holder, role, taken := migrationDirHeldByAnotherRecord(all, subject, dir, migrationOwnedRoles)
+	holder, role, taken := migrationDirHeldByAnotherRecord(all, subject, dir, migrationReclaimBlockingRoles)
 	if !taken {
 		return true
 	}
