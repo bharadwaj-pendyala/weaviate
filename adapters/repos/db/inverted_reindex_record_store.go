@@ -66,14 +66,16 @@ type MigrationRecordUnreadable struct {
 }
 
 // MigrationRecordStore owns one shard's migration records. Disk is durability
-// only: readers on the apply path are served from the map.
+// only: readers are served from the map, because activating a tenant loads its
+// shard on the RAFT apply loop ([Migrator.UpdateTenants] -> [NewShard]), where
+// a read that went to disk would hold up the whole cluster's log.
 type MigrationRecordStore struct {
 	dir    string
 	logger logrus.FieldLogger
 
 	// writeMu orders disk work. It is separate from mu because mu must never
-	// be held across an fsync — every apply-path reader would queue behind the
-	// disk — while file order and map order still have to agree.
+	// be held across an fsync — a reader on that apply loop would queue behind
+	// the disk — while file order and map order still have to agree.
 	writeMu sync.Mutex
 
 	mu         sync.RWMutex
@@ -346,9 +348,9 @@ func (s *MigrationRecordStore) Unreadable() []MigrationRecordUnreadable {
 	return slices.Clone(s.unreadable)
 }
 
-// maxMigrationRecordBytes bounds what [loadMigrationRecordFile] reads: a
-// Load sits inside the RAFT apply of a property DELETE, which holds the FSM
-// loop cluster-wide (see [maxRecoveryPayloadBytes]).
+// maxMigrationRecordBytes bounds what [loadMigrationRecordFile] reads: a Load
+// runs inside the shard load, and activating a tenant runs that load inside the
+// RAFT apply of an UpdateTenants command, holding the FSM loop cluster-wide.
 //
 // What keeps a record under it: every field a record carries per property is a
 // handle naming a single directory entry, which the filesystem caps, and the

@@ -780,8 +780,9 @@ func findMigrationTask(subject MigrationSubject, tasks []*distributedtask.Task) 
 
 // discard is the cancel edge: seals the unit first (declining and retrying
 // if a worker is live) before removing directories it might still write
-// through. Can't block like other teardown paths do — this walk holds each
-// index's drop lock, and waiting would stall the RAFT apply loop.
+// through. Can't wait for that worker instead: this walk runs from the shard
+// load, and activating a tenant runs that load on the RAFT apply loop, where a
+// wait stalls the whole cluster.
 func (r *migrationReconciler) discard(ctx context.Context, all []MigrationRecord,
 	subject MigrationSubject, why string,
 ) error {
