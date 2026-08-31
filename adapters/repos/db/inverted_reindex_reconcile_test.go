@@ -615,18 +615,24 @@ func TestReconcileFlippedMigrationIgnoresAbandonedTask(t *testing.T) {
 	tests := []struct {
 		name   string
 		record func(MigrationSubject) MigrationRecord
+		// wantCanonicalHolds is what the canonical name must hold afterwards.
+		// The directory surviving is not enough: a reclaim of the flipped
+		// copy leaves the canonical name in place holding the pre-flip data.
+		wantCanonicalHolds string
 	}{
 		{
 			name: "swapped",
 			record: func(s MigrationSubject) MigrationRecord {
 				return NewMigrationRecordSwapped(s, []string{"title"}, map[string]string{"title": "property_title"})
 			},
+			wantCanonicalHolds: "property_title__g42_ingest",
 		},
 		{
 			name: "promoted",
 			record: func(s MigrationSubject) MigrationRecord {
 				return NewMigrationRecordPromoted(s, []string{"title"}, map[string]string{"title": "property_title"})
 			},
+			wantCanonicalHolds: "property_title",
 		},
 	}
 
@@ -645,6 +651,8 @@ func TestReconcileFlippedMigrationIgnoresAbandonedTask(t *testing.T) {
 			_, present := f.state(subject.Key)
 			require.True(t, present, "a cancelled task must never delete data a flip already committed")
 			require.True(t, f.exists("property_title"))
+			require.Equal(t, tt.wantCanonicalHolds, f.contentOf("property_title"),
+				"a cancelled task must never delete data a flip already committed")
 		})
 	}
 }
