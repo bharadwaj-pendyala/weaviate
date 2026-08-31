@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -131,6 +132,67 @@ func TestMigrationRecordRoundTrip(t *testing.T) {
 			require.Equal(t, tt.wantState, decoded.State())
 			require.Equal(t, tt.record, decoded)
 		})
+	}
+}
+
+// TestTheRecordsWireNamesAreTheCompatibilityContract pins the JSON names a
+// record is written under. A round trip through the same struct cannot see a
+// renamed tag: both ends move together and the field still survives. On disk
+// it does not — a record an earlier build wrote decodes with that field at its
+// zero value, silently, under a format version this build accepts.
+func TestTheRecordsWireNamesAreTheCompatibilityContract(t *testing.T) {
+	subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
+
+	keysOf := func(t *testing.T, data []byte, path ...string) []string {
+		t.Helper()
+		var block map[string]any
+		require.NoError(t, json.Unmarshal(data, &block))
+		for _, step := range path {
+			require.Contains(t, block, step)
+			block = block[step].(map[string]any)
+		}
+		return slices.Sorted(maps.Keys(block))
+	}
+
+	swapped, err := encodeMigrationRecord(NewMigrationRecordSwapped(subject,
+		[]string{"title"}, map[string]string{"title": "property_title"}).
+		WithPromotionAt("title", migrationPromotionFinished))
+	require.NoError(t, err)
+	iterating, err := encodeMigrationRecord(NewMigrationRecordIterating(subject,
+		MigrationCheckpoint{LastProcessedKey: []byte{1}, ProcessedCount: 1, IndexedCount: 1}))
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"flip", "formatVersion", "state", "subject"},
+		keysOf(t, swapped))
+	require.Equal(t, []string{
+		"canonicalDirs", "iterationCutoff", "key", "migrationType",
+		"originalTokenization", "properties", "sidecarDirs", "stagedDirs",
+		"targetTokenization", "taskID", "trackerDir",
+	}, keysOf(t, swapped, "subject"))
+	require.Equal(t, []string{"strategyCode", "taskVersion", "unitID"},
+		keysOf(t, swapped, "subject", "key"))
+	require.Equal(t, []string{"displacedDirs", "flipped", "promotion"},
+		keysOf(t, swapped, "flip"))
+	require.Equal(t, []string{"indexedCount", "lastProcessedKey", "processedCount", "updatedAt"},
+		keysOf(t, iterating, "checkpoint"))
+
+	// A strategy code is the middle component of every record's file name, so
+	// its value is on-disk format too. Each is declared as the migration
+	// directory constant of the same name, and without this a rename of that
+	// directory constant would carry the persisted format with it.
+	codes := map[MigrationStrategyCode]string{
+		StrategyCodeSearchableMapToBlockmax:     "searchable_map_to_blockmax",
+		StrategyCodeFilterableRoaringsetRefresh: "filterable_roaringset_refresh",
+		StrategyCodeFilterableToRangeable:       "filterable_to_rangeable",
+		StrategyCodeSearchableRetokenize:        "searchable_retokenize",
+		StrategyCodeFilterableRetokenize:        "filterable_retokenize",
+		StrategyCodeEnableFilterable:            "enable_filterable",
+		StrategyCodeEnableSearchable:            "enable_searchable",
+		StrategyCodeRebuildSearchable:           "rebuild_searchable",
+	}
+	require.Len(t, codes, 8, "two codes now render the same string, so their records share a file name")
+	for code, onDisk := range codes {
+		require.Equal(t, onDisk, string(code))
 	}
 }
 
@@ -889,9 +951,9 @@ func TestMigrationRecordStoreConcurrentAccess(t *testing.T) {
 			}
 		}()
 	}
-	// Foreign readers build their own store over the same directory. Several
-	// gates do this per shard, one of them on every scheduler tick, so they run
-	// against a shard that is writing.
+	// A reader that does not own the directory builds its own store over it.
+	// No production caller does that yet; this pins that Load stays correct
+	// against a shard that is writing when one arrives.
 	for range readers {
 		wg.Add(1)
 		go func() {
@@ -1382,11 +1444,11 @@ func migrationShardRootDirectoryRoles(t *testing.T) []migrationHandleGroup {
 	return out
 }
 
-// TestEveryDirectoryRoleUnderTheShardRootCarriesAShapeRule is what stops the
-// next role from arriving with no rule at all. The two direction tests around
-// it walk the same table, so a role carrying neither shape gives them nothing
-// to assert and passes both in silence — while still handing its handle to
-// os.RemoveAll beside the stores the shard serves from.
+// TestEveryDirectoryRoleUnderTheShardRootCarriesAShapeRule says which rule is
+// missing. A role arriving with no shape is caught either way — the direction
+// test below refuses nothing at its handle and goes red on the vector stores —
+// but it goes red there on a bucket name that looks unrelated, and here on the
+// role.
 func TestEveryDirectoryRoleUnderTheShardRootCarriesAShapeRule(t *testing.T) {
 	for _, group := range migrationShardRootDirectoryRoles(t) {
 		t.Run(group.field, func(t *testing.T) {
