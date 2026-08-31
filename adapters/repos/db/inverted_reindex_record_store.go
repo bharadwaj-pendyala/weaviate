@@ -110,10 +110,10 @@ func (s *MigrationRecordStore) path(key MigrationRecordKey) string {
 	return filepath.Join(s.dir, key.fileName())
 }
 
-// SweepTempFiles removes the scratch files a crash left behind, separate
-// from Load since Load also serves throwaway stores over a directory another
-// store owns and is actively writing (deleting a scratch file there breaks
-// the owner's rename). Only the owning shard calls this, once, before load.
+// SweepTempFiles removes the scratch files a crash left behind. Kept out of
+// Load, which any store may run over a directory the owning shard is writing
+// to, and where removing a scratch file would break that shard's rename. Only
+// the owning shard calls this, once, before load.
 func (s *MigrationRecordStore) SweepTempFiles() {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()

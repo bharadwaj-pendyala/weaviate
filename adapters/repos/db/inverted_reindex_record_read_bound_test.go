@@ -23,10 +23,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestOversizedMigrationRecordIsRefusedNotParsed pins the read bound: Load
-// runs inside the RAFT apply of a property DELETE, which holds the FSM loop
-// cluster-wide, so an oversized (but otherwise valid) record must be refused
-// rather than decoded.
+// TestOversizedMigrationRecordIsRefusedNotParsed pins the read bound: a Load
+// runs inside the shard load, and activating a tenant runs that load inside
+// the RAFT apply of an UpdateTenants command, so an oversized (but otherwise
+// valid) record must be refused rather than decoded.
 func TestOversizedMigrationRecordIsRefusedNotParsed(t *testing.T) {
 	tests := []struct {
 		name        string
