@@ -117,8 +117,8 @@ func (r *migrationReconciler) wedged(subject MigrationSubject, format string, ar
 		Error(fmt.Sprintf(format, args...) + " " + migrationWedgeRemedy)
 }
 
-// migrationUnreadableFileNames names the files an operator would have to look
-// at. Every "not understood" line said how many there were and never which.
+// migrationUnreadableFileNames names the files an operator has to look at. The
+// shard-wide line carries a count, which does not say which files.
 func migrationUnreadableFileNames(unreadable []MigrationRecordUnreadable) []string {
 	out := make([]string, 0, len(unreadable))
 	for _, u := range unreadable {
@@ -551,7 +551,13 @@ func (r *migrationReconciler) settleInterruptedPromotion(rec MigrationRecordSwap
 // pass re-runs the rename anyway since the staged directory persists.
 func (r *migrationReconciler) abandonPromotion(rec MigrationRecordSwapped, prop, staged string) MigrationRecordSwapped {
 	stagedThere, err := r.dirExists(staged)
-	if err != nil || !stagedThere {
+	if err != nil {
+		r.logger.WithField("record", rec.Subject().Key.String()).Errorf(
+			"cannot tell whether the staged directory %q of property %q survived its failed rename, "+
+				"so its started promotion mark is left standing: %v", staged, prop, err)
+		return rec
+	}
+	if !stagedThere {
 		return rec
 	}
 	abandoned := rec.WithPromotionAbandoned(prop)
@@ -709,8 +715,8 @@ func (r *migrationReconciler) sealUnit(subject MigrationSubject) (func(), bool) 
 }
 
 // withSealedUnit runs a teardown under the unit's seal, declining (and
-// retrying next pass) if a worker is live — every arm here writes through
-// pointers taken before the worker's phase began.
+// retrying next pass) if a worker is live: that worker keeps writing through
+// pointers it took before its phase began, into what the teardown removes.
 func (r *migrationReconciler) withSealedUnit(subject MigrationSubject, what string, run func() error) error {
 	release, sealed := r.sealUnit(subject)
 	if !sealed {
