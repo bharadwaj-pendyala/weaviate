@@ -62,7 +62,7 @@ type migrationReconciler struct {
 	lsmPath string
 	// wedgedKeys are the records this pass left standing for a reason no later
 	// load changes. They feed the node-wide migration_records_wedged_total
-	// counter and the settled note. Reset at the start of a pass.
+	// counter. Reset at the start of a pass.
 	wedgedKeys map[MigrationRecordKey]bool
 	logger     logrus.FieldLogger
 	deps       migrationReconcileDeps
@@ -155,56 +155,13 @@ func (r *migrationReconciler) Reconcile(ctx context.Context) error {
 	}
 	pass := migrationPassRecords{all: records, someUnreadable: someRecordsUnreadable}
 
-	before := make(map[MigrationRecordKey]string, len(records))
-	for _, rec := range records {
-		before[rec.Subject().Key] = migrationRecordFingerprint(rec)
-	}
-
 	for _, rec := range records {
 		if err := r.reconcileOne(ctx, rec, pass); err != nil {
 			// One migration must not be able to keep a shard from loading.
 			r.logger.WithField("record", rec.Subject().Key.String()).Errorf("reconcile migration record: %v", err)
 		}
 	}
-	r.noteWhatThisPassSettled(before, someRecordsUnreadable)
 	return nil
-}
-
-// noteWhatThisPassSettled writes down the directories this pass reconciled and
-// reached an answer no later load revisits, so a sweep over the cold shard can
-// answer "would hydrating reclaim anything here" without hydrating to find out.
-//
-// A shard that could not read every record settles nothing: it withheld, and
-// the next load may read what this one could not.
-func (r *migrationReconciler) noteWhatThisPassSettled(before map[MigrationRecordKey]string, someUnreadable bool) {
-	if someUnreadable {
-		migrationDiscardSettledNote(r.lsmPath)
-		return
-	}
-	var settled []string
-	for _, rec := range r.store.Records() {
-		subject := rec.Subject()
-		was, seen := before[subject.Key]
-		if !seen || was == "" || was != migrationRecordFingerprint(rec) {
-			continue
-		}
-		// An unchanged fingerprint only says this pass did not write. The
-		// commonest reason is a verdict withheld on this node's applied task
-		// map, which changes with no record write. Only a wedged record has an
-		// answer no later load revisits.
-		if !r.wedgedKeys[subject.Key] {
-			continue
-		}
-		if subject.TrackerDir != "" {
-			settled = append(settled, subject.TrackerDir)
-		}
-		settled = append(settled, migrationOwnedDirs(subject)...)
-	}
-	if err := migrationWriteSettledNote(r.lsmPath, settled); err != nil {
-		// Costs the hydration it would have saved, and nothing else.
-		r.logger.WithField("path", migrationSettledNotePath(r.lsmPath)).
-			Debugf("could not write the settled-migrations note: %v", err)
-	}
 }
 
 func (r *migrationReconciler) reconcileOne(ctx context.Context, rec MigrationRecord,

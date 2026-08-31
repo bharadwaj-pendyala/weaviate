@@ -929,12 +929,6 @@ func listInactiveLSMFiles(lsmDir, rootPath string) ([]string, error) {
 				if filepath.Ext(d.Name()) == tmpExt {
 					return nil
 				}
-				// The settled note is a cache of the last reconciliation pass
-				// on THIS shard, so it describes nothing a restored copy would
-				// be right about.
-				if d.Name() == migrationSettledNoteFile {
-					return nil
-				}
 				relPath, relErr := filepath.Rel(rootPath, fpath)
 				if relErr != nil {
 					return relErr
