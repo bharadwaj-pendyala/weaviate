@@ -507,8 +507,9 @@ type Shard struct {
 	propValueIndexState           atomic.Value // *propValueIndexState
 	propertyValueIndexCallbacksMu sync.Mutex
 
-	// migrationRecords is this shard's reindex migration state. Reconciliation
-	// builds it at load, before any bucket opens.
+	// migrationRecords is this shard's reindex migration state.
+	// [Shard.reconcileMigrationRecords] builds it when the shard loads, before
+	// any bucket opens.
 	migrationRecords *MigrationRecordStore
 	// stores names of properties that are searchable and use buckets of
 	// inverted strategy. for such properties delta analyzer should avoid
