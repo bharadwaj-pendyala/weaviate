@@ -18,6 +18,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/weaviate/weaviate/adapters/repos/db/helpers"
 	"github.com/weaviate/weaviate/cluster/distributedtask"
 	"github.com/weaviate/weaviate/entities/models"
 )
@@ -267,6 +268,35 @@ func TestReconcileSupersession(t *testing.T) {
 			tt.assert(t, f)
 		})
 	}
+}
+
+// TestRetirementOfARecordNamingNoSidecarLeavesTheShardStanding drives the one
+// caller the empty handle reached: retirement ranges the record's sidecar
+// handles, and joining an empty one onto the shard root resolves to the root
+// itself. Reconciliation runs before any bucket opens, so nothing would hold
+// the tree and a removal would take the object store with it.
+func TestRetirementOfARecordNamingNoSidecarLeavesTheShardStanding(t *testing.T) {
+	f := newReconcileFixture(t)
+	f.class = testClassWithTokenization(models.PropertyTokenizationWord, "title")
+
+	superseded := testMigrationSubject(10, StrategyCodeSearchableRetokenize, "title")
+	superseded.SidecarDirs["title"] = ""
+	f.mkdirs(helpers.ObjectsBucketLSM, "property_title__g10_ingest",
+		"property_title__g20_ingest", "property_title")
+	f.put(NewMigrationRecordMerged(superseded))
+	f.put(swappedOn(20, "title"))
+	for _, rec := range f.store.Records() {
+		f.tasks = append(f.tasks, testTask(rec.Subject().TaskID, rec.Subject().Key.TaskVersion, distributedtask.TaskStatusStarted))
+	}
+
+	f.reconcile()
+
+	require.True(t, f.exists(helpers.ObjectsBucketLSM), "the shard's object store was reclaimed")
+	require.Equal(t, helpers.ObjectsBucketLSM, f.contentOf(helpers.ObjectsBucketLSM))
+	require.Equal(t, "property_title__g20_ingest", f.contentOf("property_title"),
+		"the successor's promotion is unaffected by the handle naming nothing")
+	_, present := f.state(MigrationRecordKey{TaskVersion: 10, StrategyCode: StrategyCodeSearchableRetokenize, UnitID: "shard-1__node-0"})
+	require.False(t, present, "a record naming no sidecar still retires")
 }
 
 // TestShutdownFailureHoldsBackRemoval pins what both removal edges share:

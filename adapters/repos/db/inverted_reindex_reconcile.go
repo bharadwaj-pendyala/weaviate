@@ -468,8 +468,8 @@ func (r *migrationReconciler) clearForPromotion(all []MigrationRecord,
 	if !r.mayReplace(all, subject, dir, what) {
 		return false, nil
 	}
-	if err := os.RemoveAll(r.path(dir)); err != nil {
-		return false, fmt.Errorf("remove %s %q the promotion replaces: %w", what, dir, err)
+	if err := r.removeDir(r.lsmPath, dir, what+" the promotion replaces"); err != nil {
+		return false, err
 	}
 	return true, nil
 }
@@ -828,18 +828,14 @@ func (r *migrationReconciler) closeStagedBuckets(ctx context.Context, key Migrat
 // bucket directories the Iterated probe reads as proof the rebuild reached
 // disk.
 func (r *migrationReconciler) removeTrackerDir(all []MigrationRecord, subject MigrationSubject) {
-	if subject.TrackerDir == "" {
-		return
-	}
 	if holder, taken := migrationTrackerHeldByAnotherRecord(all, subject); taken {
 		r.logger.WithField("record", subject.Key.String()).WithField("dir", subject.TrackerDir).Errorf(
 			"refusing to remove tracker directory %q: record %s names it too, and its payload is in there; "+
 				"leaving it for that record to answer for", subject.TrackerDir, holder)
 		return
 	}
-	path := filepath.Join(r.lsmPath, migrationsDir, subject.TrackerDir)
-	if err := os.RemoveAll(path); err != nil {
-		r.logger.WithField("dir", path).Errorf("remove migration directory: %v", err)
+	if err := r.removeDir(r.migrationsPath(), subject.TrackerDir, "the migration's tracker directory"); err != nil {
+		r.logger.WithField("dir", subject.TrackerDir).Errorf("%v", err)
 	}
 }
 
@@ -856,8 +852,8 @@ func (r *migrationReconciler) reclaimOwnedDirs(all []MigrationRecord, subject Mi
 		if !r.mayReclaim(all, subject, dir) {
 			continue
 		}
-		if err := os.RemoveAll(r.path(dir)); err != nil {
-			r.logger.WithField("dir", dir).Errorf("remove migration directory: %v", err)
+		if err := r.removeDir(r.lsmPath, dir, "a migration directory"); err != nil {
+			r.logger.WithField("dir", dir).Errorf("%v", err)
 		}
 		// A directory we cannot stat counts as surviving: the caller aborts on
 		// a non-empty list, which is the safe reading of "could not tell".
@@ -916,7 +912,41 @@ func migrationOwnedDirs(subject MigrationSubject) []string {
 	return dirs
 }
 
-func (r *migrationReconciler) path(dir string) string { return filepath.Join(r.lsmPath, dir) }
+// path turns a recorded directory handle into a filesystem path under root,
+// and is the only place a handle becomes one. A handle that does not name a
+// single entry is refused here rather than at each caller: joining an empty or
+// escaping handle onto root resolves to root itself, and the callers that
+// follow remove or rename what they are handed.
+func (r *migrationReconciler) path(root, dir, what string) (string, error) {
+	if !migrationHandleIsOneElement(dir) {
+		return "", fmt.Errorf("refusing to act on %s %q: it does not name a single directory under %q",
+			what, dir, root)
+	}
+	return filepath.Join(root, dir), nil
+}
+
+// removeDir removes one directory a record names, and is the only path from a
+// handle to os.RemoveAll. An empty handle is the record's ordinary "names
+// none", so there is nothing to remove.
+func (r *migrationReconciler) removeDir(root, dir, what string) error {
+	if dir == "" {
+		return nil
+	}
+	path, err := r.path(root, dir, what)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("remove %s %q: %w", what, dir, err)
+	}
+	return nil
+}
+
+// migrationsPath is the root the tracker directories live under, as opposed to
+// the shard's LSM root every bucket directory is joined onto.
+func (r *migrationReconciler) migrationsPath() string {
+	return filepath.Join(r.lsmPath, migrationsDir)
+}
 
 // migrationDirExists separates "not there" from "could not tell". Destructive
 // arms guard on absence, so any stat failure other than ENOENT must stop the
@@ -937,14 +967,26 @@ func (r *migrationReconciler) dirExists(dir string) (bool, error) {
 	if dir == "" {
 		return false, nil
 	}
-	return migrationDirExists(r.path(dir))
+	path, err := r.path(r.lsmPath, dir, "a recorded directory")
+	if err != nil {
+		return false, err
+	}
+	return migrationDirExists(path)
 }
 
 // rename is the reconciler's only promoting filesystem step. The Promoted
 // record written on its strength is durable, so the rename must be durable
 // too, or a crash leaves a record naming a path the filesystem never created.
 func (r *migrationReconciler) rename(from, to string) error {
-	if err := diskio.RenameAndSync(r.path(from), r.path(to)); err != nil {
+	fromPath, err := r.path(r.lsmPath, from, "the directory to promote")
+	if err != nil {
+		return err
+	}
+	toPath, err := r.path(r.lsmPath, to, "the name to promote onto")
+	if err != nil {
+		return err
+	}
+	if err := diskio.RenameAndSync(fromPath, toPath); err != nil {
 		return fmt.Errorf("promote %q to %q: %w", from, to, err)
 	}
 	return nil

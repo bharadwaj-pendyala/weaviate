@@ -13,8 +13,6 @@ package db
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"slices"
 )
 
@@ -300,8 +298,8 @@ func (r *migrationReconciler) retireOneSealed(ctx context.Context, all []Migrati
 		if !r.mayReclaim(all, subject, dir) {
 			continue
 		}
-		if err := os.RemoveAll(r.path(dir)); err != nil {
-			r.logger.WithField("dir", dir).Errorf("remove sidecar directory of a superseded migration: %v", err)
+		if err := r.removeDir(r.lsmPath, dir, "the sidecar directory of a superseded migration"); err != nil {
+			r.logger.WithField("dir", dir).Errorf("%v", err)
 		}
 	}
 	r.removeTrackerDir(all, subject)
@@ -328,14 +326,11 @@ func (r *migrationReconciler) retireProperty(ctx context.Context, all []Migratio
 	}
 
 	dir := subject.StagedDirs[prop]
-	if dir == "" || migrationDirClaimedAsDisplaced(all, subject, dir) {
+	if migrationDirClaimedAsDisplaced(all, subject, dir) {
 		return nil
 	}
 	if !r.mayReclaim(all, subject, dir) {
 		return nil
 	}
-	if err := os.RemoveAll(r.path(dir)); err != nil {
-		return fmt.Errorf("remove staged directory %q of a superseded migration: %w", dir, err)
-	}
-	return nil
+	return r.removeDir(r.lsmPath, dir, "the staged directory of a superseded migration")
 }

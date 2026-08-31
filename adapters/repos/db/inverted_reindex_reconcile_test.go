@@ -25,6 +25,7 @@ import (
 	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/weaviate/weaviate/adapters/repos/db/helpers"
 	"github.com/weaviate/weaviate/cluster/distributedtask"
 	"github.com/weaviate/weaviate/entities/models"
 )
@@ -150,6 +151,61 @@ func (f *reconcileFixture) deps() migrationReconcileDeps {
 		},
 		Class:   func() *models.Class { return f.class },
 		Buckets: f.buckets,
+	}
+}
+
+// TestOnlyAHandleNamingOneDirectoryBecomesAPath pins the reconciler's single
+// crossing from a recorded handle to the filesystem. Every removal and the
+// promotion rename go through [migrationReconciler.path], so a handle that
+// resolves to the shard root is refused once here instead of at each caller —
+// which is what kept one caller from having to remember.
+func TestOnlyAHandleNamingOneDirectoryBecomesAPath(t *testing.T) {
+	tests := []struct {
+		name string
+		dir  string
+		// refusedAsPath is what [migrationReconciler.path] answers.
+		refusedAsPath bool
+		// refusedAsRemoval differs for the empty handle alone: it is the
+		// record's ordinary "names none", so there is nothing to remove and
+		// nothing to report.
+		refusedAsRemoval bool
+	}{
+		{name: "names none", dir: "", refusedAsPath: true, refusedAsRemoval: false},
+		{name: "the root itself", dir: ".", refusedAsPath: true, refusedAsRemoval: true},
+		{name: "the parent of the root", dir: "..", refusedAsPath: true, refusedAsRemoval: true},
+		{name: "a join back to the root", dir: "x/..", refusedAsPath: true, refusedAsRemoval: true},
+		{name: "a nested path", dir: "sub/dir", refusedAsPath: true, refusedAsRemoval: true},
+		{name: "an absolute path", dir: "/etc", refusedAsPath: true, refusedAsRemoval: true},
+		{name: "one directory", dir: "property_title", refusedAsPath: false, refusedAsRemoval: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newReconcileFixture(t)
+			f.mkdirs(helpers.ObjectsBucketLSM, "property_title")
+			r := newMigrationReconciler(f.store, f.lsmPath, f.logger, f.deps())
+
+			path, err := r.path(f.lsmPath, tt.dir, "a recorded directory")
+			if tt.refusedAsPath {
+				require.Error(t, err)
+				require.Empty(t, path)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, filepath.Join(f.lsmPath, tt.dir), path)
+			}
+
+			err = r.removeDir(f.lsmPath, tt.dir, "a recorded directory")
+			if tt.refusedAsRemoval {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+
+			require.DirExists(t, f.lsmPath, "the shard's LSM directory")
+			require.True(t, f.exists(helpers.ObjectsBucketLSM), "the shard's object store")
+			require.Equal(t, tt.refusedAsPath, f.exists("property_title"),
+				"only a handle that names one directory removes one")
+		})
 	}
 }
 
