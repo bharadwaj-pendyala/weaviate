@@ -75,10 +75,9 @@ func TestAPromotionRefusesToReplaceAnotherRecordsData(t *testing.T) {
 	}
 }
 
-// TestATeardownKeepsASurvivorsTrackerDirectory pins the tracker role, which no
-// cross-record check saw at all. Two records can name one tracker directory,
-// and it holds each one's payload.mig — so one record's teardown leaves the
-// other naming a path that no longer exists.
+// TestATeardownKeepsASurvivorsTrackerDirectory pins the tracker role. Two
+// records can name one tracker directory, and it holds each one's payload.mig,
+// so one record's teardown must not leave the other naming a path that is gone.
 func TestATeardownKeepsASurvivorsTrackerDirectory(t *testing.T) {
 	f := newReconcileFixture(t)
 	f.class = testClassWithTokenization(models.PropertyTokenizationWord, "title")
@@ -106,9 +105,8 @@ func TestATeardownKeepsASurvivorsTrackerDirectory(t *testing.T) {
 }
 
 // TestCommitMergedRefusesARecordItCouldNeverPromote pins the one wedge the
-// reconciler manufactures itself. commitMerged validated every staged
-// directory and never the canonical one, then wrote a Swapped record whose
-// promotion fails on every pass from the moment it lands.
+// reconciler could manufacture itself: a Swapped record written for a property
+// naming no canonical directory can never promote, on any later pass.
 func TestCommitMergedRefusesARecordItCouldNeverPromote(t *testing.T) {
 	f := newReconcileFixture(t)
 	f.class = testClassWithTokenization(models.PropertyTokenizationWord, "title")
@@ -133,9 +131,8 @@ func TestCommitMergedRefusesARecordItCouldNeverPromote(t *testing.T) {
 }
 
 // TestADiscardKeepsAnotherRecordsStagedCopy pins the reclaim side of the same
-// query. The refusal covered only another record's canonical directory, so two
-// records naming one staged directory were unguarded in both directions — and
-// post-flip a staged directory is live data.
+// query: two records may name one staged directory, and post-flip that
+// directory is live data for whichever of them still serves from it.
 func TestADiscardKeepsAnotherRecordsStagedCopy(t *testing.T) {
 	f := newReconcileFixture(t)
 	f.class = testClassWithTokenization(models.PropertyTokenizationWord, "title")

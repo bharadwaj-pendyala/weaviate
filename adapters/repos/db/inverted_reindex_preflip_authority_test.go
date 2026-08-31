@@ -73,10 +73,10 @@ const preflipTerms = 25
 // takes away.
 const preflipLoads = 6
 
-// TestThePreFlipCanonicalBucketIsAuthoritative measures the precondition F4
-// rests on. Retiring a record that has not flipped reclaims its staged
-// directory, and that is only safe because pre-flip the canonical bucket is
-// still the complete primary copy — the same fact the cancel edge relies on.
+// TestThePreFlipCanonicalBucketIsAuthoritative measures the precondition
+// retirement rests on: reclaiming the staged directory of a record that never
+// flipped is safe only because the canonical bucket is still the complete
+// primary copy, which is also what the cancel edge relies on.
 //
 // So: a real property serving 25 terms, a record staging a rebuild for it, the
 // record retired by a resubmit, and the canonical bucket asked again at every
