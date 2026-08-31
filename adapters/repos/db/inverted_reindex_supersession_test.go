@@ -284,10 +284,20 @@ func TestShutdownFailureHoldsBackRemoval(t *testing.T) {
 	tests := []struct {
 		name    string
 		arrange func(f *reconcileFixture)
-		drive   func(f *reconcileFixture)
 		key     MigrationRecordKey
 		dir     string
 	}{
+		{
+			name: "the cancel edge keeps the staged copy it could not close",
+			arrange: func(f *reconcileFixture) {
+				subject := testMigrationSubject(42, StrategyCodeSearchableRetokenize, "title")
+				f.mkdirs("property_title__g42_ingest", "property_title__s42_reindex", "property_title")
+				f.put(NewMigrationRecordMerged(subject))
+				f.tasks = []*distributedtask.Task{testTask(subject.TaskID, 42, distributedtask.TaskStatusCancelled)}
+			},
+			key: key(42),
+			dir: "property_title__g42_ingest",
+		},
 		{
 			name: "the supersession edge keeps the predecessor that still names it",
 			arrange: func(f *reconcileFixture) {
@@ -295,9 +305,8 @@ func TestShutdownFailureHoldsBackRemoval(t *testing.T) {
 				f.put(NewMigrationRecordMerged(testMigrationSubject(10, StrategyCodeSearchableRetokenize, "title")))
 				f.put(swappedOn(20, "title"))
 			},
-			drive: func(f *reconcileFixture) { f.reconcile() },
-			key:   key(10),
-			dir:   "property_title__g10_ingest",
+			key: key(10),
+			dir: "property_title__g10_ingest",
 		},
 	}
 
@@ -308,7 +317,7 @@ func TestShutdownFailureHoldsBackRemoval(t *testing.T) {
 			tt.arrange(f)
 			f.buckets.err = errors.New("bucket shutdown refused")
 
-			tt.drive(f)
+			f.reconcile()
 
 			assert.True(t, f.exists(tt.dir), "the directory of a bucket that is still open")
 			_, present := f.state(tt.key)
