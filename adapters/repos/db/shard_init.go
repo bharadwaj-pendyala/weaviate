@@ -163,9 +163,10 @@ func NewShard(ctx context.Context, promMetrics *monitoring.PrometheusMetrics,
 	// so that buckets are found at their canonical directory names.
 	FinalizeCompletedMigrations(s.pathLSM(), s.index.logger)
 
-	// Runs alongside the marker-era finalize above, not instead of it: no
-	// task writes a migration record yet, so this pass has nothing to act on
-	// and every disposition it could reach is still the marker path's.
+	// Nothing writes a migration record on this build, so this pass finds none
+	// and changes nothing. Before anything writes one, FinalizeCompletedMigrations
+	// above and this pass have to agree on who owns the staged, sidecar and
+	// tracker directories they both name.
 	s.reconcileMigrationRecords(ctx, class)
 
 	// Pessimistically mark any in-flight enable-rangeable / repair-rangeable
@@ -335,8 +336,6 @@ var errRecoveryPayloadTooLarge = errors.New("recovery payload exceeds the parse 
 // refuseOversizedRecoveryPayload reports a payload.mig too large to read where
 // it is being read. The bound travels with the caller because the two readers
 // bound for opposite reasons; see the constants above.
-// [unboundedRecoveryPayload] refuses nothing, so the unbounded reader calls
-// this too rather than carrying its own copy of the check.
 func refuseOversizedRecoveryPayload(path string, bound int64) error {
 	if bound <= unboundedRecoveryPayload {
 		return nil
@@ -358,7 +357,7 @@ func refuseOversizedRecoveryPayload(path string, bound int64) error {
 // payload (os.IsNotExist) distinguishable from an unreadable or unparseable
 // one: only the former reads as "the task recorded nothing"
 // ([migrationDirScope.inScopeFailingOpen]); the latter fails the
-// unloaded-shard gate open.
+// unloaded-shard gate and the recovery probe ([hasUntidiedTracker]) open.
 //
 // maxBytes refuses a larger payload before opening it;
 // [unboundedRecoveryPayload] reads any size.
