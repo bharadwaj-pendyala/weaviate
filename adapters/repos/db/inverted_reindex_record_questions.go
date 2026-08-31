@@ -49,15 +49,7 @@ type migrationRecordQuestions interface {
 // than the reclaimer. A directory this reports owned and the reclaimer skips
 // would survive with nothing attributing it.
 func (b migrationRecordBase) OwnsBucket(dir string) bool {
-	if dir == "" {
-		return false
-	}
-	for _, prop := range b.subject.Properties {
-		if slices.Contains(migrationOwnCopyDirs(b.subject, prop), dir) {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(migrationOwnedDirs(b.subject), dir)
 }
 
 func (r MigrationRecordIterating) StagedDataComplete() bool { return false }
