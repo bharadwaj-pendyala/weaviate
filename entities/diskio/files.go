@@ -67,10 +67,10 @@ func Fsync(path string) error {
 	return f.Sync()
 }
 
-// RenameAndSync makes a rename durable. The new name is a directory entry, so
-// a machine crash keeps it only once the directory holding it is synced —
-// which is what a caller needs when something else durably records the rename
-// as done.
+// RenameAndSync makes a rename durable. A name is a directory entry, so a
+// machine crash keeps the rename only once the directory holding the new name
+// is synced, and the one holding the old name too where they differ. Callers
+// need that when something else durably records the rename as done.
 func RenameAndSync(from, to string) error {
 	return renameAndSync(from, to, Fsync)
 }
