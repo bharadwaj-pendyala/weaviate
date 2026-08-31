@@ -72,19 +72,6 @@ const (
 	// claim, so it can't be mistaken for the cancelled run's own.
 	coldCancelPlantedDir = "filterable_to_rangeable_" + coldCancelProp + "_9"
 
-	// A finished migration's tracker, for a property this collection does not
-	// have: a load's finalize renames the staged dir onto the canonical name,
-	// and pointing that at a real property would rewrite the bucket the
-	// migration under test is building. Generation 9 for the same reason
-	// coldCancelPlantedDir uses it.
-	coldCancelDoneProp      = "ghost"
-	coldCancelDoneDir       = "enable_filterable_" + coldCancelDoneProp + "_9"
-	coldCancelDoneIngest    = "property_" + coldCancelDoneProp + "__enable_filterable_ingest_9"
-	coldCancelDoneCanonical = "property_" + coldCancelDoneProp
-	// Written into the staged dir, so the canonical dir it becomes can be told
-	// from one something else created.
-	coldCancelDoneMarker = "promoted.marker"
-
 	// Prometheus port. The compose does not publish it, so every scrape runs
 	// inside the container.
 	coldCancelMetricsPort = 2112
@@ -100,25 +87,6 @@ type sweepTenant struct {
 	// wantTrackerAfterSweep is the state of that tracker dir once the
 	// post-restart submit has run its sweep.
 	wantTrackerAfterSweep bool
-	// donePromotable plants a migration that finished and whose staged data a
-	// load's finalize can still promote: both completion sentinels plus the
-	// properties.mig it reads the property list from.
-	donePromotable bool
-	// doneStuck plants a migration that finished but whose staged data no
-	// finalize can promote. Finalize removes such a tracker having promoted
-	// nothing, so asking for that load is asking for the staged data to be
-	// orphaned.
-	doneStuck bool
-	// stuckMissing names the one finalize precondition the plant withholds
-	// ("swapped.mig" or "properties.mig"), one tenant each, so the assertion
-	// can say which reason the gate acted on rather than either of two.
-	stuckMissing string
-}
-
-// planted is whether this tenant carries on-disk state the test put there, and
-// which therefore must survive the residue clearing that follows the restart.
-func (tn sweepTenant) planted() bool {
-	return tn.stale || tn.donePromotable || tn.doneStuck
 }
 
 func coldCancelTenants() []sweepTenant {
@@ -127,12 +95,6 @@ func coldCancelTenants() []sweepTenant {
 		{name: "hot_stale_b", stale: true},
 		{name: "cold_stale_a", cold: true, stale: true, wantTrackerAfterSweep: true},
 		{name: "cold_stale_b", cold: true, stale: true, wantTrackerAfterSweep: true},
-		// "zz" so these sort last: background hydration works through the
-		// tenants at one per second, and both rows are read from disk state a
-		// load changes, so they want as much of that budget as possible.
-		{name: "hot_zz_done_promotable", donePromotable: true},
-		{name: "hot_zz_done_stuck_noswap", doneStuck: true, stuckMissing: "swapped.mig"},
-		{name: "hot_zz_done_stuck_noprops", doneStuck: true, stuckMissing: "properties.mig"},
 	}
 	for i := 0; i < coldCancelCleanTenants; i++ {
 		tenants = append(tenants, sweepTenant{name: fmt.Sprintf("hot_clean_%02d", i)})
@@ -189,15 +151,8 @@ func testColdAndUnhydratedTenantCancel(t *testing.T) {
 	// managed to sweep itself clean before the drain timeout is a race, and
 	// the populations this test separates must not depend on it.
 	for _, tn := range tenants {
-		switch {
-		case tn.stale:
+		if tn.stale {
 			plantStaleTracker(ctx, t, container, tn.name)
-		case tn.donePromotable:
-			plantCompletedTracker(ctx, t, container, tn.name, true, "swapped.mig", "tidied.mig")
-		case tn.doneStuck && tn.stuckMissing == "swapped.mig":
-			plantCompletedTracker(ctx, t, container, tn.name, true, "tidied.mig")
-		case tn.doneStuck:
-			plantCompletedTracker(ctx, t, container, tn.name, false, "swapped.mig", "tidied.mig")
 		}
 	}
 
@@ -215,20 +170,13 @@ func testColdAndUnhydratedTenantCancel(t *testing.T) {
 	// Clear it here, while the shards are unloaded and nothing holds the files
 	// open, so "nothing to sweep" means what it says.
 	clearReindexResidue(ctx, t, container,
-		tenantNames(tenants, func(tn sweepTenant) bool { return !tn.cold && !tn.planted() }))
+		tenantNames(tenants, func(tn sweepTenant) bool { return !tn.cold && !tn.stale }))
 
 	// Step 5: re-submit, naming the HOT tenants — an unnamed COLD tenant would
 	// get a task unit and fail on a shard the index map no longer has. The
 	// sweep itself is collection-wide regardless: it walks the shard map, not
 	// the tenant filter.
-	//
-	// The completed-migration tenants are left unnamed: a task loads every
-	// tenant it names, and that load runs the deferred finalize whatever the
-	// gate answered. The sweep reaches them anyway, so their rows read the
-	// gate's decision rather than the task's.
-	hotNames := tenantNames(tenants, func(tn sweepTenant) bool {
-		return !tn.cold && !tn.donePromotable && !tn.doneStuck
-	})
+	hotNames := tenantNames(tenants, func(tn sweepTenant) bool { return !tn.cold })
 	logMark := len(containerLogs(ctx, t, container))
 
 	// The sweep runs inside the submit request, before the task is dispatched,
@@ -239,11 +187,6 @@ func testColdAndUnhydratedTenantCancel(t *testing.T) {
 		"rangeable", `{}`, reindexhelpers.WithTenants(hotNames))
 	loadedAfter := loadedShardsOfClass(ctx, t, container, coldCancelClass)
 	probeWindow := time.Since(probeStart)
-
-	// The two completed-migration populations, read before the task runs: the
-	// migration hydrates every tenant it names, and a load is exactly what
-	// changes both answers below.
-	assertCompletedMigrationPopulations(ctx, t, container, tenants, loadedBefore, loadedAfter)
 
 	t.Logf("post-restart enable-rangeable task: %s", taskID)
 	reindexhelpers.AwaitReindexFinished(t, restURI, taskID)
@@ -268,18 +211,7 @@ func testColdAndUnhydratedTenantCancel(t *testing.T) {
 			"observe what the sweep skipped; background hydration outran the test",
 		stillUnloaded, len(hotNames))
 
-	// Over the named set only, the population stillUnloaded counts. The gate
-	// hydrates the completed-migration tenants, not the submit.
-	named := map[string]bool{}
-	for _, name := range hotNames {
-		named[name] = true
-	}
-	var hydrated []string
-	for _, name := range newlyLoadedShards(loadedBefore, loadedAfter) {
-		if named[name] {
-			hydrated = append(hydrated, name)
-		}
-	}
+	hydrated := newlyLoadedShards(loadedBefore, loadedAfter)
 	stayedUnloaded := stillUnloaded - len(hydrated)
 	t.Logf("sweep skipped %d of %d unloaded tenants; %d still unloaded after the %s submit window (loaded: %v)",
 		skipped, stillUnloaded, stayedUnloaded, probeWindow.Round(time.Millisecond), hydrated)
@@ -345,63 +277,6 @@ func testColdAndUnhydratedTenantCancel(t *testing.T) {
 			"tenant %q is HOT again, so the sweep reaches it; its tracker must be gone. dirs: %v", name, dirs)
 		hits := bm25QueryTenant(t, coldCancelClass, "name", "corpus", name)
 		assert.NotEmpty(t, hits, "reactivated tenant %q must still serve its objects", name)
-	}
-}
-
-// assertCompletedMigrationPopulations checks the two tenants carrying a
-// migration that finished. The gate that decides whether the sweep loads a
-// cold tenant has to tell them apart, because the load it asks for runs the
-// deferred finalize:
-//
-//   - promotable: finalize renames the staged dir onto the canonical name, so
-//     asking for that load is how the data stops sitting at a name no bucket
-//     opens.
-//   - stuck: finalize cannot promote it and removes the tracker anyway, after
-//     which nothing on disk says the staged dir holds the property's only
-//     copy and the next sweep frees it. Leaving that tenant cold is the
-//     answer; the operator repairs or removes the tracker by hand.
-func assertCompletedMigrationPopulations(ctx context.Context, t *testing.T,
-	c testcontainers.Container, tenants []sweepTenant, loadedBefore, loadedAfter map[string]bool,
-) {
-	t.Helper()
-	for _, tn := range tenants {
-		if !tn.donePromotable && !tn.doneStuck {
-			continue
-		}
-		require.False(t, loadedBefore[tn.name],
-			"tenant %q was already loaded when the submit landed, so this run cannot observe "+
-				"what the sweep decided about it; background hydration outran the test", tn.name)
-
-		state := completedPlantState(ctx, t, c, tn.name)
-		promoted := containsDir(state, coldCancelDoneCanonical+"/"+coldCancelDoneMarker)
-		if tn.donePromotable {
-			// Read right after the submit returned, so a stray background
-			// hydration inside the run's own window cannot masquerade as
-			// the sweep's decision.
-			assert.True(t, loadedAfter[tn.name],
-				"tenant %q holds a promotable completed migration, so the sweep's own "+
-					"submit window is when the load must happen", tn.name)
-			assert.True(t, promoted,
-				"tenant %q holds a finished migration's data under its staged name, and only a "+
-					"shard load renames it onto the canonical one. The sweep skipped the load, so "+
-					"the data sits at a name no bucket opens. state: %v", tn.name, state)
-			assert.False(t, containsDir(state, ".migrations/"+coldCancelDoneDir),
-				"tenant %q kept the tracker of a migration the load finalized. state: %v",
-				tn.name, state)
-			assert.False(t, containsDir(state, coldCancelDoneIngest),
-				"tenant %q still has the staged dir, so the rename onto the canonical name did "+
-					"not happen. state: %v", tn.name, state)
-			continue
-		}
-		assert.True(t, containsDir(state, ".migrations/"+coldCancelDoneDir),
-			"tenant %q had its tracker removed by a finalize that could not promote anything, "+
-				"which is the load the sweep must not ask for. state: %v", tn.name, state)
-		assert.True(t, containsDir(state, coldCancelDoneIngest),
-			"tenant %q lost the staged dir holding the property's only copy. state: %v",
-			tn.name, state)
-		assert.False(t, promoted,
-			"tenant %q promoted a migration with no property list to promote from. state: %v",
-			tn.name, state)
 	}
 }
 
@@ -552,60 +427,6 @@ func plantStaleTracker(ctx context.Context, t *testing.T, c testcontainers.Conta
 		"planted tracker for tenant %q must be on disk before the restart", tenant)
 }
 
-// plantCompletedTracker writes the on-disk shape a migration that finished
-// leaves behind: a tracker dir carrying its completion sentinels, and the
-// staged bucket dir still holding the property's data under the ingest name.
-// Renaming that dir onto the canonical name is deferred to the next shard
-// load, which is the only thing that ever does it.
-//
-// withProps writes properties.mig, the one file the deferred finalize takes
-// the property list from. Without it finalize removes the tracker having
-// promoted nothing, and the staged dir is left with nothing on disk saying it
-// holds the property's only copy.
-func plantCompletedTracker(ctx context.Context, t *testing.T, c testcontainers.Container,
-	tenant string, withProps bool, sentinels ...string,
-) {
-	t.Helper()
-	lsm := tenantLSMPath(tenant)
-	dir := lsm + "/.migrations/" + coldCancelDoneDir
-	cmd := fmt.Sprintf("mkdir -p %s %s/%s && printf 'x' > %s/%s/%s",
-		dir, lsm, coldCancelDoneIngest, lsm, coldCancelDoneIngest, coldCancelDoneMarker)
-	for _, sentinel := range sentinels {
-		cmd += fmt.Sprintf(" && printf '%%s' 2026-01-01T00:00:00.000000000Z > %s/%s", dir, sentinel)
-	}
-	if withProps {
-		cmd += fmt.Sprintf(" && printf '%%s' %s > %s/properties.mig", coldCancelDoneProp, dir)
-	}
-	execInContainer(ctx, t, c, cmd)
-	require.True(t, containsDir(trackerDirs(ctx, t, c, tenant), coldCancelDoneDir),
-		"planted completed tracker for tenant %q must be on disk before the restart", tenant)
-}
-
-// completedPlantState lists everything the completed-migration plant can be
-// read from: the tenant's bucket dirs, its tracker dirs prefixed
-// ".migrations/", and the canonical dir's own entries prefixed with its name.
-// One exec, because a shard load changes every one of those answers and
-// background hydration keeps loading a tenant per second while this reads.
-// The three listings leave in one delimited write: docker frames each write
-// with header bytes that survive cleanExecLine and would land inside an entry.
-func completedPlantState(ctx context.Context, t *testing.T, c testcontainers.Container,
-	tenant string,
-) []string {
-	t.Helper()
-	lsm := tenantLSMPath(tenant)
-	out := execInContainer(ctx, t, c, fmt.Sprintf(
-		"entries=$( { ls -1 %s 2>/dev/null; "+
-			"ls -1 %s/.migrations 2>/dev/null | sed 's|^|.migrations/|'; "+
-			"ls -1 %s/%s 2>/dev/null | sed 's|^|%s/|'; } "+
-			"| sed 's|^|<|; s|$|>|' | tr -d '\\n'); printf '%%s' \"$entries\"",
-		lsm, lsm, lsm, coldCancelDoneCanonical, coldCancelDoneCanonical))
-	var entries []string
-	for _, match := range delimitedExecEntry.FindAllStringSubmatch(out, -1) {
-		entries = append(entries, match[1])
-	}
-	return entries
-}
-
 // clearReindexResidue makes each tenant's on-disk state look like no
 // migration ever ran on it: no tracker dirs, and no sidecar buckets of the
 // property under test. Both are what the sweep's gate answers "there is
@@ -681,13 +502,12 @@ func containerLogs(ctx context.Context, t *testing.T, c testcontainers.Container
 // The metrics probe reports how many lines the metrics page had, so an
 // unreachable endpoint fails loudly instead of reading as "no shard is
 // loaded", and how many shards it found, so a truncated read cannot pass for
-// a small one. Every listing read over an exec wraps each name in <>, because
-// docker's exec stream framing prefixes each write with bytes that survive
-// into the text.
+// a small one. Shard names are delimited because docker's exec stream framing
+// prefixes each write with bytes that survive into the text.
 var (
 	metricsLineCountField  = regexp.MustCompile(`LINES=\s*(\d+)`)
 	metricsShardCountField = regexp.MustCompile(`COUNT=\s*(\d+)`)
-	delimitedExecEntry     = regexp.MustCompile(`<([A-Za-z0-9_./\-]+)>`)
+	metricsShardName       = regexp.MustCompile(`<([A-Za-z0-9_./\-]+)>`)
 )
 
 // loadedShardsOfClass reports which tenants of className have shard-scoped
@@ -726,7 +546,7 @@ func loadedShardsOfClass(ctx context.Context, t *testing.T, c testcontainers.Con
 	require.NoError(t, err)
 
 	loaded := map[string]bool{}
-	names := delimitedExecEntry.FindAllStringSubmatch(out, -1)
+	names := metricsShardName.FindAllStringSubmatch(out, -1)
 	require.Len(t, names, wantShards,
 		"the metrics probe reported %d shards but only %d survived the exec stream, so this reading "+
 			"undercounts loaded shards: %q", wantShards, len(names), out)

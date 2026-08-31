@@ -754,16 +754,22 @@ func cleanUnloadedShardOrphans(lsmPath string, orphans []orphanReindexTracker, l
 // removeUnloadedSidecarsForOrphan removes per-property sidecar bucket
 // directories owned by the orphan tracker. Routes through the strategy
 // registry (migrationSuffixes) keyed by the orphan's tracker dirName
-// — the strategy's MigrationDirName() and IngestSuffix/ReindexSuffix
-// methods are the single source of truth for the on-disk dir layout.
-// Falls back to no-op if the tracker dirName does not match
-// any registered strategy: defensive, but it also means a future
-// strategy added to migrationSuffixes will be picked up here
+// — the strategy's MigrationDirName() and IngestSuffix/BackupSuffix/
+// ReindexSuffix methods are the single source of truth for the on-disk
+// dir layout (S3 fix). Falls back to no-op if the tracker dirName does
+// not match any registered strategy: defensive, but it also means a
+// future strategy added to migrationSuffixes will be picked up here
 // automatically.
 //
-// [migrationSidecarDirsFor] composes the names and its godoc says which
-// directory it deliberately leaves behind. The audit MUST NOT re-derive
-// them by string prefix.
+// Sidecar dir names that this consults:
+//   - <main>__<ingestSuffix>_<gen>      (ingest sidecar)
+//   - <main>__<backupSuffix>_<gen>      (backup sidecar)
+//   - <main>__<reindexSuffix>_<gen>     (reindex sidecar)
+//
+// where `<main>` is the strategy's sourceBucketName(propName) for the
+// canonical bucket the migration writes back to. The strategy decides
+// what those names are — the audit MUST NOT re-derive them by string
+// prefix.
 func removeUnloadedSidecarsForOrphan(lsmPath string, o *orphanReindexTracker, logger logrus.FieldLogger) {
 	for _, sidecar := range sidecarDirsForOrphan(o) {
 		path := filepath.Join(lsmPath, sidecar)
@@ -775,106 +781,38 @@ func removeUnloadedSidecarsForOrphan(lsmPath string, o *orphanReindexTracker, lo
 				Warnf("reindex orphan audit: failed to remove orphan sidecar dir: %v", err)
 		}
 	}
-	logLeftBackupDirsForOrphan(lsmPath, o, logger)
 }
 
-// logLeftBackupDirsForOrphan names the displaced backup copies the audit
-// deliberately leaves: with the tracker gone nothing attributes them, and only
-// a property-index DELETE sweep on an activated tenant reclaims them. Without
-// this line that disk cost is silent on a tenant nobody reactivates.
-func logLeftBackupDirsForOrphan(lsmPath string, o *orphanReindexTracker, logger logrus.FieldLogger) {
+// sidecarDirsForOrphan returns the lsm-relative sidecar bucket dir
+// names the strategy registry says are owned by this orphan's tracker
+// dir + property set + generation. Computed by consulting
+// [migrationSuffixes] keyed off the orphan's tracker dirName: the
+// strategy itself owns the IngestSuffix / BackupSuffix /
+// ReindexSuffix tail base, and the audit appends the matching
+// `_<gen>` to each. Returns an empty slice when the tracker dirName
+// does not match any registered strategy or when the orphan carries
+// no properties (class-level cleanup is handled by the caller via
+// direct tracker-dir removal).
+//
+// Closes S3 by routing through the strategy registry instead of
+// re-deriving sidecar names by hard-coded string prefix.
+func sidecarDirsForOrphan(o *orphanReindexTracker) []string {
+	if len(o.properties) == 0 {
+		return nil
+	}
 	suffixes := migrationSuffixes(o.dirName)
 	if suffixes == nil {
-		return
+		return nil
 	}
+	reindexSuffix := reindexSuffixForFinalize(o.prefix)
 	genTail := genSuffix(o.generation)
+	out := make([]string, 0, 3*len(o.properties))
 	for _, propName := range o.properties {
-		path := filepath.Join(lsmPath, suffixes.sourceBucketName(propName)+suffixes.backupSuffix+genTail)
-		if !fileExists(path) {
-			continue
-		}
-		logger.WithField("path", path).
-			Info("reindex orphan audit: leaving the displaced backup copy; the property-index DELETE sweep reclaims it once the tenant is active")
-	}
-}
-
-// migrationCompletionMarker reports the completed-migration marker a tracker
-// directory carries, if any. [migrationLegacyMarkerTrackersAt] reads it to
-// tell a migration that completed from one abandoned mid-run.
-//
-// unreadable is the third outcome, and it is not "no marker": a stat that
-// failed for any reason other than the file being absent (EACCES on a restored
-// tree, EIO, EMFILE on a many-tenant node) leaves the question unanswered.
-// Reading that as "no completion marker" drops the tracker out of the preserve
-// set, and its staged directory holds the property's only copy.
-func migrationCompletionMarker(trackerPath string) (marker string, found, unreadable bool) {
-	for _, name := range []string{"tidied.mig", "merged.mig"} {
-		info, err := os.Stat(filepath.Join(trackerPath, name))
-		switch {
-		case err == nil && !info.IsDir():
-			return name, true, false
-		case err != nil && !os.IsNotExist(err):
-			return "", false, true
-		}
-	}
-	return "", false, false
-}
-
-// sidecarDirsForOrphan returns the lsm-relative sidecar bucket dir names the
-// strategy registry says this orphan's tracker owns. Returns an empty slice
-// when the tracker dirName matches no registered strategy, or when the orphan
-// carries no properties — class-level cleanup removes the tracker dir itself.
-func sidecarDirsForOrphan(o *orphanReindexTracker) []string {
-	return migrationSidecarDirsFor(o.dirName, o.prefix, o.generation, o.properties)
-}
-
-// migrationSidecarDirsFor names the sidecar bucket dirs the reclaiming audit
-// may remove for one tracker: <main><ingestSuffix>_<gen> and
-// <main><reindexSuffix>_<gen>, composed through [migrationSuffixes] keyed by
-// the tracker's own dir name rather than matched by string prefix. A new
-// strategy needs an arm in [migrationSuffixes] and one in
-// [reindexSuffixForFinalize].
-//
-// The displaced <main><backupSuffix>_<gen> is deliberately not among them: it
-// holds the pre-swap main bucket, and no reader here can tell a migration that
-// still needs it from one that does not.
-//
-// Preservation asks [migrationPreservedSidecarDirsFor] instead. The two
-// polarities are not one list: a name this one leaves out is a directory the
-// audit declines to reclaim, and a name the preserve side leaves out is a
-// directory some other sweep deletes.
-func migrationSidecarDirsFor(dirName, prefix string, generation int, properties []string) []string {
-	return migrationSidecarDirsIn(dirName, prefix, generation, properties, false)
-}
-
-// migrationPreservedSidecarDirsFor names every sidecar bucket dir one tracker
-// owns, the displaced <main><backupSuffix>_<gen> included.
-//
-// A preserve pass has to answer wider than the reclaiming one. The backup dir
-// holds the pre-swap main bucket, and until the deferred finalize runs it is
-// the only copy of what the property held before the flip; a sweep that is not
-// told about it removes it while the mirror is still aimed there.
-func migrationPreservedSidecarDirsFor(dirName, prefix string, generation int, properties []string) []string {
-	return migrationSidecarDirsIn(dirName, prefix, generation, properties, true)
-}
-
-func migrationSidecarDirsIn(dirName, prefix string, generation int, properties []string, withBackup bool) []string {
-	if len(properties) == 0 {
-		return nil
-	}
-	suffixes := migrationSuffixes(dirName)
-	if suffixes == nil {
-		return nil
-	}
-	reindexSuffix := reindexSuffixForFinalize(prefix)
-	genTail := genSuffix(generation)
-	out := make([]string, 0, 3*len(properties))
-	for _, propName := range properties {
 		main := suffixes.sourceBucketName(propName)
-		out = append(out, main+suffixes.ingestSuffix+genTail)
-		if withBackup {
-			out = append(out, main+suffixes.backupSuffix+genTail)
-		}
+		out = append(out,
+			main+suffixes.ingestSuffix+genTail,
+			main+suffixes.backupSuffix+genTail,
+		)
 		if reindexSuffix != "" {
 			out = append(out, main+reindexSuffix+genTail)
 		}
@@ -908,18 +846,8 @@ func (db *DB) cleanupOrphanTrackerCompactionPaused(ctx context.Context, shard *S
 		for _, indexType := range o.indexTypes {
 			// The audit reports per orphan, not per payload, so the read count
 			// has no line here to land on.
-			report, err := shard.CleanStalePartialReindexState(ctx, propName, indexType)
-			if err != nil {
+			if _, err := shard.CleanStalePartialReindexState(ctx, propName, indexType); err != nil {
 				return fmt.Errorf("clean stale partial reindex state for (prop=%q,indexType=%q): %w", propName, indexType, err)
-			}
-			if report.withheld {
-				// The sweep withheld every removal on this shard, so the
-				// orphan is still on disk. Reporting it cleaned would repeat
-				// forever; as a failure it stays visible and the next audit
-				// retries once the withhold is resolved.
-				return fmt.Errorf("cleanup withheld for (prop=%q,indexType=%q): "+
-					"the shard's migration state withheld every removal; deferred to a later audit",
-					propName, indexType)
 			}
 		}
 	}

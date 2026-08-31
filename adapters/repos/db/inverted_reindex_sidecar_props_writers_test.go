@@ -41,22 +41,6 @@ func writerSidecar(cfg reindexTaskConfig, collectionName string) []byte {
 	return []byte(strings.Join(props, ","))
 }
 
-// dedupedProps is the set the dir name is built from: a repeated property
-// appears once in the name, so a comparison against the raw list would fail
-// for a reason that has nothing to do with the sidecar.
-func dedupedProps(props []string) []string {
-	set := map[string]struct{}{}
-	var out []string
-	for _, p := range props {
-		if _, seen := set[p]; seen {
-			continue
-		}
-		set[p] = struct{}{}
-		out = append(out, p)
-	}
-	return out
-}
-
 // Drives every per-property strategy through its real constructor and pins
 // that the dir name and properties.mig are two renderings of one property
 // list — and where that breaks: a repeated property makes the sidecar (built
@@ -147,19 +131,15 @@ func TestEveryPerPropertyStrategyWritesASidecarThatRebuildsItsDirName(t *testing
 					writerSidecar(task.config, collection), 0o644))
 
 				migDir := filepath.Join(lsm, ".migrations", dirName)
-				got, ok := propsFromSidecar(migDir, []string{s.prefix})
-				require.Equal(t, pl.rebuilt, ok,
-					"a sidecar is accepted exactly where it rebuilds the tracker dir's own name")
-				if pl.rebuilt {
-					require.ElementsMatch(t, dedupedProps(pl.props), got)
-					return
-				}
+				got, readPayload := readTaskProps(migDir, []string{s.prefix})
 
-				require.Nil(t, got)
-				answer, readPayload := readTaskProps(migDir)
-				require.True(t, answer.ok, "a rejected sidecar has to fall through to the payload")
-				require.True(t, readPayload)
-				require.ElementsMatch(t, pl.props, answer.props)
+				require.True(t, got.ok)
+				require.False(t, got.unreadable)
+				require.Equal(t, !pl.rebuilt, readPayload,
+					"a sidecar that rebuilds the name must spare the payload, and only then")
+
+				// Whichever side answered, the property set is the task's.
+				require.ElementsMatch(t, dedupedProps(pl.props), dedupedProps(got.props))
 			})
 		}
 	}
@@ -281,9 +261,9 @@ func TestPersistRecoveryRecordWritesThePropsSidecar(t *testing.T) {
 			// A real memo, never nil: the read count accrues into it, and a nil
 			// one reads every payload again while counting nothing, which would
 			// make the assertion below hold no matter what the sweep read.
-			swept := migrationSweepStateFor(lsm, tc.sweptProp, logger)
-			cleanStaleMigrationDirsAt(t.Context(), lsm, tc.sweptProp, tc.sweptIndexType, logger, swept)
-			require.Zero(t, swept.reads(),
+			props := &taskPropsCache{}
+			cleanStaleMigrationDirsAt(t.Context(), lsm, tc.sweptProp, tc.sweptIndexType, logger, props)
+			require.Zero(t, props.count(),
 				"every swept tracker was answerable from its sidecar")
 			// Without this the zero above would also hold for a sweep that
 			// matched nothing at all.
@@ -450,56 +430,6 @@ func TestAPropsSidecarNamingNoPropertyIsAnError(t *testing.T) {
 	require.Error(t, err)
 }
 
-// A sidecar may not stand in for an absent payload: "nothing recorded a
-// property list" is the state the unloaded-shard gate reads as clean, and the
-// sweep deletes an ambiguously-named tracker on it. The two rows differ only
-// in whether payload.mig is there, and the sweep's answer flips with it.
-func TestASidecarMayNotStandInForAnAbsentPayload(t *testing.T) {
-	logger, _ := test.NewNullLogger()
-	props := []string{"a", "b"}
-
-	tests := []struct {
-		name string
-		// payload is what lands beside the sidecar; nil writes no file.
-		payload []byte
-		// swept is whether the sweep for "a_b" removes the tracker.
-		swept bool
-	}{
-		{name: "no payload at all", swept: true},
-		{
-			// The guard tests existence, not health, so here the sidecar does
-			// answer ["a","b"] and takes the tracker out of "a_b"'s scope.
-			name:    "a payload too damaged to parse",
-			payload: []byte("{not json"),
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			lsm := t.TempDir()
-			dirName := migrationDirWithProps(MigrationDirPrefixEnableFilterable, props) + genSuffix(1)
-			mkTrackerDir(t, lsm, dirName, "started.mig")
-			migDir := filepath.Join(lsm, ".migrations", dirName)
-			require.NoError(t, os.WriteFile(filepath.Join(migDir, "properties.mig"),
-				[]byte(strings.Join(props, ",")), 0o644))
-			if tc.payload != nil {
-				require.NoError(t, os.WriteFile(
-					filepath.Join(migDir, reindexRecoveryPayloadFile), tc.payload, 0o644))
-			}
-
-			cleanStaleMigrationDirsAt(t.Context(), lsm, "a_b", "filterable", logger, nil)
-
-			_, err := os.Stat(migDir)
-			if tc.swept {
-				require.Truef(t, os.IsNotExist(err),
-					"the sweep must remove a tracker no payload attributes; stat err=%v", err)
-				return
-			}
-			require.NoError(t, err, "the sidecar answers, so this tracker is out of scope")
-		})
-	}
-}
-
 // ambiguousSweepDirs is how many tracker dirs the hot cell carries.
 const ambiguousSweepDirs = 100
 
@@ -537,23 +467,23 @@ func writeAmbiguousSweepTree(t testing.TB, withSidecar bool) string {
 	return lsm
 }
 
-// Regression guard on the cost the sidecar removes: a refactor that puts
+// Regression guard on the cost this change removes: a refactor that puts
 // the payload parse back on this path fails here rather than in production,
 // where it blocks the RAFT apply loop cluster-wide.
 func TestAmbiguousSweepReadsNoPayloadWhenTheSidecarsAreThere(t *testing.T) {
 	logger, _ := test.NewNullLogger()
 
 	lsm := writeAmbiguousSweepTree(t, true)
-	withSidecars := migrationSweepStateFor(lsm, "a_b", logger)
+	withSidecars := &taskPropsCache{}
 	cleanStaleMigrationDirsAt(t.Context(), lsm, "a_b", "filterable", logger, withSidecars)
-	require.Zero(t, withSidecars.reads(), "every tracker was answerable from its sidecar")
+	require.Zero(t, withSidecars.count(), "every tracker was answerable from its sidecar")
 
 	// Without sidecars the same sweep has to open every payload, which is what
 	// pins the count above as a property of the sidecars and not of the names.
 	bare := writeAmbiguousSweepTree(t, false)
-	noSidecars := migrationSweepStateFor(bare, "a_b", logger)
+	noSidecars := &taskPropsCache{}
 	cleanStaleMigrationDirsAt(t.Context(), bare, "a_b", "filterable", logger, noSidecars)
-	require.Equal(t, ambiguousSweepDirs, noSidecars.reads(),
+	require.Equal(t, ambiguousSweepDirs, noSidecars.count(),
 		"without a sidecar there is nothing to answer from")
 
 	const maxBytesPerSweep = 2 << 20

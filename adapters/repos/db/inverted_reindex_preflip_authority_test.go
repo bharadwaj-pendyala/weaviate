@@ -13,6 +13,8 @@ package db
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/go-openapi/strfmt"
@@ -23,6 +25,44 @@ import (
 	"github.com/weaviate/weaviate/entities/storobj"
 	enthnsw "github.com/weaviate/weaviate/entities/vectorindex/hnsw"
 )
+
+func sidecarDataFor(dir string) string {
+	return "segment-of-" + dir
+}
+
+func mkSidecarWithData(t *testing.T, lsmPath, name string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Join(lsmPath, name), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(lsmPath, name, "segment-0.db"),
+		[]byte(sidecarDataFor(name)), 0o644))
+}
+
+func readSidecarData(t *testing.T, lsmPath, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(lsmPath, name, "segment-0.db"))
+	if err != nil {
+		return "<gone: " + err.Error() + ">"
+	}
+	return string(data)
+}
+
+// Production-shaped names for one searchable-retokenize migration of "title",
+// shared by the fixtures below.
+const (
+	wedgeTracker   = "searchable_retokenize_title_1"
+	wedgeStaged    = "property_title_searchable__retokenize_ingest_1"
+	wedgeSidecar   = "property_title_searchable__retokenize_reindex_1"
+	wedgeCanonical = "property_title_searchable"
+)
+
+func wedgeSubject(version uint64) MigrationSubject {
+	subject := testMigrationSubject(version, StrategyCodeSearchableRetokenize, "title")
+	subject.TrackerDir = wedgeTracker
+	subject.StagedDirs = map[string]string{"title": wedgeStaged}
+	subject.SidecarDirs = map[string]string{"title": wedgeSidecar}
+	subject.CanonicalDirs = map[string]string{"title": wedgeCanonical}
+	return subject
+}
 
 // preflipTerms is how many distinct terms the canonical bucket serves. Enough
 // that a bucket serving a subset, or an empty one, is unmistakable.

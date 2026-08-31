@@ -13,7 +13,6 @@ package db
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,14 +24,20 @@ import (
 
 // narrowMatchByName is [migrationDirScope.matchByName] with the
 // underscore-free gate [isProvablySingleProperty] replaced, so every fixture
-// below can be put through both and the answers compared. The widened gate is
-// what production runs.
+// below can be put through both and the answers compared.
 func narrowMatchByName(s migrationDirScope, name string) (matched, decided bool) {
 	base := migrationDirBase(name)
+	if s.classDir != "" && base == s.classDir {
+		return true, true
+	}
 	if !s.hasStrategyPrefix(base) {
 		return false, true
 	}
-	exact, token := s.nameArms(base)
+	var exact, token bool
+	for _, prefix := range s.prefixes {
+		exact = exact || base == migrationDirWithProps(prefix, []string{s.propName})
+		token = token || namesPropertyToken(base, prefix, s.propName)
+	}
 	switch {
 	case exact && !strings.Contains(s.propName, "_"):
 		return true, true
@@ -52,7 +57,7 @@ func narrowMatches(s migrationDirScope, name string) bool {
 }
 
 // diffDir is one tracker dir of the differential fixtures: its name on disk and
-// the property list a record and payload consistent with that name carry.
+// the property list a payload consistent with that name records.
 type diffDir struct {
 	name  string
 	props []string
@@ -113,12 +118,10 @@ var diffPropNames = []string{
 
 var diffIndexTypes = []string{"filterable", "searchable", "rangeable"}
 
-// The attribution modes a tracker dir can be in. Only recordedMode and
-// consistentPayload are writer-producible; the rest are what a crash or a
-// damaged disk leaves behind, except contradictingPayload, which stores a
-// property list its own dir name disowns.
+// payload modes. Only consistentPayload is writer-producible; the rest are what
+// a crash or a damaged disk leaves behind, except contradictingPayload, which
+// stores a property list its own dir name disowns.
 const (
-	recordedMode         = "record"
 	consistentPayload    = "consistent"
 	absentPayload        = "absent"
 	corruptPayload       = "corrupt"
@@ -127,50 +130,26 @@ const (
 	contradictingPayload = "contradicting"
 )
 
-var diffAttributionModes = []string{
-	recordedMode, consistentPayload, absentPayload, corruptPayload,
+var diffPayloadModes = []string{
+	consistentPayload, absentPayload, corruptPayload,
 	truncatedPayload, unreadablePayloadFx, contradictingPayload,
 }
 
 // writeDiffTree materializes every fixture dir under a fresh lsm root.
-// committed decides whether each dir's migration has committed its data,
-// which is what the sweep must preserve.
-func writeDiffTree(t *testing.T, mode string, committed bool) (string, []diffDir) {
+func writeDiffTree(t *testing.T, payloadMode string, completed bool) (string, []diffDir) {
 	t.Helper()
 	lsm := t.TempDir()
 	dirs := diffDirs()
 	for i, d := range dirs {
-		mkTrackerDir(t, lsm, d.name)
-		if mode == recordedMode || committed {
-			writeDiffRecord(t, lsm, d, i, committed)
-			continue
+		sentinels := []string{"started.mig"}
+		if completed {
+			// Alternate so both sentinels the preserve pass looks for appear.
+			sentinels = append(sentinels, []string{"tidied.mig", "merged.mig"}[i%2])
 		}
-		writeDiffPayload(t, lsm, d, mode)
+		mkTrackerDir(t, lsm, d.name, sentinels...)
+		writeDiffPayload(t, lsm, d, payloadMode)
 	}
 	return lsm, dirs
-}
-
-// writeDiffRecord plants the record that attributes a directory. A committed
-// one owns a staged directory the sweep must not touch; an uncommitted one is
-// stale state the sweep removes.
-func writeDiffRecord(t *testing.T, lsm string, d diffDir, seq int, committed bool) {
-	t.Helper()
-	props := d.props
-	if len(props) == 0 {
-		// A class-level tracker names no property of its own.
-		props = []string{"cat"}
-	}
-	staged := map[string]string{}
-	canonical := map[string]string{}
-	for _, prop := range props {
-		staged[prop] = fmt.Sprintf("property_%s__enable_filterable_ingest_%d", prop, seq+1)
-		canonical[prop] = "property_" + prop
-	}
-	state := MigrationStateIterating
-	if committed {
-		state = MigrationStateSwapped
-	}
-	mkMigrationRecordAt(t, lsm, d.name, staged, canonical, state)
 }
 
 func writeDiffPayload(t *testing.T, lsm string, d diffDir, mode string) {
@@ -202,48 +181,56 @@ func writeDiffPayload(t *testing.T, lsm string, d diffDir, mode string) {
 }
 
 // divergence is one (scope, dir) where the widened predicate answers
-// differently from [narrowMatchByName].
+// differently from the one it replaced.
 type divergence struct {
 	propName, indexType, dir string
+	preserve                 bool
 	narrow, widened          bool
 }
 
-// Pins the widened name shortcut against [narrowMatchByName], so a dir the
-// shortcut moves is a dir the sweep would delete or spare differently.
+// Pins that the widened name shortcut selects exactly the dirs the narrower
+// gate did, for every fixture a writer can produce.
 func TestWidenedMatchesAgreesWithTheNarrowGate(t *testing.T) {
-	logger, _ := test.NewNullLogger()
-
-	for _, mode := range diffAttributionModes {
-		for _, committed := range []bool{false, true} {
-			if committed && mode != recordedMode {
-				// Committed state is a record fact; the payload modes have no
-				// second shape here.
-				continue
-			}
-			lsm, dirs := writeDiffTree(t, mode, committed)
-			state := migrationPreservedStateAt(lsm, logger)
+	for _, payloadMode := range diffPayloadModes {
+		for _, completed := range []bool{false, true} {
+			lsm, dirs := writeDiffTree(t, payloadMode, completed)
 			var diverged []divergence
 
 			for _, propName := range diffPropNames {
 				for _, indexType := range diffIndexTypes {
-					scope := migrationDirsOf(lsm, nil, propName, indexType).
-						cachingProps(&taskPropsCache{}).knownFrom(state)
-					for _, d := range dirs {
-						narrow, widened := narrowMatches(scope, d.name), scope.inScope(d.name)
-						if narrow != widened {
-							diverged = append(diverged, divergence{
-								propName: propName, indexType: indexType,
-								dir: d.name, narrow: narrow, widened: widened,
-							})
+					for _, preserve := range []bool{false, true} {
+						scope := migrationDirsOf(lsm, nil, propName, indexType)
+						if preserve {
+							scope = scope.preserving(indexType)
+						}
+						for _, d := range dirs {
+							narrow := narrowMatches(scope, d.name)
+							widened := scope.inScope(d.name)
+							if narrow != widened {
+								diverged = append(diverged, divergence{
+									propName: propName, indexType: indexType,
+									dir: d.name, preserve: preserve,
+									narrow: narrow, widened: widened,
+								})
+							}
+						}
+						if payloadMode != contradictingPayload {
+							// What the sweep preserves is downstream of matches(),
+							// so it moves only where matches() does.
+							require.Equal(t,
+								completedMigrationGensNarrow(t, lsm, scope, dirs),
+								completedMigrationGens(scope),
+								"preserved generations, prop %q index %q preserve %v payload %s",
+								propName, indexType, preserve, payloadMode)
 						}
 					}
 				}
 			}
 
-			if mode != contradictingPayload {
+			if payloadMode != contradictingPayload {
 				require.Empty(t, diverged,
-					"attribution %s, committed %v: the widened shortcut must not move a dir",
-					mode, committed)
+					"payload %s, completed %v: the widened shortcut must not move a dir",
+					payloadMode, completed)
 				continue
 			}
 			requireOnlyTheContradictionDivergence(t, diverged)
@@ -283,42 +270,56 @@ func propertySegmentOf(dir string) string {
 	return ""
 }
 
+// completedMigrationGensNarrow is [completedMigrationGens] answered by the gate
+// [isProvablySingleProperty] replaced.
+func completedMigrationGensNarrow(
+	t *testing.T, lsm string, scope migrationDirScope, dirs []diffDir,
+) map[int]bool {
+	t.Helper()
+	out := map[int]bool{}
+	for _, d := range dirs {
+		_, gen, ok := parseMigrationDirName(d.name)
+		if !ok || !narrowMatches(scope, d.name) {
+			continue
+		}
+		path := filepath.Join(lsm, ".migrations", d.name)
+		if fileExistsInDir(path, "tidied.mig") || fileExistsInDir(path, "merged.mig") {
+			out[gen] = true
+		}
+	}
+	return out
+}
+
 // Pins that the real deletion sweep leaves the same dirs behind as a sweep
-// driven by the narrower gate: the differential above checks one predicate,
-// this checks the whole sweep, where preservation, generation parsing and
-// walk order all compose on top of it.
+// driven by the narrower gate.
 func TestWidenedSweepLeavesTheSameDirsBehind(t *testing.T) {
 	logger, _ := test.NewNullLogger()
 
-	for _, mode := range diffAttributionModes {
-		if mode == contradictingPayload {
+	for _, payloadMode := range diffPayloadModes {
+		if payloadMode == contradictingPayload {
 			// Covered by [requireOnlyTheContradictionDivergence]; a torn
 			// payload has no sweep the two gates agree on by construction.
 			continue
 		}
-		for _, committed := range []bool{false, true} {
-			if committed && mode != recordedMode {
-				continue
-			}
+		for _, completed := range []bool{false, true} {
 			for _, propName := range diffPropNames {
 				for _, indexType := range diffIndexTypes {
-					refLSM, dirs := writeDiffTree(t, mode, committed)
-					refState := migrationPreservedStateAt(refLSM, logger)
-					refScope := migrationDirsOf(refLSM, nil, propName, indexType).
-						cachingProps(&taskPropsCache{}).knownFrom(refState)
+					refLSM, dirs := writeDiffTree(t, payloadMode, completed)
+					refScope := migrationDirsOf(refLSM, nil, propName, indexType)
 					var names []string
 					for _, d := range dirs {
 						names = append(names, d.name)
 					}
-					want := sweepSurvivors(names, refState,
+					want := sweepSurvivors(names,
+						completedMigrationGensNarrow(t, refLSM, refScope, dirs),
 						func(name string) bool { return narrowMatches(refScope, name) })
 
-					lsm, _ := writeDiffTree(t, mode, committed)
+					lsm, _ := writeDiffTree(t, payloadMode, completed)
 					cleanStaleMigrationDirsAt(t.Context(), lsm, propName, indexType, logger, nil)
 
 					require.Equal(t, want, survivingTrackerDirs(t, lsm),
-						"attribution %s committed %v prop %q index %q",
-						mode, committed, propName, indexType)
+						"payload %s completed %v prop %q index %q",
+						payloadMode, completed, propName, indexType)
 				}
 			}
 		}

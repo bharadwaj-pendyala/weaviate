@@ -98,12 +98,6 @@ func TestMultiTenant_ReindexSuite(t *testing.T) {
 		testTenantScopedRebuildCancel(t, restURI)
 	})
 
-	// The orphan audit only runs at startup, so its journey is planted here
-	// and asserted after the restart below.
-	t.Run("OrphanAuditPlant", func(t *testing.T) {
-		plantOrphanAuditResidue(ctx, t, container)
-	})
-
 	// Restart for deferred finalization.
 	t.Run("PostRestart", func(t *testing.T) {
 		t.Log("restarting container for deferred finalize")
@@ -116,10 +110,6 @@ func TestMultiTenant_ReindexSuite(t *testing.T) {
 		testChangeTokenizationMTPostRestart(t, restURI)
 		// Verify enable-rangeable survived restart.
 		testEnableRangeableMTPostRestart(t, restURI)
-
-		t.Run("OrphanAuditKeepsBackupSidecar", func(t *testing.T) {
-			testOrphanAuditKeepsBackupSidecar(ctx, t, restURI, container)
-		})
 	})
 }
 

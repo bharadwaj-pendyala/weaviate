@@ -107,6 +107,10 @@ func TestLazyLoadShardCanSkipUnloadedSweepIsOneStep(t *testing.T) {
 			plantErr = err
 			return
 		}
+		if err := os.WriteFile(filepath.Join(trackerDir, "started.mig"), []byte("x"), 0o644); err != nil {
+			plantErr = err
+			return
+		}
 		for deadline := time.Now().Add(holdFor); !gateReturned.Load() && time.Now().Before(deadline); {
 			time.Sleep(pollEvery)
 		}
@@ -176,7 +180,7 @@ func TestLazyLoadShardCanSkipUnloadedSweepIsOneStep(t *testing.T) {
 				}()
 
 				<-spinning
-				skip, _, _ := lazy.canSkipUnloadedSweep(propName, indexType, nil, nil)
+				skip, _ := lazy.canSkipUnloadedSweep(propName, indexType, nil, nil)
 				gateReturned.Store(true)
 				close(stop)
 				<-done
@@ -195,8 +199,8 @@ func TestLazyLoadShardCanSkipUnloadedSweepIsOneStep(t *testing.T) {
 
 			// The gate reports the very state the prober plants, so the rounds
 			// above are a claim about when it landed, not about what it is.
-			mkTrackerDir(t, lsm, tracker)
-			skip, _, _ := lazy.canSkipUnloadedSweep(propName, indexType, nil, nil)
+			mkTrackerDir(t, lsm, tracker, "started.mig")
+			skip, _ := lazy.canSkipUnloadedSweep(propName, indexType, nil, nil)
 			require.False(t, skip)
 			require.NoError(t, os.RemoveAll(trackerDir))
 		})

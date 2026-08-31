@@ -12,8 +12,6 @@
 package db
 
 import (
-	"io"
-	"strings"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -33,10 +31,7 @@ func TestCleanStaleMigrationDirsAt_PreservedGensLogAtDebug(t *testing.T) {
 	const preservedGens = 3
 	for gen := 1; gen <= preservedGens; gen++ {
 		dir := migrationDirWithProps(MigrationDirPrefixEnableFilterable, []string{propName}) + genSuffix(gen)
-		mkTrackerDir(t, lsm, dir)
-		mkMigrationRecord(t, lsm, dir, MigrationStateSwapped, map[string]string{
-			propName: "property_" + propName + "__enable_filterable_ingest" + genSuffix(gen),
-		})
+		mkTrackerDir(t, lsm, dir, "started.mig", "merged.mig", "tidied.mig")
 	}
 
 	hookLogger, hook := test.NewNullLogger()
@@ -44,34 +39,17 @@ func TestCleanStaleMigrationDirsAt_PreservedGensLogAtDebug(t *testing.T) {
 
 	cleanStaleMigrationDirsAt(t.Context(), lsm, propName, indexType, hookLogger, nil)
 
-	var infoCount, preservedCount int
+	var infoCount, debugCount int
 	for _, e := range hook.AllEntries() {
-		if e.Level == logrus.InfoLevel {
+		switch e.Level {
+		case logrus.InfoLevel:
 			infoCount++
-		}
-		// By message: the sweep reads the records first, and that read has a
-		// Debug line of its own that says nothing about preservation.
-		if e.Level == logrus.DebugLevel && strings.Contains(e.Message, "preserving a tracker dir") {
-			preservedCount++
+		case logrus.DebugLevel:
+			debugCount++
+		default:
 		}
 	}
 	require.Equal(t, 0, infoCount,
 		"preserving a deferred-finalize tracker dir must not log at Info inside the RAFT apply loop")
-	require.Equal(t, preservedGens, preservedCount, "one Debug line per preserved generation")
-}
-
-// The record read runs per shard inside the RAFT apply of a property DELETE,
-// so its healthy-path Debug line must cost nothing when Debug is off: logrus
-// builds the entry and copies the field map before consulting the level.
-// Measured: 14 allocations unguarded, 6 with the guard.
-func TestReadingRecordsBuildsNoLogEntryWhenDebugIsOff(t *testing.T) {
-	lsm := t.TempDir()
-	logger := logrus.New()
-	logger.SetLevel(logrus.InfoLevel)
-	logger.SetOutput(io.Discard)
-	allocs := testing.AllocsPerRun(300, func() {
-		migrationRecordsAt(lsm, logger)
-	})
-	require.LessOrEqual(t, allocs, 8.0,
-		"reading a shard's records at Info level must not pay for a Debug entry")
+	require.Equal(t, preservedGens, debugCount, "one Debug line per preserved generation")
 }

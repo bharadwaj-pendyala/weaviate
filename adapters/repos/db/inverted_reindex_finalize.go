@@ -89,9 +89,14 @@ func maxMigrationGeneration(lsmPath, migrationDirPrefix, propNamesSuffix string)
 // dirs are LIVE data pointed at by the in-memory bucket pointers, awaiting
 // next-restart finalize to be promoted to canonical names.
 //
-// [hasCompletedMigrationTracker] is what asks: a non-empty answer means a
-// swap got far enough to arm the next restart's finalize, so a task that then
-// ends CANCELLED or FAILED leaves the bucket and the schema disagreeing.
+// Called from the submit-handler and cancel-handler pre-submit cleanup
+// path ([Shard.CleanStalePartialReindexState]) so the cleanup can skip
+// tracker and sidecar dirs that belong to a completed-but-deferred
+// migration on the same property. Without this gate, a back-to-back
+// submit-without-restart sequence wipes the prior completed migration's
+// live ingest dir out from under its in-memory bucket pointer → the
+// canonical bucket becomes empty → silent #10675-shape data loss on the
+// submitting node.
 //
 // `scope` is the tracker dirs of the (propName, indexType) tuple; see
 // [migrationDirScope].
@@ -99,6 +104,28 @@ func completedMigrationGens(scope migrationDirScope) map[int]bool {
 	out := map[int]bool{}
 	forEachCompletedMigration(scope, func(base string, gen int) {
 		out[gen] = true
+	})
+	return out
+}
+
+// completedMigrationSidecarSuffixes returns the gen-suffixed sidecar dir
+// suffixes (e.g. "__roaringset_ingest_2") owned by completed-but-deferred
+// migrations in `scope`. Keying by (suffix-base, gen) instead of
+// bare gen stops one strategy's completed gen from shielding — or failing
+// to shield — a different strategy's sidecar at the same gen (issue #295).
+func completedMigrationSidecarSuffixes(scope migrationDirScope) map[string]bool {
+	out := map[string]bool{}
+	forEachCompletedMigration(scope, func(base string, gen int) {
+		suffixes := migrationSuffixes(base)
+		if suffixes == nil {
+			return
+		}
+		tail := genSuffix(gen)
+		out[suffixes.ingestSuffix+tail] = true
+		out[suffixes.backupSuffix+tail] = true
+		if rs := reindexSuffixForFinalize(base); rs != "" {
+			out[rs+tail] = true
+		}
 	})
 	return out
 }

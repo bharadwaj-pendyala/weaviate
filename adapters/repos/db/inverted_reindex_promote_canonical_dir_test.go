@@ -13,10 +13,13 @@ package db
 
 import (
 	"context"
+	"hash/fnv"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/go-openapi/strfmt"
@@ -30,6 +33,86 @@ import (
 	"github.com/weaviate/weaviate/entities/storobj"
 	enthnsw "github.com/weaviate/weaviate/entities/vectorindex/hnsw"
 )
+
+func fixtureStrategyOf(t *testing.T, trackerName string) (MigrationStrategyCode, ReindexMigrationType) {
+	t.Helper()
+	for _, known := range []struct {
+		prefix string
+		code   MigrationStrategyCode
+		mType  ReindexMigrationType
+	}{
+		{MigrationDirSearchableMapToBlockmax, StrategyCodeSearchableMapToBlockmax, ReindexTypeChangeAlgorithm},
+		{MigrationDirFilterableRoaringsetRefresh, StrategyCodeFilterableRoaringsetRefresh, ReindexTypeRepairFilterable},
+		{MigrationDirPrefixFilterableToRangeable, StrategyCodeFilterableToRangeable, ReindexTypeEnableRangeable},
+		{MigrationDirPrefixSearchableRetokenize, StrategyCodeSearchableRetokenize, ReindexTypeChangeTokenization},
+		{MigrationDirPrefixFilterableRetokenize, StrategyCodeFilterableRetokenize, ReindexTypeChangeTokenizationFilterable},
+		{MigrationDirPrefixEnableFilterable, StrategyCodeEnableFilterable, ReindexTypeEnableFilterable},
+		{MigrationDirPrefixEnableSearchable, StrategyCodeEnableSearchable, ReindexTypeEnableSearchable},
+		{MigrationDirPrefixRebuildSearchable, StrategyCodeRebuildSearchable, ReindexTypeRebuildSearchable},
+	} {
+		if strings.HasPrefix(trackerName, known.prefix) {
+			return known.code, known.mType
+		}
+	}
+	require.FailNowf(t, "no strategy owns this tracker dir name", "%q", trackerName)
+	return "", ""
+}
+
+func fixtureRecordVersion(trackerName string) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(trackerName))
+	// Zero is not a valid generation, and the record loader rejects it.
+	if v := h.Sum64(); v != 0 {
+		return v
+	}
+	return 1
+}
+
+func fixtureSidecarFor(staged string) string {
+	if reindex := strings.Replace(staged, "_ingest_", "_reindex_", 1); reindex != staged {
+		return reindex
+	}
+	return staged + "__reindex"
+}
+
+func mkMigrationRecordAt(t *testing.T, lsmPath, trackerName string,
+	staged, canonical map[string]string, state MigrationState,
+) {
+	t.Helper()
+	code, migrationType := fixtureStrategyOf(t, trackerName)
+	subject := MigrationSubject{
+		Key: MigrationRecordKey{
+			TaskVersion:  fixtureRecordVersion(trackerName),
+			StrategyCode: code,
+			UnitID:       "shard-1__node-0",
+		},
+		TaskID:        "fixture:" + trackerName,
+		MigrationType: migrationType,
+		TrackerDir:    trackerName,
+		StagedDirs:    staged,
+		CanonicalDirs: canonical,
+		SidecarDirs:   map[string]string{},
+	}
+	for prop, dir := range staged {
+		subject.Properties = append(subject.Properties, prop)
+		subject.SidecarDirs[prop] = fixtureSidecarFor(dir)
+	}
+	sort.Strings(subject.Properties)
+
+	var rec MigrationRecord
+	switch state {
+	case MigrationStateIterating:
+		rec = NewMigrationRecordIterating(subject, MigrationCheckpoint{})
+	case MigrationStateSwapped:
+		rec = NewMigrationRecordSwapped(subject, subject.Properties, canonical)
+	case MigrationStatePromoted:
+		rec = NewMigrationRecordPromoted(subject, subject.Properties, canonical)
+	default:
+		require.FailNowf(t, "unsupported fixture state", "%q", state)
+	}
+	logger, _ := test.NewNullLogger()
+	require.NoError(t, NewMigrationRecordStore(lsmPath, logger).Put(rec))
+}
 
 // A shard load re-creates the canonical bucket directory, empty, for every
 // property in the schema, and the store rewrites its own segment names under

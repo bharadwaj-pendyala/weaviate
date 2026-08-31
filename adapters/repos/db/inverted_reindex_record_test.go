@@ -615,14 +615,6 @@ func TestMigrationRecordStore(t *testing.T) {
 			assert: func(t *testing.T, s *MigrationRecordStore) {
 				require.Len(t, s.Records(), 1)
 				require.Len(t, s.Unreadable(), 1)
-
-				// The unreadable one may name any directory on this shard, so
-				// the sweeps have to keep all of them and not just the ones
-				// the readable record happens to name.
-				logger, _ := test.NewNullLogger()
-				committed := migrationPreservedStateAt(filepath.Dir(filepath.Dir(s.Dir())), logger)
-				require.True(t, committed.preservesBucket("a directory no readable record names"))
-				require.True(t, committed.preservesTracker("a directory no readable record names"))
 			},
 		},
 		{
@@ -678,8 +670,8 @@ func TestMigrationRecordStore(t *testing.T) {
 				// A reader over someone else's directory removing this file is
 				// what makes that writer's rename fail.
 				logger, _ := test.NewNullLogger()
-				_, _, recordSetUnreadable := migrationRecordsAt(filepath.Dir(filepath.Dir(s.Dir())), logger)
-				require.False(t, recordSetUnreadable)
+				foreign := NewMigrationRecordStore(filepath.Dir(filepath.Dir(s.Dir())), logger)
+				require.NoError(t, foreign.Load())
 				_, err := os.Stat(scratch)
 				require.NoError(t, err, "a foreign reader must not delete a scratch file it does not own")
 
@@ -819,9 +811,6 @@ func TestMigrationRecordStore(t *testing.T) {
 				require.Equal(t, MigrationRecordFaultStore, s.Unreadable()[0].Scope)
 				require.Contains(t, s.Unreadable()[0].Reason, "shard-1__node-9")
 
-				logger, _ := test.NewNullLogger()
-				committed := migrationPreservedStateAt(filepath.Dir(filepath.Dir(s.Dir())), logger)
-				require.True(t, committed.preservesBucket("a directory no record names"))
 				require.Error(t, s.Put(merged(43, StrategyCodeEnableFilterable)),
 					"a frozen store must not take a write it cannot place among the records it could not attribute")
 			},
@@ -908,7 +897,7 @@ func TestMigrationRecordStoreConcurrentAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range 64 {
-				migrationRecordsAt(lsmPath, logger)
+				_ = NewMigrationRecordStore(lsmPath, logger).Load()
 			}
 		}()
 	}
