@@ -602,11 +602,11 @@ func newPrometheusMetrics() *PrometheusMetrics {
 		}, []string{"class_name", "shard_name", "property"}),
 		MigrationRecordsWedged: promauto.NewCounter(prometheus.CounterOpts{
 			Name: "migration_records_wedged_total",
-			Help: "Reindex migration records a shard load left standing for a reason no later load can change. Any increase needs an operator; the log line for each names the record, the shard, and what clears it.",
+			Help: "Reindex migration records a shard load left standing for a reason no later load can change. Counted per shard load, so the total tracks loads that found a wedge rather than distinct wedged records; the log line for each names the record, its properties, the shard, and what clears it.",
 		}),
 		MigrationRecordsNotUnderstood: promauto.NewCounter(prometheus.CounterOpts{
 			Name: "migration_records_not_understood_total",
-			Help: "Reindex migration records a shard load could not decode, plus a records directory it could not read at all. Each withholds every promoting and destructive reindex action on its shard; the log line names what could not be read.",
+			Help: "Reindex migration records a shard load could not place: one it could not decode, one whose content names a different file, records of more than one node on one shard, or a records directory it could not read at all. Each withholds every promoting and destructive reindex action on its shard; the log line names the file and the reason.",
 		}),
 
 		// Queue metrics
@@ -1068,8 +1068,9 @@ func (m *PrometheusMetrics) initObjectsTtl() error {
 // only signals that one exists to go read.
 //
 // Counters, not gauges: an unlabelled gauge can't be reset by the shard that
-// healed, so it would report its last non-zero value forever. An increase
-// over a window is the actionable signal.
+// healed, so it would report its last non-zero value forever. Each load adds
+// that pass's whole count, so an increase says a load found one, never how
+// many records are affected, and a shard that stays loaded stops contributing.
 //
 // The two series are separate because they carry different facts: a wedged
 // record was decoded and decided, a not-understood one was never decoded.
