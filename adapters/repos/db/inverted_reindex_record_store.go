@@ -316,8 +316,9 @@ func (s *MigrationRecordStore) Get(key MigrationRecordKey) (MigrationRecord, boo
 }
 
 // Records snapshots every understood record in a fixed order: ascending task
-// version, then strategy code. Retirement does not need that order to be
-// correct, but a fixed one makes two passes over the same store agree.
+// version, then strategy code, then unit. Retirement does not need that order
+// to be correct, but a fixed one makes two passes over the same store agree,
+// and slices.SortFunc is not stable, so the order has to cover the whole key.
 func (s *MigrationRecordStore) Records() []MigrationRecord {
 	s.mu.RLock()
 	out := make([]MigrationRecord, 0, len(s.records))
@@ -331,7 +332,10 @@ func (s *MigrationRecordStore) Records() []MigrationRecord {
 		if c := cmp.Compare(ak.TaskVersion, bk.TaskVersion); c != 0 {
 			return c
 		}
-		return cmp.Compare(ak.StrategyCode, bk.StrategyCode)
+		if c := cmp.Compare(ak.StrategyCode, bk.StrategyCode); c != 0 {
+			return c
+		}
+		return cmp.Compare(ak.UnitID, bk.UnitID)
 	})
 	return out
 }
@@ -389,9 +393,10 @@ func loadMigrationRecordFile(path string) (MigrationRecord, MigrationRecordLoadO
 
 // writeFileAtomic publishes content under name by renaming a fully written
 // temp file over it, so a crash can only leave the previous file or none,
-// never a truncated one. Nothing sweeps a temp file a crash leaves behind,
-// so it stays out of backups by its .tmp extension alone — every walk that
-// reaches these directories has to skip that extension.
+// never a truncated one. A temp file lives until the owning shard's next
+// [MigrationRecordStore.SweepTempFiles], and one is present during any live
+// write, so every walk that reaches these directories has to skip the .tmp
+// extension.
 func writeFileAtomic(dir, name string, content []byte) (err error) {
 	// Same directory as the target, or the rename would cross filesystems.
 	tmp, err := os.CreateTemp(dir, name+".*"+tmpExt)
