@@ -747,6 +747,155 @@ func TestFinalizeCompletedMigrations_PerShardDivergentStates_Converge(t *testing
 	}
 }
 
+// TestFinalizeCompletedMigrations_RenameFailureKeepsTrackers covers
+// https://github.com/weaviate/weaviate/issues/12650. The tracker dir is the
+// only record that a promotion is pending: the scan drives off it and
+// loadReindexRecoveryRecord skips anything carrying tidied.mig. Removing it
+// after a failed rename strands the ingest dir and lets lsmkv recreate the
+// canonical bucket empty, so the property's inverted index comes back empty
+// and no later start can tell.
+func TestFinalizeCompletedMigrations_RenameFailureKeepsTrackers(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("runs as root: filesystem permissions are ignored, cannot make the rename fail")
+	}
+
+	lsmPath := t.TempDir()
+	migsDir := filepath.Join(lsmPath, ".migrations")
+	require.NoError(t, os.MkdirAll(migsDir, 0o755))
+
+	for _, gen := range []int{1, 2} {
+		dir := filepath.Join(migsDir, "searchable_retokenize_text_"+itoa(gen))
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		touchSentinel(t, filepath.Join(dir, "swapped.mig"))
+		touchSentinel(t, filepath.Join(dir, "tidied.mig"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "properties.mig"), []byte("text"), 0o644))
+		require.NoError(t, os.MkdirAll(
+			filepath.Join(lsmPath, "property_text_searchable__retokenize_ingest_"+itoa(gen)), 0o755))
+	}
+
+	// Revoke write on the LSM root so the ingest→canonical rename fails with
+	// EACCES. The tracker dirs live under .migrations, whose own mode is
+	// untouched, so nothing here stops finalize from removing them.
+	t.Cleanup(func() { _ = os.Chmod(lsmPath, 0o700) })
+	require.NoError(t, os.Chmod(lsmPath, 0o500))
+
+	logger, _ := test.NewNullLogger()
+	FinalizeCompletedMigrations(lsmPath, logger)
+
+	require.NoError(t, os.Chmod(lsmPath, 0o700))
+
+	for _, gen := range []int{1, 2} {
+		_, err := os.Stat(filepath.Join(migsDir, "searchable_retokenize_text_"+itoa(gen)))
+		require.NoErrorf(t, err, "gen-%d tracker dir must survive a promotion that failed", gen)
+		_, err = os.Stat(filepath.Join(lsmPath, "property_text_searchable__retokenize_ingest_"+itoa(gen)))
+		require.NoErrorf(t, err, "gen-%d ingest dir must survive so the next start can retry", gen)
+	}
+
+	_, err := os.Stat(filepath.Join(lsmPath, "property_text_searchable"))
+	require.True(t, os.IsNotExist(err), "canonical dir must not appear when the rename failed")
+}
+
+// TestFinalizeCompletedMigrations_TornPropsFileKeepsTracker pins the other half
+// of the same issue. HasProps treats a zero-byte properties.mig as a torn
+// write rather than an empty list, so finalize must not retire the tracker on
+// the strength of it.
+func TestFinalizeCompletedMigrations_TornPropsFileKeepsTracker(t *testing.T) {
+	lsmPath := t.TempDir()
+	migsDir := filepath.Join(lsmPath, ".migrations")
+	require.NoError(t, os.MkdirAll(migsDir, 0o755))
+
+	migDir := filepath.Join(migsDir, "searchable_retokenize_text_1")
+	require.NoError(t, os.MkdirAll(migDir, 0o755))
+	touchSentinel(t, filepath.Join(migDir, "swapped.mig"))
+	touchSentinel(t, filepath.Join(migDir, "tidied.mig"))
+	require.NoError(t, os.WriteFile(filepath.Join(migDir, "properties.mig"), nil, 0o644))
+
+	ingestDir := filepath.Join(lsmPath, "property_text_searchable__retokenize_ingest_1")
+	require.NoError(t, os.MkdirAll(ingestDir, 0o755))
+
+	logger, _ := test.NewNullLogger()
+	FinalizeCompletedMigrations(lsmPath, logger)
+
+	_, err := os.Stat(migDir)
+	require.NoError(t, err, "tracker dir must survive a torn properties.mig")
+	_, err = os.Stat(ingestDir)
+	require.NoError(t, err, "ingest dir must survive so the next start can retry")
+}
+
+// TestFinalizeCompletedMigrations_AbsentPropsFileRetiresTracker guards the
+// other direction: saveProps writes no file at all when the task selected no
+// property, so an absent properties.mig is a complete migration with nothing
+// to rename. Keeping its tracker would log an error on every restart with
+// nothing able to clear it.
+func TestFinalizeCompletedMigrations_AbsentPropsFileRetiresTracker(t *testing.T) {
+	lsmPath := t.TempDir()
+	migsDir := filepath.Join(lsmPath, ".migrations")
+	require.NoError(t, os.MkdirAll(migsDir, 0o755))
+
+	migDir := filepath.Join(migsDir, "searchable_retokenize_text_1")
+	require.NoError(t, os.MkdirAll(migDir, 0o755))
+	touchSentinel(t, filepath.Join(migDir, "swapped.mig"))
+	touchSentinel(t, filepath.Join(migDir, "tidied.mig"))
+
+	logger, _ := test.NewNullLogger()
+	FinalizeCompletedMigrations(lsmPath, logger)
+
+	_, err := os.Stat(migDir)
+	require.True(t, os.IsNotExist(err), "tracker dir with no recorded property should still be retired")
+}
+
+// TestFinalizeCompletedMigrations_MissingIngestKeepsTracker is the
+// permission-free half of the issue-12650 coverage: the tracker records a
+// property, but neither its ingest dir nor its canonical dir is on disk, so
+// there is no bucket to serve the property and nothing but the tracker to say
+// so.
+func TestFinalizeCompletedMigrations_MissingIngestKeepsTracker(t *testing.T) {
+	lsmPath := t.TempDir()
+	migsDir := filepath.Join(lsmPath, ".migrations")
+	require.NoError(t, os.MkdirAll(migsDir, 0o755))
+
+	migDir := filepath.Join(migsDir, "searchable_retokenize_text_1")
+	require.NoError(t, os.MkdirAll(migDir, 0o755))
+	touchSentinel(t, filepath.Join(migDir, "swapped.mig"))
+	touchSentinel(t, filepath.Join(migDir, "tidied.mig"))
+	require.NoError(t, os.WriteFile(filepath.Join(migDir, "properties.mig"), []byte("text"), 0o644))
+
+	logger, _ := test.NewNullLogger()
+	FinalizeCompletedMigrations(lsmPath, logger)
+
+	_, err := os.Stat(migDir)
+	require.NoError(t, err, "tracker dir must survive when the property has no bucket at all")
+}
+
+// TestFinalizeCompletedMigrations_PartialPromotionConverges pins the other
+// side of that guard: a property whose canonical dir is already in place was
+// promoted by an earlier pass, so a retry must finish and retire the tracker
+// rather than fail on the ingest dir that pass consumed.
+func TestFinalizeCompletedMigrations_PartialPromotionConverges(t *testing.T) {
+	lsmPath := t.TempDir()
+	migsDir := filepath.Join(lsmPath, ".migrations")
+	require.NoError(t, os.MkdirAll(migsDir, 0o755))
+
+	migDir := filepath.Join(migsDir, "searchable_retokenize_alpha_1")
+	require.NoError(t, os.MkdirAll(migDir, 0o755))
+	touchSentinel(t, filepath.Join(migDir, "swapped.mig"))
+	touchSentinel(t, filepath.Join(migDir, "tidied.mig"))
+	require.NoError(t, os.WriteFile(filepath.Join(migDir, "properties.mig"), []byte("alpha,beta"), 0o644))
+
+	// alpha was promoted by the pass that died; only its canonical dir is left.
+	require.NoError(t, os.MkdirAll(filepath.Join(lsmPath, "property_alpha_searchable"), 0o755))
+	// beta still has its ingest dir waiting.
+	require.NoError(t, os.MkdirAll(filepath.Join(lsmPath, "property_beta_searchable__retokenize_ingest_1"), 0o755))
+
+	logger, _ := test.NewNullLogger()
+	FinalizeCompletedMigrations(lsmPath, logger)
+
+	_, err := os.Stat(filepath.Join(lsmPath, "property_beta_searchable"))
+	require.NoError(t, err, "beta should be promoted on the retry")
+	_, err = os.Stat(migDir)
+	require.True(t, os.IsNotExist(err), "tracker should retire once every property has a canonical dir")
+}
+
 // itoa is the local stand-in for strconv.Itoa kept private to the test
 // file to avoid touching imports needlessly.
 func itoa(i int) string {

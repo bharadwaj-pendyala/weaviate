@@ -12,6 +12,7 @@
 package db
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -276,38 +277,59 @@ func FinalizeCompletedMigrations(lsmPath string, logger logrus.FieldLogger) {
 			}
 		}
 
-		// Finalize the effective promotion gen, then remove every gen <
-		// effective (their data was superseded by this gen's complete
-		// or recovered ingest dir).
+		// Finalize the effective promotion gen first. Only once it has
+		// landed is every gen < effective superseded and safe to remove;
+		// running the two in one pass would clean the older gens even
+		// when the promotion failed, and ReadDir order puts `_10` ahead
+		// of `_2`, so "older" does not mean "already processed".
+		effectiveDirName := ""
 		for _, g := range gens {
+			if g.gen == effective {
+				effectiveDirName = g.dirName
+				break
+			}
+		}
+		if effectiveDirName == "" {
+			continue
+		}
+
+		effectiveDir := filepath.Join(migrationsDir, effectiveDirName)
+		if err := finalizeMigrationDir(lsmPath, effectiveDir, effectiveDirName, logger); err != nil {
+			// The tracker dir is the only record that this promotion is
+			// pending: the scan above reads nothing else, and recovery
+			// skips any dir carrying tidied.mig. Keeping it, and the
+			// older gens with it, is what lets the next start retry.
+			logger.WithField("migration", effectiveDirName).
+				Errorf("reindex finalize: promotion failed, keeping tracker dirs to retry on next start: %v", err)
+			continue
+		}
+
+		// finalizeMigrationDir performed the ingest→canonical rename +
+		// backup removal. We also remove the tracker dir itself: its
+		// sentinels have done their job.
+		if err := os.RemoveAll(effectiveDir); err != nil {
+			logger.WithField("path", effectiveDir).
+				Warnf("reindex finalize: failed to remove finalized tracker dir: %v", err)
+		}
+
+		for _, g := range gens {
+			// gen > effective is even-earlier in-flight (e.g. crashed
+			// before markMerged); recovery handles those via its own
+			// payload.mig read.
+			if g.gen >= effective {
+				continue
+			}
+			// Stale older gen: remove tracker dir AND its sidecar dirs
+			// (their backup/ingest/reindex dirs on disk are orphaned by
+			// the newer migration's swap, OR — in the recovery path —
+			// they are the previous gen's old live main that the failed
+			// swap never renamed to backup; either way they're stale
+			// relative to the effective gen's promoted data).
 			migDir := filepath.Join(migrationsDir, g.dirName)
-			switch {
-			case g.gen == effective:
-				finalizeMigrationDir(lsmPath, migDir, g.dirName, logger)
-				// finalizeMigrationDir performs the ingest→canonical
-				// rename + backup removal. We also remove the tracker
-				// dir itself: its sentinels have done their job.
-				if err := os.RemoveAll(migDir); err != nil {
-					logger.WithField("path", migDir).
-						Warnf("reindex finalize: failed to remove finalized tracker dir: %v", err)
-				}
-			case g.gen < effective:
-				// Stale older gen: remove tracker dir AND its sidecar
-				// dirs (their backup/ingest/reindex dirs on disk are
-				// orphaned by the newer migration's swap, OR — in the
-				// recovery path — they are the previous gen's old live
-				// main that the failed swap never renamed to backup;
-				// either way they're stale relative to the effective
-				// gen's promoted data).
-				removeStaleSidecarsForGen(lsmPath, namespace, g.dirName, logger)
-				if err := os.RemoveAll(migDir); err != nil {
-					logger.WithField("path", migDir).
-						Warnf("reindex finalize: failed to remove stale older-gen tracker dir: %v", err)
-				}
-			default:
-				// gen > effective: even-earlier in-flight (e.g. crashed
-				// before markMerged); recovery handles via its own
-				// payload.mig read.
+			removeStaleSidecarsForGen(lsmPath, namespace, g.dirName, logger)
+			if err := os.RemoveAll(migDir); err != nil {
+				logger.WithField("path", migDir).
+					Warnf("reindex finalize: failed to remove stale older-gen tracker dir: %v", err)
 			}
 		}
 	}
@@ -416,19 +438,38 @@ func reindexSuffixForFinalize(namespace string) string {
 	return ""
 }
 
-func finalizeMigrationDir(lsmPath, migDir, migName string, logger logrus.FieldLogger) {
+// finalizeMigrationDir promotes one generation's ingest dirs to their canonical
+// names. A non-nil error means the promotion did not land, so the caller has to
+// keep the tracker dir: it is the only record that the promotion is pending.
+//
+// Only failures a later start can retry are errors. A migration that recorded
+// no property, or whose dir name no strategy claims, has nothing to promote and
+// nothing a retry would fix, so it reports success and lets the caller retire
+// the tracker.
+func finalizeMigrationDir(lsmPath, migDir, migName string, logger logrus.FieldLogger) error {
 	// Only finalize if both swapped and tidied sentinels exist.
 	if !fileExists(filepath.Join(migDir, "swapped.mig")) {
-		return
+		return nil
 	}
 	if !fileExists(filepath.Join(migDir, "tidied.mig")) {
-		return
+		return nil
 	}
 
 	// Read properties from the migration.
 	props, err := readMigrationProps(migDir)
-	if err != nil || len(props) == 0 {
-		return
+	switch {
+	case os.IsNotExist(err):
+		// saveProps writes no file at all when the task selected no
+		// property, so an absent properties.mig is a complete migration
+		// with nothing to rename.
+		return nil
+	case err != nil:
+		return fmt.Errorf("read properties.mig in %s: %w", migDir, err)
+	case len(props) == 0:
+		// A zero-byte properties.mig is the torn write fileReindexTracker.HasProps
+		// refuses to read as a recorded list. Retiring the tracker here would
+		// leave nothing to repair the shard with.
+		return fmt.Errorf("properties.mig in %s names no property", migDir)
 	}
 
 	// Determine bucket naming from migration dir name. The migration dir
@@ -438,17 +479,22 @@ func finalizeMigrationDir(lsmPath, migDir, migName string, logger logrus.FieldLo
 	// to find the matching on-disk sidecar dirs.
 	suffixes := migrationSuffixes(migName)
 	if suffixes == nil {
-		return
+		logger.WithField("migration", migName).
+			Warn("reindex finalize: no strategy claims this migration dir name; nothing to promote")
+		return nil
 	}
 	_, gen, ok := parseMigrationDirName(migName)
 	if !ok {
 		// Defensive — every dir on disk should carry the gen suffix.
-		return
+		logger.WithField("migration", migName).
+			Warn("reindex finalize: migration dir name carries no gen suffix; nothing to promote")
+		return nil
 	}
 	genTail := "_" + strconv.Itoa(gen)
 
 	logger = logger.WithField("migration", migName)
 
+	var errs []error
 	for _, propName := range props {
 		mainName := suffixes.sourceBucketName(propName)
 		ingestDir := filepath.Join(lsmPath, mainName+suffixes.ingestSuffix+genTail)
@@ -460,6 +506,7 @@ func finalizeMigrationDir(lsmPath, migDir, migName string, logger logrus.FieldLo
 			if err := os.RemoveAll(backupDir); err != nil {
 				logger.WithField("dir", backupDir).
 					Errorf("finalize: failed to remove backup dir: %v", err)
+				errs = append(errs, err)
 				continue
 			}
 			logger.WithField("dir", backupDir).Debug("finalize: removed backup dir")
@@ -474,12 +521,23 @@ func finalizeMigrationDir(lsmPath, migDir, migName string, logger logrus.FieldLo
 			if err := os.Rename(ingestDir, mainDir); err != nil {
 				logger.WithField("from", ingestDir).WithField("to", mainDir).
 					Errorf("finalize: failed to rename ingest dir: %v", err)
+				errs = append(errs, err)
 				continue
 			}
 			logger.WithField("from", ingestDir).WithField("to", mainDir).
 				Debug("finalize: renamed ingest dir to main")
+		} else if !fileExists(mainDir) {
+			// No ingest dir and no canonical dir: the property has no
+			// bucket at all, which is the silent empty index this
+			// function exists to avoid. An earlier pass that promoted
+			// this property leaves the canonical dir behind, so a retry
+			// after a partial failure still converges.
+			errs = append(errs, fmt.Errorf("no ingest dir %s and no canonical dir %s for property %q",
+				ingestDir, mainDir, propName))
 		}
 	}
+
+	return errors.Join(errs...)
 }
 
 func readMigrationProps(migDir string) ([]string, error) {
